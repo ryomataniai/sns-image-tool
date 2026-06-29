@@ -1,0 +1,16 @@
+# 出力画像・動画
+output/
+*.png
+*.mp4
+
+# Secrets（絶対にコミットしない）
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
