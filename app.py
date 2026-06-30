@@ -198,6 +198,12 @@ with tab_carousel:
             client = make_client()
             with st.spinner("コピーを生成中…"):
                 st.session_state.spec = carousel.generate_carousel_copy(client, topic, n_body)
+            # 新トピックを確実に反映：編集ウィジェットの古い値(固定キー)をクリアして
+            # 新specから再初期化させる（これが無いと2回目以降は前トピックが焼かれる）
+            for _k in list(st.session_state.keys()):
+                if _k in ("e_ch", "e_cs", "e_cta") or _k.startswith(("e_t", "e_b")):
+                    del st.session_state[_k]
+            st.session_state.pop("carousel_imgs", None)  # 旧トピックの完成画像も破棄
             st.success("構成を生成しました。下で文言を確認・編集できます。")
         except Exception as e:  # noqa: BLE001
             st.error(f"コピー生成失敗: {e}")
