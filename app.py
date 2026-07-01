@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v7 (用途AI推測→人が確認)")
+    st.caption("build: stage-v9 (自由記述の要望欄を追加)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -323,6 +323,12 @@ with tab_maisoku:
     else:
         room = st.selectbox("主役の部屋", core.INTERIOR_ROOMS, key="m_room")
 
+    m_request = st.text_area(
+        "要望（任意）", key="m_request",
+        placeholder="例：ソファはグレー系、観葉植物多め、南向きの明るい雰囲気、"
+                    "子ども部屋っぽく など。※実際にない設備・広さは足しません",
+        help="スタイルに加えて、色味・家具・雰囲気などの希望を自由に書けます")
+
     if input_png is not None:
         st.image(input_png, caption="入力（この画像を参考に生成）", width=280)
 
@@ -348,7 +354,8 @@ with tab_maisoku:
             for i, r in enumerate(sel, 1):
                 use_ref = keep_style and anchor is not None
                 prompt = core.build_room_tour_prompt(
-                    style_desc, r, core.ROOM_TOUR_PRESETS[r], with_ref=use_ref)
+                    style_desc, r, core.ROOM_TOUR_PRESETS[r], with_ref=use_ref,
+                    user_request=m_request)
                 imgs = [(img_bytes, mime)]
                 if use_ref:
                     imgs.append((anchor, "image/png"))
@@ -368,7 +375,8 @@ with tab_maisoku:
                 want = [("before（空室）", False), ("after（家具あり）", True)]
             prog = st.progress(0.0, text="内観を生成中…")
             for i, (label, staged) in enumerate(want, 1):
-                prompt = core.build_interior_prompt(style_desc, room, staged=staged)
+                prompt = core.build_interior_prompt(style_desc, room, staged=staged,
+                                                    user_request=m_request)
                 data, err = core.generate_from_image_bytes(
                     client, img_bytes, prompt, model=model,
                     aspect="4:5", size="1K", mime_type=mime)
@@ -433,8 +441,14 @@ with tab_stage:
                                help="品質重視ならNano Banana 2 (3.1) を試す")
         aspect2 = gc3.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
 
+        stg_request = st.text_area(
+            "要望（任意・全ステージングに共通で反映）", key="stg_request",
+            placeholder="例：ソファはグレー系、木目を強めに、観葉植物多め、生活感控えめ など。"
+                        "※実際にない設備・広さは足しません",
+            help="色味・家具・雰囲気などの希望を自由に書けます")
+
         TREAT = ["使わない", "リビングとしてステージング", "寝室としてステージング",
-                 "おまかせステージング", "高解像度化のみ"]
+                 "おまかせステージング", "水回り・玄関を演出", "高解像度化のみ"]
 
         # アップロード内容が変わったら、AIで各写真の用途を推測して初期選択に反映
         import hashlib as _hashlib
@@ -456,7 +470,8 @@ with tab_stage:
             st.session_state["stg_sig"] = sig
 
         st.write("各写真の処理（AIの推測を初期選択にしています。違う場合は選び直してください）"
-                 "／大きい洋室→リビング・小さい洋室→寝室・水回り→高解像度化のみ・不要→使わない")
+                 "／大きい洋室→リビング・小さい洋室→寝室・キッチン/玄関→小物を演出・"
+                 "浴室/トイレ/洗面→高解像度化のみ・不要→使わない")
         gcols = st.columns(4)
         for i, (b, w, h) in enumerate(photos):
             with gcols[i % 4]:
@@ -484,12 +499,19 @@ with tab_stage:
                 i, t = job
                 src = photos[i][0]
                 is_stage = t in ROOM_USE
-                pr = (core.build_staging_prompt(style_desc, ROOM_USE[t])
-                      if is_stage else core.build_enhance_prompt())
+                is_water = (t == "水回り・玄関を演出")
+                if is_stage:
+                    pr = core.build_staging_prompt(style_desc, ROOM_USE[t],
+                                                   user_request=stg_request)
+                elif is_water:
+                    pr = core.build_water_staging_prompt(style_desc,
+                                                         user_request=stg_request)
+                else:
+                    pr = core.build_enhance_prompt()
                 data, err = core.generate_from_images(
                     client, [(src, "image/png")], pr,
                     model=model2, aspect=aspect2, size="2K", add_safety=False)
-                if not err and is_stage:  # ステージングのみ注記を焼き込む
+                if not err and (is_stage or is_water):  # 小物を足す処理は注記を焼き込む
                     try:
                         data = core.add_disclaimer(data)
                     except Exception:  # noqa: BLE001

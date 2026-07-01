@@ -221,7 +221,8 @@ def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -
     return out.getvalue()
 
 
-def build_staging_prompt(style_desc: str, room_use: str = "") -> str:
+def build_staging_prompt(style_desc: str, room_use: str = "",
+                         user_request: str = "") -> str:
     """実際の空室写真 → 家具ステージング（構造は維持）。
 
     room_use: "リビング" / "寝室" / "" (おまかせ=広さから自動推定)
@@ -243,7 +244,8 @@ def build_staging_prompt(style_desc: str, room_use: str = "") -> str:
         "この部屋の壁・窓・床・扉・広さ・構造・設備は一切変えずに維持したまま、"
         "画像を高解像度・高精細に整え、"
         f"{style_desc}のテイストで家具・小物を自然に配置して、生活感のある部屋にしてください。\n"
-        f"{furni}\n"
+        f"{furni}"
+        f"{_request_line(user_request)}\n"
         "【厳守】実際にない窓・眺望・設備を足さない。部屋を実際より広く見せない。"
         "壁の色・間取り・設備のグレードを変えない。"
         "画像内に文字・ロゴ・透かし・数字を一切入れない。"
@@ -279,10 +281,10 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
             "各写真の部屋種別を判定してください。"
             "居室（洋室・和室）が複数ある場合、最も広く見える居室をLIVING、"
             "それより狭い居室をBEDROOMとしてください。"
-            "浴室・洗面・トイレ・キッチンなどの水回りはWATER、"
-            "玄関・廊下・バルコニーや判断がつかないものはOTHERとしてください。"
+            "キッチンはKITCHEN、玄関はENTRANCE、浴室・洗面・トイレはWATER、"
+            "廊下・バルコニーや判断がつかないものはOTHERとしてください。"
             f"出力はJSON配列のみ・長さ{n}。"
-            '例: ["LIVING","BEDROOM","WATER"]。説明文は書かないこと。'
+            '例: ["LIVING","BEDROOM","KITCHEN","ENTRANCE","WATER"]。説明文は書かないこと。'
         )
         resp = client.models.generate_content(
             model=model, contents=parts + [instruction]
@@ -296,6 +298,8 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
     mapping = {
         "LIVING": "リビングとしてステージング",
         "BEDROOM": "寝室としてステージング",
+        "KITCHEN": "水回り・玄関を演出",
+        "ENTRANCE": "水回り・玄関を演出",
         "WATER": "高解像度化のみ",
         "OTHER": "おまかせステージング",
     }
@@ -304,6 +308,24 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
         key = arr[i].upper() if i < len(arr) and isinstance(arr[i], str) else "OTHER"
         out.append(mapping.get(key, "おまかせステージング"))
     return out
+
+
+def build_water_staging_prompt(style_desc: str = "", user_request: str = "") -> str:
+    """水回り（キッチン/浴室/洗面/トイレ）・玄関 → 設備は変えず生活小物だけ演出。"""
+    return (
+        "入力画像は賃貸物件の水回り（キッチン・浴室・洗面・トイレ）または玄関の実際の写真です。"
+        "設備・造作・構造・広さ・グレードは一切変えずに維持したまま高解像度・高精細に整え、"
+        "その場所に合った生活小物だけを自然に少量だけ置いてください。"
+        "キッチンなら調理小物・観葉植物・カゴなど、洗面なら畳んだタオル・小物・グリーン、"
+        "浴室なら入浴剤やタオル、トイレならグリーンや小物、"
+        "玄関なら観葉植物・傘立て・ウォールデコ・少量の小物などを、"
+        f"{style_desc}のテイストで清潔感のある印象に整えてください。"
+        f"{_request_line(user_request)}\n"
+        "【厳守】実際にない設備（食洗機・浴室乾燥・収納・窓・下駄箱など）を絶対に足さない。"
+        "蛇口・コンロ・便器・浴槽・框などの設備や造作の形・数・グレードを変えない。"
+        "玄関は靴を大量に散らかさない。部屋を実際より広く見せない。"
+        "画像内に文字・ロゴ・透かし・数字を一切入れない。"
+    )
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
@@ -337,7 +359,17 @@ INTERIOR_STYLES = {
 INTERIOR_ROOMS = ["おまかせ", "リビング", "寝室", "ダイニング/キッチン", "ワンルーム全体"]
 
 
-def build_interior_prompt(style_desc: str, room: str, staged: bool = True) -> str:
+def _request_line(user_request: str) -> str:
+    """ユーザーの自由記述の要望を、安全ルールを崩さない範囲で反映する一文。"""
+    req = (user_request or "").strip()
+    if not req:
+        return ""
+    return ("\n- 追加のご要望（下記の【厳守】に反しない範囲で可能な限り反映）："
+            f"{req}\n")
+
+
+def build_interior_prompt(style_desc: str, room: str, staged: bool = True,
+                          user_request: str = "") -> str:
     """マイソク／間取り図 → 内観写真 生成用プロンプトを組み立てる。
     staged=True: 家具ありの暮らしのイメージ / False: 家具なしの空室。"""
     room_line = "" if room == "おまかせ" else f"・{room}を主役にする。"
@@ -364,7 +396,7 @@ def build_interior_prompt(style_desc: str, room: str, staged: bool = True) -> st
         "- 実際にはあり得ない広さ・眺望・窓・設備を足して誇張しない。自然で現実的な広さ感。\n"
         "- 家具や小物で不自然に空間を広く見せない。"
     )
-    return body + rules
+    return body + _request_line(user_request) + rules
 
 
 # ルームツアー用：部屋ごとのプロンプトヒント（マイソクから各部屋を生成）
@@ -382,7 +414,7 @@ ROOM_TOUR_PRESETS = {
 
 
 def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
-                           with_ref: bool = False) -> str:
+                           with_ref: bool = False, user_request: str = "") -> str:
     """マイソク → 同一住戸の指定部屋の内観を生成するプロンプト。
     with_ref=True のときは2枚目の参照画像にトーンを合わせる指示を足す。"""
     ref_line = (
@@ -396,7 +428,8 @@ def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
         f"- {room_hint}\n"
         f"- インテリアは{style_desc}。住戸全体で統一感を持たせる。\n"
         "- 自然光の入る清潔で心地よい雰囲気。"
-        f"{ref_line}\n"
+        f"{ref_line}"
+        f"{_request_line(user_request)}\n"
         "【厳守】建物の外観・外観写真・間取り図の線や文字・平面図・数字は一切出さない。"
         "内観のみ。実際にあり得ない広さ・設備・眺望を足して誇張しない。"
     )
