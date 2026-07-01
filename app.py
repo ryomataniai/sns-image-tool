@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: maisoku-v2 (PDF対応)")
+    st.caption("build: maisoku-v3 (ルームツアー)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -299,21 +299,36 @@ with tab_maisoku:
         else:
             input_png = raw
 
-    mc1, mc2, mc3 = st.columns(3)
+    mc1, mc2 = st.columns(2)
     style_name = mc1.selectbox("内観スタイル", list(core.INTERIOR_STYLES.keys()), key="m_style")
-    room = mc2.selectbox("主役の部屋", core.INTERIOR_ROOMS, key="m_room")
-    model = mc3.selectbox("モデル", core.MODELS, index=0, key="m_model",
+    model = mc2.selectbox("モデル", core.MODELS, index=0, key="m_model",
                           help="2.5-flash-imageが最安。品質重視ならNano Banana 2 (3.1) を試す")
 
     mode = st.radio("生成モード", ["暮らしのイメージ（家具あり1枚）",
-                                   "ビフォーアフター（空室＋家具あり 2枚）"],
-                    horizontal=True, key="m_mode")
+                                   "ビフォーアフター（空室＋家具あり 2枚）",
+                                   "ルームツアー（複数カット）"],
+                    key="m_mode")
+
+    # モード別オプション
+    room = core.INTERIOR_ROOMS[0]
+    rooms, keep_style = [], True
+    if mode.startswith("ルームツアー"):
+        rooms = st.multiselect(
+            "生成する部屋（カット）", list(core.ROOM_TOUR_PRESETS.keys()),
+            default=["玄関", "LDK", "洋室", "浴室"], key="m_rooms")
+        keep_style = st.checkbox("スタイルを揃える（最初のカットを基準にトーン統一）",
+                                 value=True, key="m_keepstyle")
+        st.caption("※玄関・水回りはマイソクに情報が薄く創作度が高めです。"
+                   "投稿時は『※イメージ』注記を強めに。")
+    else:
+        room = st.selectbox("主役の部屋", core.INTERIOR_ROOMS, key="m_room")
 
     if input_png is not None:
         st.image(input_png, caption="入力（この画像を参考に生成）", width=280)
 
+    gen_disabled = (input_png is None) or (mode.startswith("ルームツアー") and not rooms)
     if st.button("🏠 内観を生成", type="primary", key="m_gen",
-                 disabled=(input_png is None), use_container_width=True):
+                 disabled=gen_disabled, use_container_width=True):
         try:
             client = make_client()
         except RuntimeError as e:
@@ -324,36 +339,66 @@ with tab_maisoku:
         style_desc = core.INTERIOR_STYLES[style_name]
         results = []  # (ラベル, bytes)
 
-        want = [("after", True)]
-        if mode.startswith("ビフォーアフター"):
-            want = [("before（空室）", False), ("after（家具あり）", True)]
-
-        prog = st.progress(0.0, text="内観を生成中…")
-        for i, (label, staged) in enumerate(want, 1):
-            prompt = core.build_interior_prompt(style_desc, room, staged=staged)
-            data, err = core.generate_from_image_bytes(
-                client, img_bytes, prompt, model=model,
-                aspect="4:5", size="1K", mime_type=mime)
-            if err:
-                st.error(f"{label} 生成失敗: {err}")
-            else:
-                results.append((label, data))
-            prog.progress(i / len(want), text=f"内観を生成中… {i}/{len(want)}")
-        prog.empty()
+        if mode.startswith("ルームツアー"):
+            sel = list(rooms)
+            if keep_style and "LDK" in sel:  # LDKを基準カットに先頭化
+                sel = ["LDK"] + [r for r in sel if r != "LDK"]
+            anchor = None
+            prog = st.progress(0.0, text="ルームツアーを生成中…")
+            for i, r in enumerate(sel, 1):
+                use_ref = keep_style and anchor is not None
+                prompt = core.build_room_tour_prompt(
+                    style_desc, r, core.ROOM_TOUR_PRESETS[r], with_ref=use_ref)
+                imgs = [(img_bytes, mime)]
+                if use_ref:
+                    imgs.append((anchor, "image/png"))
+                data, err = core.generate_from_images(
+                    client, imgs, prompt, model=model, aspect="4:5", size="1K")
+                if err:
+                    st.error(f"{r} 生成失敗: {err}")
+                else:
+                    results.append((r, data))
+                    if keep_style and anchor is None:
+                        anchor = data
+                prog.progress(i / len(sel), text=f"生成中… {i}/{len(sel)}（{r}）")
+            prog.empty()
+        else:
+            want = [("after", True)]
+            if mode.startswith("ビフォーアフター"):
+                want = [("before（空室）", False), ("after（家具あり）", True)]
+            prog = st.progress(0.0, text="内観を生成中…")
+            for i, (label, staged) in enumerate(want, 1):
+                prompt = core.build_interior_prompt(style_desc, room, staged=staged)
+                data, err = core.generate_from_image_bytes(
+                    client, img_bytes, prompt, model=model,
+                    aspect="4:5", size="1K", mime_type=mime)
+                if err:
+                    st.error(f"{label} 生成失敗: {err}")
+                else:
+                    results.append((label, data))
+                prog.progress(i / len(want), text=f"内観を生成中… {i}/{len(want)}")
+            prog.empty()
 
         if results:
             st.session_state.maisoku_results = results
-            st.success("内観イメージを生成しました。")
+            st.success(f"{len(results)}枚 生成しました。")
 
     mres = st.session_state.get("maisoku_results")
     if mres:
         st.divider()
-        st.subheader("生成結果")
-        cols = st.columns(len(mres))
+        st.subheader(f"生成結果（{len(mres)}枚）")
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, (label, data) in enumerate(mres, 1):
+                zf.writestr(f"{i:02d}_{label}.png", data)
+        st.download_button("⬇️ まとめてZIPでダウンロード", zbuf.getvalue(),
+                           "roomtour.zip", "application/zip",
+                           use_container_width=True, key="m_zip")
+        cols = st.columns(3)
         for idx, (label, data) in enumerate(mres):
-            with cols[idx]:
+            with cols[idx % 3]:
                 st.image(data, caption=label, use_container_width=True)
-                st.download_button("⬇️", data, f"interior_{idx+1}.png", "image/png",
+                st.download_button("⬇️", data, f"{idx+1:02d}_{label}.png", "image/png",
                                    key=f"m_dl_{idx}", use_container_width=True)
         st.caption("※SNS投稿時は運用ルールに従い『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。")

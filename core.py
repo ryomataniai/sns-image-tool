@@ -212,6 +212,85 @@ def build_interior_prompt(style_desc: str, room: str, staged: bool = True) -> st
     return body + rules
 
 
+# ルームツアー用：部屋ごとのプロンプトヒント（マイソクから各部屋を生成）
+ROOM_TOUR_PRESETS = {
+    "玄関": "玄関・エントランス。シューズボックス、たたき、廊下の入口が見える構図。",
+    "LDK": "リビング・ダイニング・キッチンのある明るいメインの生活空間。",
+    "洋室": "個室の洋室（寝室）。ベッドと収納のある落ち着いた空間。",
+    "洋室2": "もう一つの洋室（書斎・子ども部屋など）。",
+    "キッチン": "システムキッチンまわり。作業スペースと収納。",
+    "浴室": "清潔なユニットバス（浴槽・シャワー）。",
+    "洗面所": "洗面化粧台・脱衣スペース。",
+    "トイレ": "清潔なトイレ空間。",
+    "バルコニー": "バルコニーと、そこから見える屋外・空の抜け感。",
+}
+
+
+def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
+                           with_ref: bool = False) -> str:
+    """マイソク → 同一住戸の指定部屋の内観を生成するプロンプト。
+    with_ref=True のときは2枚目の参照画像にトーンを合わせる指示を足す。"""
+    ref_line = (
+        "\n- 参照として渡した2枚目の画像（同じ住戸の別カット）と、"
+        "床材・壁の色・照明・全体のスタイルを必ず揃える。"
+        if with_ref else ""
+    )
+    return (
+        "1枚目の画像は賃貸物件のマイソク／間取り図です。"
+        f"この同一住戸の中の「{room_label}」の内観写真を、フォトリアルに1枚生成してください。\n"
+        f"- {room_hint}\n"
+        f"- インテリアは{style_desc}。住戸全体で統一感を持たせる。\n"
+        "- 自然光の入る清潔で心地よい雰囲気。"
+        f"{ref_line}\n"
+        "【厳守】建物の外観・外観写真・間取り図の線や文字・平面図・数字は一切出さない。"
+        "内観のみ。実際にあり得ない広さ・設備・眺望を足して誇張しない。"
+    )
+
+
+def generate_from_images(client, images, prompt, model=DEFAULT_MODEL,
+                         aspect="4:5", size="1K", retries=1, add_safety=True):
+    """複数の入力画像 [(bytes, mime), ...] ＋プロンプト → PNGバイト列。
+    成功で (bytes, None)、失敗で (None, error_str)。"""
+    from google.genai import types
+
+    full_prompt = prompt + (SAFETY_SUFFIX if add_safety else "")
+
+    ic_fields = types.ImageConfig.model_fields
+    ic_kwargs = {"aspect_ratio": aspect}
+    if size and "image_size" in ic_fields:
+        ic_kwargs["image_size"] = size
+    cfg = types.GenerateContentConfig(
+        response_modalities=["Image"],
+        image_config=types.ImageConfig(**ic_kwargs),
+    )
+    parts = [_image_part(b, m) for (b, m) in images]
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            resp = client.models.generate_content(
+                model=model, contents=parts + [full_prompt], config=cfg
+            )
+            for part in resp.parts:
+                blob = getattr(part, "inline_data", None)
+                raw = getattr(blob, "data", None) if blob is not None else None
+                if raw:
+                    if isinstance(raw, str):
+                        raw = base64.b64decode(raw)
+                    try:
+                        im = Image.open(BytesIO(raw)).convert("RGB")
+                        out = BytesIO()
+                        im.save(out, format="PNG")
+                        return out.getvalue(), None
+                    except Exception:  # noqa: BLE001
+                        return raw, None
+            return None, "画像が返らず（セーフティ拒否 or プロンプト不備の可能性）"
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))
+    return None, last_err
+
+
 def generate_from_image_bytes(client, image_bytes, prompt, model=DEFAULT_MODEL,
                               aspect="4:5", size="1K", mime_type="image/png",
                               retries=1, add_safety=True):
