@@ -140,6 +140,103 @@ def generate_image_bytes(client, prompt, model=DEFAULT_MODEL,
 
 
 # ----------------------------------------------------------------------
+# 画像入力（マイソク／間取り図 → 内観シミュレーション）
+# ----------------------------------------------------------------------
+def _image_part(image_bytes: bytes, mime_type: str = "image/png"):
+    """アップロード画像を Gemini contents 用の Part に変換（SDK差を吸収）。"""
+    from google.genai import types
+    if hasattr(types.Part, "from_bytes"):
+        return types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    return types.Part(inline_data=types.Blob(data=image_bytes, mime_type=mime_type))
+
+
+# 内観生成のスタイル・部屋プリセット（UIから選ばせる）
+INTERIOR_STYLES = {
+    "ナチュラル/北欧": "明るい木目とオフホワイト基調のナチュラル北欧スタイル",
+    "和モダン": "木と和紙の質感を活かした落ち着いた和モダンスタイル",
+    "ホテルライク": "低彩度でまとめた上質なホテルライクスタイル",
+    "シンプルモダン": "白と黒を基調にしたミニマルなシンプルモダンスタイル",
+    "カフェ風": "ヴィンテージ木材とグリーンを効かせたカフェ風スタイル",
+}
+INTERIOR_ROOMS = ["おまかせ", "リビング", "寝室", "ダイニング/キッチン", "ワンルーム全体"]
+
+
+def build_interior_prompt(style_desc: str, room: str, staged: bool = True) -> str:
+    """マイソク／間取り図 → 内観写真 生成用プロンプトを組み立てる。
+    staged=True: 家具ありの暮らしのイメージ / False: 家具なしの空室。"""
+    room_line = "" if room == "おまかせ" else f"・{room}を主役にする。"
+    if staged:
+        body = (
+            "この画像は賃貸物件の間取り図（またはマイソク）です。"
+            "この間取りの部屋の配置・広さの雰囲気を参考に、"
+            "実在しそうな居住空間の『内観写真』をフォトリアルに1枚生成してください。\n"
+            f"- インテリアは{style_desc}。\n"
+            f"{room_line}\n"
+            "- 自然光の入る明るく心地よい生活シーン。"
+        )
+    else:
+        body = (
+            "この画像は賃貸物件の間取り図（またはマイソク）です。"
+            "この間取りの部屋の配置・広さの雰囲気を参考に、"
+            "『家具のない清潔な空室』の内観写真をフォトリアルに1枚生成してください。\n"
+            "- 白い壁とフローリング、生活感なし。\n"
+            f"{room_line}\n"
+        )
+    rules = (
+        "\n【厳守】\n"
+        "- 建物の外観・外観写真・間取り図の線や文字・平面図は一切含めない。内観のみ。\n"
+        "- 実際にはあり得ない広さ・眺望・窓・設備を足して誇張しない。自然で現実的な広さ感。\n"
+        "- 家具や小物で不自然に空間を広く見せない。"
+    )
+    return body + rules
+
+
+def generate_from_image_bytes(client, image_bytes, prompt, model=DEFAULT_MODEL,
+                              aspect="4:5", size="1K", mime_type="image/png",
+                              retries=1, add_safety=True):
+    """入力画像（間取り図/マイソク）＋プロンプト → PNGバイト列。
+    成功で (bytes, None)、失敗で (None, error_str)。generate_image_bytes の画像入力版。"""
+    from google.genai import types
+
+    full_prompt = prompt + (SAFETY_SUFFIX if add_safety else "")
+
+    ic_fields = types.ImageConfig.model_fields
+    ic_kwargs = {"aspect_ratio": aspect}
+    if size and "image_size" in ic_fields:
+        ic_kwargs["image_size"] = size
+    cfg = types.GenerateContentConfig(
+        response_modalities=["Image"],
+        image_config=types.ImageConfig(**ic_kwargs),
+    )
+    img_part = _image_part(image_bytes, mime_type)
+    last_err = None
+    for attempt in range(retries + 1):
+        try:
+            resp = client.models.generate_content(
+                model=model, contents=[img_part, full_prompt], config=cfg
+            )
+            for part in resp.parts:
+                blob = getattr(part, "inline_data", None)
+                raw = getattr(blob, "data", None) if blob is not None else None
+                if raw:
+                    if isinstance(raw, str):
+                        raw = base64.b64decode(raw)
+                    try:
+                        im = Image.open(BytesIO(raw)).convert("RGB")
+                        out = BytesIO()
+                        im.save(out, format="PNG")
+                        return out.getvalue(), None
+                    except Exception:  # noqa: BLE001
+                        return raw, None
+            return None, "画像が返らず（セーフティ拒否 or プロンプト不備の可能性）"
+        except Exception as e:  # noqa: BLE001
+            last_err = str(e)
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))
+    return None, last_err
+
+
+# ----------------------------------------------------------------------
 # プロンプトCSV（CLI用。Webはテキスト欄から直接渡す）
 # ----------------------------------------------------------------------
 def load_prompts(path: str):

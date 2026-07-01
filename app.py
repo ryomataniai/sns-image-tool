@@ -76,11 +76,12 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: topic-fix-v2")
+    st.caption("build: maisoku-v1")
 
 st.title("🏠 SNS画像量産ツール")
 
-tab_single, tab_carousel = st.tabs(["🖼️ 単発画像量産", "📚 カルーセル自動生成"])
+tab_single, tab_carousel, tab_maisoku = st.tabs(
+    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観"])
 
 
 # ======================================================================
@@ -267,3 +268,73 @@ with tab_carousel:
                 st.image(data, use_container_width=True)
                 st.download_button("⬇️", data, name, "image/png",
                                    key=f"c_dl_{idx}", use_container_width=True)
+
+
+# ======================================================================
+# タブ3: マイソク／間取り図 → 内観シミュレーション（技術検証用）
+# ======================================================================
+with tab_maisoku:
+    st.caption("マイソク／間取り図をアップ → その間取りを参考にAIが内観イメージを生成します。"
+               "（建物外観・図面の線や文字は出さず、内観のみ）")
+
+    up = st.file_uploader("マイソク／間取り図（PNG・JPG）", type=["png", "jpg", "jpeg", "webp"],
+                          key="m_upload")
+
+    mc1, mc2, mc3 = st.columns(3)
+    style_name = mc1.selectbox("内観スタイル", list(core.INTERIOR_STYLES.keys()), key="m_style")
+    room = mc2.selectbox("主役の部屋", core.INTERIOR_ROOMS, key="m_room")
+    model = mc3.selectbox("モデル", core.MODELS, index=0, key="m_model",
+                          help="2.5-flash-imageが最安。品質重視ならNano Banana 2 (3.1) を試す")
+
+    mode = st.radio("生成モード", ["暮らしのイメージ（家具あり1枚）",
+                                   "ビフォーアフター（空室＋家具あり 2枚）"],
+                    horizontal=True, key="m_mode")
+
+    if up is not None:
+        st.image(up, caption="入力（間取り図）", width=280)
+
+    if st.button("🏠 内観を生成", type="primary", key="m_gen",
+                 disabled=(up is None), use_container_width=True):
+        try:
+            client = make_client()
+        except RuntimeError as e:
+            st.error(str(e)); st.stop()
+
+        img_bytes = up.getvalue()
+        mime = up.type or "image/png"
+        style_desc = core.INTERIOR_STYLES[style_name]
+        results = []  # (ラベル, bytes)
+
+        want = [("after", True)]
+        if mode.startswith("ビフォーアフター"):
+            want = [("before（空室）", False), ("after（家具あり）", True)]
+
+        prog = st.progress(0.0, text="内観を生成中…")
+        for i, (label, staged) in enumerate(want, 1):
+            prompt = core.build_interior_prompt(style_desc, room, staged=staged)
+            data, err = core.generate_from_image_bytes(
+                client, img_bytes, prompt, model=model,
+                aspect="4:5", size="1K", mime_type=mime)
+            if err:
+                st.error(f"{label} 生成失敗: {err}")
+            else:
+                results.append((label, data))
+            prog.progress(i / len(want), text=f"内観を生成中… {i}/{len(want)}")
+        prog.empty()
+
+        if results:
+            st.session_state.maisoku_results = results
+            st.success("内観イメージを生成しました。")
+
+    mres = st.session_state.get("maisoku_results")
+    if mres:
+        st.divider()
+        st.subheader("生成結果")
+        cols = st.columns(len(mres))
+        for idx, (label, data) in enumerate(mres):
+            with cols[idx]:
+                st.image(data, caption=label, use_container_width=True)
+                st.download_button("⬇️", data, f"interior_{idx+1}.png", "image/png",
+                                   key=f"m_dl_{idx}", use_container_width=True)
+        st.caption("※SNS投稿時は運用ルールに従い『※AI加工のイメージです』の注記を焼き込み、"
+                   "エリアは市区・駅ぼかしまで。")
