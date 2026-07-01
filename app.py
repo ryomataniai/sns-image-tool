@@ -76,12 +76,12 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: maisoku-v3 (ルームツアー)")
+    st.caption("build: stage-v1 (実写真ステージング)")
 
 st.title("🏠 SNS画像量産ツール")
 
-tab_single, tab_carousel, tab_maisoku = st.tabs(
-    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観"])
+tab_single, tab_carousel, tab_maisoku, tab_stage = st.tabs(
+    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観", "🛋 実写真ステージング"])
 
 
 # ======================================================================
@@ -402,3 +402,74 @@ with tab_maisoku:
                                    key=f"m_dl_{idx}", use_container_width=True)
         st.caption("※SNS投稿時は運用ルールに従い『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。")
+
+
+# ======================================================================
+# タブ4: 実写真ステージング（マイソクの実室内写真→高解像度化＋家具）
+# ======================================================================
+with tab_stage:
+    st.caption("マイソクの実際の室内写真を抽出 → 高解像度化＋（居室は）家具ステージング。"
+               "実物ベースなので図面生成より誇張が少なく安全。")
+
+    up2 = st.file_uploader("マイソク（PDF）または室内写真（PNG/JPG）",
+                           type=["pdf", "png", "jpg", "jpeg", "webp"], key="s_upload")
+
+    photos = []  # [(png_bytes, w, h), ...]
+    if up2 is not None:
+        raw2 = up2.getvalue()
+        if (up2.type == "application/pdf") or up2.name.lower().endswith(".pdf"):
+            try:
+                photos = core.extract_pdf_photos(raw2, min_px=250)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"PDFからの画像抽出に失敗: {e}")
+        else:
+            photos = [(raw2, 0, 0)]
+
+    if photos:
+        st.write(f"抽出した画像：{len(photos)}枚（番号を見て、処理する写真を選んでください）")
+        gcols = st.columns(6)
+        for i, (b, w, h) in enumerate(photos):
+            with gcols[i % 6]:
+                st.image(b, caption=f"#{i}", use_container_width=True)
+
+        idx = st.selectbox("処理する写真の番号", list(range(len(photos))), key="s_idx")
+        sc1, sc2, sc3 = st.columns(3)
+        treat = sc1.radio("処理", ["家具ステージング（居室向け）",
+                                   "高解像度化のみ（水回り向け）"], key="s_treat")
+        style_name2 = sc2.selectbox("スタイル（ステージング時）",
+                                    list(core.INTERIOR_STYLES.keys()), key="s_style")
+        model2 = sc3.selectbox("モデル", core.MODELS, index=0, key="s_model",
+                               help="品質重視ならNano Banana 2 (3.1) を試す")
+        aspect2 = st.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="s_aspect")
+
+        if st.button("🛋 生成", type="primary", key="s_gen", use_container_width=True):
+            try:
+                client = make_client()
+            except RuntimeError as e:
+                st.error(str(e)); st.stop()
+            src = photos[idx][0]
+            if treat.startswith("家具"):
+                prompt = core.build_staging_prompt(core.INTERIOR_STYLES[style_name2])
+            else:
+                prompt = core.build_enhance_prompt()
+            with st.spinner("生成中…"):
+                data, err = core.generate_from_images(
+                    client, [(src, "image/png")], prompt,
+                    model=model2, aspect=aspect2, size="2K", add_safety=False)
+            if err:
+                st.error(f"生成失敗: {err}")
+            else:
+                st.session_state.stage_result = (src, data)
+                st.success("生成しました。")
+
+    sr = st.session_state.get("stage_result")
+    if sr:
+        st.divider()
+        st.subheader("元写真 → 生成結果")
+        scc = st.columns(2)
+        scc[0].image(sr[0], caption="元（マイソクの実写真）", use_container_width=True)
+        scc[1].image(sr[1], caption="生成（高解像度化＋加工）", use_container_width=True)
+        st.download_button("⬇️ 生成画像をダウンロード", sr[1], "staged.png", "image/png",
+                           key="s_dl", use_container_width=True)
+        st.caption("※SNS投稿時は『※AI加工のイメージです』の注記を焼き込み、"
+                   "エリアは市区・駅ぼかしまで。設備・広さは実物基準を崩さないこと。")

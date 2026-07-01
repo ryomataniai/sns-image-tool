@@ -154,6 +154,59 @@ def pdf_page_to_png(pdf_bytes: bytes, page_index: int = 0, dpi: int = 150) -> by
         doc.close()
 
 
+def extract_pdf_photos(pdf_bytes: bytes, min_px: int = 250):
+    """PDF（マイソク）に埋め込まれたラスタ画像を抽出。
+    min(w,h) >= min_px のものを PNGバイト列で返す。
+    returns: list of (png_bytes, w, h)。"""
+    import fitz  # PyMuPDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out, seen = [], set()
+    try:
+        for pno in range(doc.page_count):
+            for im in doc.get_page_images(pno, full=True):
+                xref = im[0]
+                if xref in seen:
+                    continue
+                seen.add(xref)
+                d = doc.extract_image(xref)
+                w, h = d.get("width", 0), d.get("height", 0)
+                if min(w, h) >= min_px:
+                    try:
+                        img = Image.open(BytesIO(d["image"])).convert("RGB")
+                        buf = BytesIO()
+                        img.save(buf, format="PNG")
+                        out.append((buf.getvalue(), w, h))
+                    except Exception:  # noqa: BLE001
+                        pass
+    finally:
+        doc.close()
+    return out
+
+
+def build_staging_prompt(style_desc: str) -> str:
+    """実際の空室写真 → 家具ステージング（構造は維持）。"""
+    return (
+        "入力画像は賃貸物件の実際の室内写真（多くは空室）です。"
+        "この部屋の壁・窓・床・扉・広さ・構造・設備は一切変えずに維持したまま、"
+        "画像を高解像度・高精細に整え、"
+        f"{style_desc}の家具・小物を自然に配置して、生活感のある部屋にしてください。\n"
+        "【厳守】実際にない窓・眺望・設備を足さない。部屋を実際より広く見せない。"
+        "壁の色・間取り・設備のグレードを変えない。"
+        "画像内に文字・ロゴ・透かし・数字を一切入れない。"
+    )
+
+
+def build_enhance_prompt() -> str:
+    """実際の室内写真 → 内容を変えず高解像度化のみ（水回り向け）。"""
+    return (
+        "入力画像は賃貸物件の実際の室内写真です。"
+        "写っている内容（壁・窓・床・設備・物・広さ・構造）を一切変えず、"
+        "何も追加・削除せずに、圧縮ノイズや粗さだけを取り除いて"
+        "高解像度・高精細にきれいに整えてください。"
+        "家具や物を新たに足さない。画像内に文字・ロゴ・透かし・数字を入れない。"
+    )
+
+
 def pdf_page_count(pdf_bytes: bytes) -> int:
     import fitz
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
