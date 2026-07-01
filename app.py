@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v1 (実写真ステージング)")
+    st.caption("build: stage-v2 (キー重複修正)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -438,11 +438,11 @@ with tab_stage:
                                    "高解像度化のみ（水回り向け）"], key="s_treat")
         style_name2 = sc2.selectbox("スタイル（ステージング時）",
                                     list(core.INTERIOR_STYLES.keys()), key="s_style")
-        model2 = sc3.selectbox("モデル", core.MODELS, index=0, key="s_model",
+        model2 = sc3.selectbox("モデル", core.MODELS, index=0, key="stg_model",
                                help="品質重視ならNano Banana 2 (3.1) を試す")
-        aspect2 = st.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="s_aspect")
+        aspect2 = st.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
 
-        if st.button("🛋 生成", type="primary", key="s_gen", use_container_width=True):
+        if st.button("🛋 生成", type="primary", key="stg_gen", use_container_width=True):
             try:
                 client = make_client()
             except RuntimeError as e:
