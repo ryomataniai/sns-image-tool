@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v3 (複数選択・並行生成)")
+    st.caption("build: stage-v4 (ステージング注記焼込)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -462,6 +462,11 @@ with tab_stage:
                 data, err = core.generate_from_images(
                     client, [(src, "image/png")], pr,
                     model=model2, aspect=aspect2, size="2K", add_safety=False)
+                if not err and t == "家具ステージング":  # ステージングのみ注記を焼き込む
+                    try:
+                        data = core.add_disclaimer(data)
+                    except Exception:  # noqa: BLE001
+                        pass
                 return (i, t, data, err)
 
             results, done = [], 0

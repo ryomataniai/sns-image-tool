@@ -183,6 +183,44 @@ def extract_pdf_photos(pdf_bytes: bytes, min_px: int = 250):
     return out
 
 
+def _disclaimer_font(size: int):
+    """注記用の日本語フォント（carouselのfind_jp_fontを遅延参照）。"""
+    p = None
+    try:
+        import carousel  # 遅延import（循環回避）
+        p = carousel.find_jp_font()
+    except Exception:  # noqa: BLE001
+        p = None
+    from PIL import ImageFont
+    if p:
+        try:
+            return ImageFont.truetype(p, size)
+        except Exception:  # noqa: BLE001
+            pass
+    return ImageFont.load_default()
+
+
+def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -> bytes:
+    """生成画像の下部に注記帯（半透明黒＋白文字）を焼き込む。"""
+    from PIL import Image, ImageDraw
+    img = Image.open(BytesIO(png_bytes)).convert("RGB")
+    W, H = img.size
+    draw = ImageDraw.Draw(img, "RGBA")
+    fs = max(20, W // 38)
+    font = _disclaimer_font(fs)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    th = bbox[3] - bbox[1]
+    pad = max(8, fs // 2)
+    band_h = th + pad * 2
+    draw.rectangle([0, H - band_h, W, H], fill=(0, 0, 0, 120))
+    draw.text((pad, H - band_h + pad - bbox[1]), text, font=font,
+              fill=(255, 255, 255, 255),
+              stroke_width=max(1, fs // 12), stroke_fill=(0, 0, 0, 255))
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
 def build_staging_prompt(style_desc: str) -> str:
     """実際の空室写真 → 家具ステージング（構造は維持）。"""
     return (
