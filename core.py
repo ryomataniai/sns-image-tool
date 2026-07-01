@@ -142,6 +142,27 @@ def generate_image_bytes(client, prompt, model=DEFAULT_MODEL,
 # ----------------------------------------------------------------------
 # 画像入力（マイソク／間取り図 → 内観シミュレーション）
 # ----------------------------------------------------------------------
+def pdf_page_to_png(pdf_bytes: bytes, page_index: int = 0, dpi: int = 150) -> bytes:
+    """PDF（マイソク）の指定ページをPNGバイト列に変換。PyMuPDF使用。"""
+    import fitz  # PyMuPDF
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        idx = max(0, min(page_index, doc.page_count - 1))
+        pix = doc[idx].get_pixmap(dpi=dpi)
+        return pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+def pdf_page_count(pdf_bytes: bytes) -> int:
+    import fitz
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
 def _image_part(image_bytes: bytes, mime_type: str = "image/png"):
     """アップロード画像を Gemini contents 用の Part に変換（SDK差を吸収）。"""
     from google.genai import types

@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: maisoku-v1")
+    st.caption("build: maisoku-v2 (PDF対応)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -277,8 +277,27 @@ with tab_maisoku:
     st.caption("マイソク／間取り図をアップ → その間取りを参考にAIが内観イメージを生成します。"
                "（建物外観・図面の線や文字は出さず、内観のみ）")
 
-    up = st.file_uploader("マイソク／間取り図（PNG・JPG）", type=["png", "jpg", "jpeg", "webp"],
-                          key="m_upload")
+    up = st.file_uploader("マイソク／間取り図（PNG・JPG・PDF）",
+                          type=["png", "jpg", "jpeg", "webp", "pdf"], key="m_upload")
+
+    # PDFは指定ページを画像化してから使う
+    input_png = None
+    if up is not None:
+        raw = up.getvalue()
+        is_pdf = (up.type == "application/pdf") or up.name.lower().endswith(".pdf")
+        if is_pdf:
+            try:
+                n_pages = core.pdf_page_count(raw)
+                page = 1
+                if n_pages > 1:
+                    page = st.number_input(
+                        f"PDFページ（全{n_pages}ページ・間取り図のあるページを選択）",
+                        min_value=1, max_value=n_pages, value=1, step=1, key="m_pdf_page")
+                input_png = core.pdf_page_to_png(raw, page_index=int(page) - 1, dpi=150)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"PDF変換に失敗: {e}")
+        else:
+            input_png = raw
 
     mc1, mc2, mc3 = st.columns(3)
     style_name = mc1.selectbox("内観スタイル", list(core.INTERIOR_STYLES.keys()), key="m_style")
@@ -290,18 +309,18 @@ with tab_maisoku:
                                    "ビフォーアフター（空室＋家具あり 2枚）"],
                     horizontal=True, key="m_mode")
 
-    if up is not None:
-        st.image(up, caption="入力（間取り図）", width=280)
+    if input_png is not None:
+        st.image(input_png, caption="入力（この画像を参考に生成）", width=280)
 
     if st.button("🏠 内観を生成", type="primary", key="m_gen",
-                 disabled=(up is None), use_container_width=True):
+                 disabled=(input_png is None), use_container_width=True):
         try:
             client = make_client()
         except RuntimeError as e:
             st.error(str(e)); st.stop()
 
-        img_bytes = up.getvalue()
-        mime = up.type or "image/png"
+        img_bytes = input_png
+        mime = "image/png"
         style_desc = core.INTERIOR_STYLES[style_name]
         results = []  # (ラベル, bytes)
 
