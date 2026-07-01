@@ -76,6 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
+    st.caption("build: topic-fix-v2")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -198,11 +199,9 @@ with tab_carousel:
             client = make_client()
             with st.spinner("コピーを生成中…"):
                 st.session_state.spec = carousel.generate_carousel_copy(client, topic, n_body)
-            # 新トピックを確実に反映：編集ウィジェットの古い値(固定キー)をクリアして
-            # 新specから再初期化させる（これが無いと2回目以降は前トピックが焼かれる）
-            for _k in list(st.session_state.keys()):
-                if _k in ("e_ch", "e_cs", "e_cta") or _k.startswith(("e_t", "e_b")):
-                    del st.session_state[_k]
+            # 新トピックを確実に反映：生成のたびに編集ウィジェットのキーを変える(nonce方式)。
+            # 固定キーだと2回目以降にStreamlitが前回値を保持し、前トピックが焼かれてしまう。
+            st.session_state.gen_nonce = st.session_state.get("gen_nonce", 0) + 1
             st.session_state.pop("carousel_imgs", None)  # 旧トピックの完成画像も破棄
             st.success("構成を生成しました。下で文言を確認・編集できます。")
         except Exception as e:  # noqa: BLE001
@@ -212,13 +211,14 @@ with tab_carousel:
     if spec:
         st.divider()
         st.subheader("✏️ 文言の確認・編集")
-        spec["cover_headline"] = st.text_input("表紙：見出し", spec["cover_headline"], key="e_ch")
-        spec["cover_sub"] = st.text_input("表紙：サブ", spec["cover_sub"], key="e_cs")
+        _n = st.session_state.get("gen_nonce", 0)  # 生成ごとに変わる→ウィジェット再初期化
+        spec["cover_headline"] = st.text_input("表紙：見出し", spec["cover_headline"], key=f"e_ch_{_n}")
+        spec["cover_sub"] = st.text_input("表紙：サブ", spec["cover_sub"], key=f"e_cs_{_n}")
         for i, s in enumerate(spec["slides"]):
             with st.expander(f"本文 {i+1}：{s['title']}", expanded=False):
-                s["title"] = st.text_input("見出し", s["title"], key=f"e_t{i}")
-                s["body"] = st.text_area("本文", s["body"], key=f"e_b{i}", height=80)
-        spec["cta_text"] = st.text_input("CTA：誘導文", spec["cta_text"], key="e_cta")
+                s["title"] = st.text_input("見出し", s["title"], key=f"e_t{i}_{_n}")
+                s["body"] = st.text_area("本文", s["body"], key=f"e_b{i}_{_n}", height=80)
+        spec["cta_text"] = st.text_input("CTA：誘導文", spec["cta_text"], key=f"e_cta_{_n}")
 
         # 投稿キャプション＋ハッシュタグ（Business Suiteへコピペ用）
         if spec.get("caption") or spec.get("hashtags"):
