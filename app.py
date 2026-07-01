@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v6 (リビング/寝室 用途指定)")
+    st.caption("build: stage-v7 (用途AI推測→人が確認)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -433,9 +433,30 @@ with tab_stage:
                                help="品質重視ならNano Banana 2 (3.1) を試す")
         aspect2 = gc3.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
 
-        st.write("各写真の処理を選択（大きい洋室→リビング／小さい洋室→寝室／水回り→高解像度化のみ／不要→使わない）")
         TREAT = ["使わない", "リビングとしてステージング", "寝室としてステージング",
                  "おまかせステージング", "高解像度化のみ"]
+
+        # アップロード内容が変わったら、AIで各写真の用途を推測して初期選択に反映
+        import hashlib as _hashlib
+        sig = _hashlib.md5(
+            b"".join(p[0][:4000] for p in photos) + str(len(photos)).encode()
+        ).hexdigest()
+        if st.session_state.get("stg_sig") != sig:
+            suggestions = ["おまかせステージング"] * len(photos)
+            try:
+                with st.spinner("AIが各写真の用途（リビング/寝室/水回り）を推測中…"):
+                    _c = make_client()
+                    suggestions = core.classify_rooms(_c, [p[0] for p in photos])
+            except Exception:  # noqa: BLE001
+                pass
+            for k in [k for k in st.session_state.keys() if k.startswith("stg_treat_")]:
+                del st.session_state[k]
+            for i, s in enumerate(suggestions):
+                st.session_state[f"stg_treat_{i}"] = s if s in TREAT else "おまかせステージング"
+            st.session_state["stg_sig"] = sig
+
+        st.write("各写真の処理（AIの推測を初期選択にしています。違う場合は選び直してください）"
+                 "／大きい洋室→リビング・小さい洋室→寝室・水回り→高解像度化のみ・不要→使わない")
         gcols = st.columns(4)
         for i, (b, w, h) in enumerate(photos):
             with gcols[i % 4]:

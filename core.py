@@ -261,6 +261,51 @@ def build_enhance_prompt() -> str:
     )
 
 
+def classify_rooms(client, images, model="gemini-2.5-flash"):
+    """複数の室内写真をまとめて相対判定し、各写真の推奨処理ラベルを返す。
+
+    洋室が複数ある場合、最も広く見えるものをリビング、狭いものを寝室に割り当てる。
+    返り値: 各写真の推奨ラベル（app.py の TREAT と一致）のリスト。
+    """
+    import json as _json
+    n = len(images)
+    default = ["おまかせステージング"] * n
+    if n == 0:
+        return default
+    try:
+        parts = [_image_part(b, "image/png") for b in images]
+        instruction = (
+            f"以下は賃貸物件の室内写真{n}枚です（先頭から順に0〜{n-1}）。"
+            "各写真の部屋種別を判定してください。"
+            "居室（洋室・和室）が複数ある場合、最も広く見える居室をLIVING、"
+            "それより狭い居室をBEDROOMとしてください。"
+            "浴室・洗面・トイレ・キッチンなどの水回りはWATER、"
+            "玄関・廊下・バルコニーや判断がつかないものはOTHERとしてください。"
+            f"出力はJSON配列のみ・長さ{n}。"
+            '例: ["LIVING","BEDROOM","WATER"]。説明文は書かないこと。'
+        )
+        resp = client.models.generate_content(
+            model=model, contents=parts + [instruction]
+        )
+        text = (getattr(resp, "text", "") or "").strip()
+        m = re.search(r"\[.*\]", text, re.S)
+        arr = _json.loads(m.group(0)) if m else []
+    except Exception:  # noqa: BLE001
+        return default
+
+    mapping = {
+        "LIVING": "リビングとしてステージング",
+        "BEDROOM": "寝室としてステージング",
+        "WATER": "高解像度化のみ",
+        "OTHER": "おまかせステージング",
+    }
+    out = []
+    for i in range(n):
+        key = arr[i].upper() if i < len(arr) and isinstance(arr[i], str) else "OTHER"
+        out.append(mapping.get(key, "おまかせステージング"))
+    return out
+
+
 def pdf_page_count(pdf_bytes: bytes) -> int:
     import fitz
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
