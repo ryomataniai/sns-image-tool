@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v5 (テイスト3種追加)")
+    st.caption("build: stage-v6 (リビング/寝室 用途指定)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -433,8 +433,9 @@ with tab_stage:
                                help="品質重視ならNano Banana 2 (3.1) を試す")
         aspect2 = gc3.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
 
-        st.write("各写真の処理を選択（居室＝家具ステージング／水回り＝高解像度化のみ／不要＝使わない）")
-        TREAT = ["使わない", "家具ステージング", "高解像度化のみ"]
+        st.write("各写真の処理を選択（大きい洋室→リビング／小さい洋室→寝室／水回り→高解像度化のみ／不要→使わない）")
+        TREAT = ["使わない", "リビングとしてステージング", "寝室としてステージング",
+                 "おまかせステージング", "高解像度化のみ"]
         gcols = st.columns(4)
         for i, (b, w, h) in enumerate(photos):
             with gcols[i % 4]:
@@ -454,15 +455,20 @@ with tab_stage:
             import concurrent.futures as _cf
             style_desc = core.INTERIOR_STYLES[style_name2]
 
+            ROOM_USE = {"リビングとしてステージング": "リビング",
+                        "寝室としてステージング": "寝室",
+                        "おまかせステージング": ""}
+
             def _run(job):
                 i, t = job
                 src = photos[i][0]
-                pr = (core.build_staging_prompt(style_desc)
-                      if t == "家具ステージング" else core.build_enhance_prompt())
+                is_stage = t in ROOM_USE
+                pr = (core.build_staging_prompt(style_desc, ROOM_USE[t])
+                      if is_stage else core.build_enhance_prompt())
                 data, err = core.generate_from_images(
                     client, [(src, "image/png")], pr,
                     model=model2, aspect=aspect2, size="2K", add_safety=False)
-                if not err and t == "家具ステージング":  # ステージングのみ注記を焼き込む
+                if not err and is_stage:  # ステージングのみ注記を焼き込む
                     try:
                         data = core.add_disclaimer(data)
                     except Exception:  # noqa: BLE001
