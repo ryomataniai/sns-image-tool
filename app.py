@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v2 (キー重複修正)")
+    st.caption("build: stage-v3 (複数選択・並行生成)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -412,7 +412,7 @@ with tab_stage:
                "実物ベースなので図面生成より誇張が少なく安全。")
 
     up2 = st.file_uploader("マイソク（PDF）または室内写真（PNG/JPG）",
-                           type=["pdf", "png", "jpg", "jpeg", "webp"], key="s_upload")
+                           type=["pdf", "png", "jpg", "jpeg", "webp"], key="stg_upload")
 
     photos = []  # [(png_bytes, w, h), ...]
     if up2 is not None:
@@ -426,50 +426,78 @@ with tab_stage:
             photos = [(raw2, 0, 0)]
 
     if photos:
-        st.write(f"抽出した画像：{len(photos)}枚（番号を見て、処理する写真を選んでください）")
-        gcols = st.columns(6)
-        for i, (b, w, h) in enumerate(photos):
-            with gcols[i % 6]:
-                st.image(b, caption=f"#{i}", use_container_width=True)
-
-        idx = st.selectbox("処理する写真の番号", list(range(len(photos))), key="s_idx")
-        sc1, sc2, sc3 = st.columns(3)
-        treat = sc1.radio("処理", ["家具ステージング（居室向け）",
-                                   "高解像度化のみ（水回り向け）"], key="s_treat")
-        style_name2 = sc2.selectbox("スタイル（ステージング時）",
-                                    list(core.INTERIOR_STYLES.keys()), key="s_style")
-        model2 = sc3.selectbox("モデル", core.MODELS, index=0, key="stg_model",
+        gc1, gc2, gc3 = st.columns(3)
+        style_name2 = gc1.selectbox("スタイル（ステージング時）",
+                                    list(core.INTERIOR_STYLES.keys()), key="stg_style")
+        model2 = gc2.selectbox("モデル", core.MODELS, index=0, key="stg_model",
                                help="品質重視ならNano Banana 2 (3.1) を試す")
-        aspect2 = st.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
+        aspect2 = gc3.radio("出力比率", ["4:5", "1:1", "3:4"], horizontal=True, key="stg_aspect")
 
-        if st.button("🛋 生成", type="primary", key="stg_gen", use_container_width=True):
+        st.write("各写真の処理を選択（居室＝家具ステージング／水回り＝高解像度化のみ／不要＝使わない）")
+        TREAT = ["使わない", "家具ステージング", "高解像度化のみ"]
+        gcols = st.columns(4)
+        for i, (b, w, h) in enumerate(photos):
+            with gcols[i % 4]:
+                st.image(b, use_container_width=True)
+                st.selectbox(f"#{i}", TREAT, key=f"stg_treat_{i}")
+
+        jobs = [(i, st.session_state.get(f"stg_treat_{i}", "使わない"))
+                for i in range(len(photos))]
+        jobs = [(i, t) for i, t in jobs if t != "使わない"]
+
+        if st.button(f"🛋 選択した{len(jobs)}枚を一括生成（並行）", type="primary",
+                     disabled=(len(jobs) == 0), key="stg_gen", use_container_width=True):
             try:
                 client = make_client()
             except RuntimeError as e:
                 st.error(str(e)); st.stop()
-            src = photos[idx][0]
-            if treat.startswith("家具"):
-                prompt = core.build_staging_prompt(core.INTERIOR_STYLES[style_name2])
-            else:
-                prompt = core.build_enhance_prompt()
-            with st.spinner("生成中…"):
-                data, err = core.generate_from_images(
-                    client, [(src, "image/png")], prompt,
-                    model=model2, aspect=aspect2, size="2K", add_safety=False)
-            if err:
-                st.error(f"生成失敗: {err}")
-            else:
-                st.session_state.stage_result = (src, data)
-                st.success("生成しました。")
+            import concurrent.futures as _cf
+            style_desc = core.INTERIOR_STYLES[style_name2]
 
-    sr = st.session_state.get("stage_result")
-    if sr:
+            def _run(job):
+                i, t = job
+                src = photos[i][0]
+                pr = (core.build_staging_prompt(style_desc)
+                      if t == "家具ステージング" else core.build_enhance_prompt())
+                data, err = core.generate_from_images(
+                    client, [(src, "image/png")], pr,
+                    model=model2, aspect=aspect2, size="2K", add_safety=False)
+                return (i, t, data, err)
+
+            results, done = [], 0
+            prog = st.progress(0.0, text=f"並行生成中… 0/{len(jobs)}")
+            with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+                futs = [ex.submit(_run, j) for j in jobs]
+                for fut in _cf.as_completed(futs):
+                    i, t, data, err = fut.result()
+                    done += 1
+                    if err:
+                        st.error(f"#{i} 生成失敗: {err}")
+                    else:
+                        results.append((i, f"#{i} {t}", data))
+                    prog.progress(done / len(jobs), text=f"並行生成中… {done}/{len(jobs)}")
+            prog.empty()
+            if results:
+                results.sort(key=lambda r: r[0])
+                st.session_state.stage_results = [(lbl, d) for _, lbl, d in results]
+                st.success(f"{len(results)}枚 生成しました。")
+
+    sres = st.session_state.get("stage_results")
+    if sres:
         st.divider()
-        st.subheader("元写真 → 生成結果")
-        scc = st.columns(2)
-        scc[0].image(sr[0], caption="元（マイソクの実写真）", use_container_width=True)
-        scc[1].image(sr[1], caption="生成（高解像度化＋加工）", use_container_width=True)
-        st.download_button("⬇️ 生成画像をダウンロード", sr[1], "staged.png", "image/png",
-                           key="s_dl", use_container_width=True)
+        st.subheader(f"生成結果（{len(sres)}枚）")
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i, (label, data) in enumerate(sres, 1):
+                zf.writestr(f"{i:02d}_{label.replace(' ', '_')}.png", data)
+        st.download_button("⬇️ まとめてZIPでダウンロード", zbuf.getvalue(),
+                           "staged_set.zip", "application/zip",
+                           use_container_width=True, key="stg_zip")
+        cols = st.columns(3)
+        for idx, (label, data) in enumerate(sres):
+            with cols[idx % 3]:
+                st.image(data, caption=label, use_container_width=True)
+                st.download_button("⬇️", data, f"{idx+1:02d}_{label.replace(' ', '_')}.png",
+                                   "image/png", key=f"stg_dl_{idx}", use_container_width=True)
         st.caption("※SNS投稿時は『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。設備・広さは実物基準を崩さないこと。")
