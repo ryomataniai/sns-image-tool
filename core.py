@@ -263,6 +263,17 @@ def build_enhance_prompt() -> str:
     )
 
 
+def is_blank_image(image_bytes, std_threshold: float = 10.0) -> bool:
+    """ほぼ白紙・単色（＝意味のない画像）かどうかをローカルで判定する。"""
+    try:
+        from PIL import Image, ImageStat
+        im = Image.open(BytesIO(image_bytes)).convert("L")
+        im.thumbnail((200, 200))
+        return ImageStat.Stat(im).stddev[0] < std_threshold
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def classify_rooms(client, images, model="gemini-2.5-flash"):
     """複数の室内写真をまとめて相対判定し、各写真の推奨処理ラベルを返す。
 
@@ -282,9 +293,11 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
             "居室（洋室・和室）が複数ある場合、最も広く見える居室をLIVING、"
             "それより狭い居室をBEDROOMとしてください。"
             "キッチンはKITCHEN、玄関はENTRANCE、浴室・洗面・トイレはWATER、"
-            "廊下・バルコニーや判断がつかないものはOTHERとしてください。"
+            "廊下・バルコニーなど室内だが用途不明なものはOTHER、"
+            "白紙・ロゴ・地図・間取り図・建物外観・文字だけの画像など、"
+            "室内写真でないもの・判断がつかないものはSKIPとしてください。"
             f"出力はJSON配列のみ・長さ{n}。"
-            '例: ["LIVING","BEDROOM","KITCHEN","ENTRANCE","WATER"]。説明文は書かないこと。'
+            '例: ["LIVING","BEDROOM","KITCHEN","WATER","SKIP"]。説明文は書かないこと。'
         )
         resp = client.models.generate_content(
             model=model, contents=parts + [instruction]
@@ -302,6 +315,7 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
         "ENTRANCE": "水回り・玄関を演出",
         "WATER": "高解像度化のみ",
         "OTHER": "おまかせステージング",
+        "SKIP": "使わない",
     }
     out = []
     for i in range(n):

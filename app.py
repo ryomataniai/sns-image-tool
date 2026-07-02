@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v11 (ルームツアー参照写真→未撮影部屋も生成)")
+    st.caption("build: stage-v12 (白紙/不要画像を自動で使わないに)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -480,17 +480,24 @@ with tab_stage:
             + str(len(photos)).encode() + stg_mode.encode()
         ).hexdigest()
         if st.session_state.get("stg_sig") != sig:
-            if reno_mode:
-                # リノベは全カットを対象に（不要なものだけ後で外す）
-                suggestions = [default_treat] * len(photos)
-            else:
-                suggestions = [default_treat] * len(photos)
-                try:
-                    with st.spinner("AIが各写真の用途（リビング/寝室/水回り）を推測中…"):
-                        _c = make_client()
-                        suggestions = core.classify_rooms(_c, [p[0] for p in photos])
-                except Exception:  # noqa: BLE001
-                    pass
+            imgs_bytes = [p[0] for p in photos]
+            blanks = [core.is_blank_image(b) for b in imgs_bytes]
+            ai = ["おまかせステージング"] * len(photos)
+            try:
+                with st.spinner("AIが各写真を判定中"
+                                "（白紙・ロゴ・地図など不要な画像は自動で『使わない』に）…"):
+                    _c = make_client()
+                    ai = core.classify_rooms(_c, imgs_bytes)
+            except Exception:  # noqa: BLE001
+                pass
+            suggestions = []
+            for i in range(len(photos)):
+                if blanks[i] or ai[i] == "使わない":      # 白紙 or SKIP判定
+                    suggestions.append("使わない")
+                elif reno_mode:
+                    suggestions.append("リノベ後イメージにする")
+                else:
+                    suggestions.append(ai[i] if ai[i] in TREAT else "おまかせステージング")
             for k in [k for k in st.session_state.keys() if k.startswith("stg_treat_")]:
                 del st.session_state[k]
             for i, s in enumerate(suggestions):
