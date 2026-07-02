@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v18 (外観除外強化・天井アーティファクト対策・収納廊下トグル)")
+    st.caption("build: stage-v19 (洗面所の防水パンに洗濯機を演出)")
 
 st.title("🏠 SNS画像量産ツール")
 
