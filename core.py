@@ -505,6 +505,22 @@ def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
     )
 
 
+def build_3d_perspective_prompt(style_desc: str = "", user_request: str = "") -> str:
+    """間取り図 → 斜め上から見下ろす3Dドールハウス風の俯瞰パース（試験）。"""
+    return (
+        "1枚目の画像は賃貸／中古物件の間取り図（マイソク）です。"
+        "この間取りを基に、屋根と手前側の壁を取り払って斜め上から見下ろした"
+        "『3Dドールハウス風の俯瞰パース』を、フォトリアルに1枚生成してください。\n"
+        "- 各部屋に家具・小物を配置し、間取りの部屋配置・広さ・動線が一目で分かるようにする。\n"
+        f"- インテリアは{style_desc}。住戸全体で統一感を持たせる。\n"
+        "- 自然な陰影と採光で立体感を出す。"
+        f"{_request_line(user_request)}\n"
+        "【厳守】間取り図の線・寸法・文字・平面図そのものは出さない。3Dの立体パースにする。"
+        "実在しない広さ・階数・設備を誇張しない。"
+        "画像内に文字・ロゴ・透かし・数字を一切入れない。"
+    )
+
+
 def generate_from_images(client, images, prompt, model=DEFAULT_MODEL,
                          aspect="4:5", size="1K", retries=1, add_safety=True):
     """複数の入力画像 [(bytes, mime), ...] ＋プロンプト → PNGバイト列。

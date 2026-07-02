@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v13 (参照写真をマイソクから自動取得)")
+    st.caption("build: stage-v14 (3Dパース試験モードを追加)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -306,7 +306,8 @@ with tab_maisoku:
 
     mode = st.radio("生成モード", ["暮らしのイメージ（家具あり1枚）",
                                    "ビフォーアフター（空室＋家具あり 2枚）",
-                                   "ルームツアー（複数カット）"],
+                                   "ルームツアー（複数カット）",
+                                   "3Dパース（間取り俯瞰イメージ・試験）"],
                     key="m_mode")
 
     # モード別オプション
@@ -391,6 +392,18 @@ with tab_maisoku:
                         anchor = data
                         anchor_mime = "image/png"
                 prog.progress(i / len(sel), text=f"生成中… {i}/{len(sel)}（{r}）")
+            prog.empty()
+        elif mode.startswith("3Dパース"):
+            prog = st.progress(0.0, text="3Dパースを生成中…")
+            prompt = core.build_3d_perspective_prompt(style_desc, user_request=m_request)
+            data, err = core.generate_from_image_bytes(
+                client, img_bytes, prompt, model=model,
+                aspect="4:5", size="1K", mime_type=mime)
+            if err:
+                st.error(f"3Dパース生成失敗: {err}")
+            else:
+                results.append(("3Dパース", data))
+            prog.progress(1.0)
             prog.empty()
         else:
             want = [("after", True)]
