@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v19 (洗面所の防水パンに洗濯機を演出)")
+    st.caption("build: stage-v20 (実写真ルームツアーにリノベ後の仕上げ切替を追加)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -316,9 +316,15 @@ with tab_maisoku:
     rooms, keep_style, ref_photo = [], True, None
     gap_rooms = []
     if mode.startswith("マイソク丸ごと"):
-        st.caption("マイソク内の実際の室内写真を土台に家具ステージングします。"
+        st.caption("マイソク内の実際の室内写真を土台に演出します。"
                    "実物ベースなので間取りと乖離しません。写真の無い部屋だけ、実写真のトーンに"
                    "合わせて生成で補います（間取り図も自動抽出して整合を取ります）。")
+        st.radio("仕上げ",
+                 ["賃貸（現況のまま家具だけ）", "リノベ後（フル刷新の完成イメージ）"],
+                 horizontal=True, key="m_finish",
+                 help="賃貸＝壁・床・設備を変えず家具・小物だけ足す（優良誤認回避）。"
+                      "リノベ後＝床・壁・天井・照明・水回りまで刷新した完成イメージ"
+                      "（事業B＝中古購入＋リノベ提案向け）。")
         gap_rooms = st.multiselect(
             "写真が無い部屋で生成して補うもの", ["玄関", "トイレ", "洗面所", "浴室", "バルコニー"],
             default=["トイレ"], key="m_gap",
@@ -403,21 +409,30 @@ with tab_maisoku:
                 if st.session_state.get("m_include_fp") and floor_plan is not None:
                     results.append(("間取り図", floor_plan))
                 if total > 0:
+                    _reno_c = st.session_state.get("m_finish", "").startswith("リノベ")
                     st.caption(
-                        f"実写真 {len(real)}枚をステージング＋写真の無い部屋 {len(gaps)}件を生成します。"
+                        f"実写真 {len(real)}枚を"
+                        + ("リノベ後イメージに変換" if _reno_c else "ステージング")
+                        + f"＋写真の無い部屋 {len(gaps)}件を生成します。"
                         + ("間取り図も1カットとして添付します。" if (
                             st.session_state.get("m_include_fp") and floor_plan is not None)
                            else ""))
-                    prog = st.progress(0.0, text="実写真をステージング中…")
+                    reno = st.session_state.get("m_finish", "").startswith("リノベ")
+                    suffix = "リノベ" if reno else "実写真"
+                    prog = st.progress(0.0, text=(
+                        "実写真をリノベ後イメージに変換中…" if reno else "実写真をステージング中…"))
                     done = 0
                     seen = {}
-                    # ① 実写真を構造維持で演出（実物ベース＝間取りと乖離しない）
+                    # ① 実写真を土台に演出（賃貸＝構造維持で家具のみ／リノベ＝フル刷新の完成イメージ）
                     for it in real:
                         lbl = it["label"]
                         seen[lbl] = seen.get(lbl, 0) + 1
                         disp = lbl if seen[lbl] == 1 else f"{lbl}{seen[lbl]}"
                         tr = it["treatment"]
-                        if tr == "staging_living":
+                        if reno:
+                            # リノベ後：床・壁・天井・照明・水回りまで刷新した完成イメージ
+                            p = core.build_renovation_prompt(style_desc, m_request)
+                        elif tr == "staging_living":
                             p = core.build_staging_prompt(style_desc, "リビング", m_request)
                         elif tr == "staging_bedroom":
                             p = core.build_staging_prompt(style_desc, "寝室", m_request)
@@ -430,9 +445,9 @@ with tab_maisoku:
                         data, err = core.generate_from_image_bytes(
                             client, it["bytes"], p, model=model, aspect="4:5", size="1K")
                         if err:
-                            st.error(f"{disp}（実写真）生成失敗: {err}")
+                            st.error(f"{disp}（{suffix}）生成失敗: {err}")
                         else:
-                            results.append((f"{disp}（実写真）", data))
+                            results.append((f"{disp}（{suffix}）", data))
                         done += 1
                         prog.progress(done / total, text=f"生成中… {done}/{total}")
                     # ② 写真の無い部屋を、実写真のトーンに合わせて生成（間取り図を土台に）
