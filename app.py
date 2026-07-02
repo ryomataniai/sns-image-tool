@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v14 (3Dパース試験モードを追加)")
+    st.caption("build: stage-v15 (部屋タイプ別家具ルール＋3Dパースを全体アンカー化)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -319,6 +319,13 @@ with tab_maisoku:
             default=["玄関", "LDK", "洋室", "浴室", "トイレ"], key="m_rooms")
         keep_style = st.checkbox("トーンを揃える（参照写真、なければ最初のカットを基準に統一）",
                                  value=True, key="m_keepstyle")
+        if st.session_state.get("maisoku_perspective") is not None:
+            st.checkbox(
+                "生成済みの3Dパースを全体の配色アンカーに使う（一貫性重視・推奨）",
+                value=True, key="m_persp_anchor",
+                help="先に生成した3Dパースには住戸全体の配色・素材が1枚に入っています。"
+                     "これを各部屋の基準にすると部屋間の統一感が上がります。"
+                     "手動で参照写真をアップした場合はそちらが優先されます。")
         ref_photo = st.file_uploader(
             "雰囲気の参照写真（任意・未指定ならマイソク内の写真を自動使用）",
             type=["png", "jpg", "jpeg", "webp"], key="m_refphoto",
@@ -354,7 +361,12 @@ with tab_maisoku:
         if mode.startswith("ルームツアー"):
             ref_bytes = ref_photo.getvalue() if ref_photo is not None else None
             ref_mime = (ref_photo.type or "image/png") if ref_photo is not None else "image/png"
-            # 手動指定がなければ、マイソク（PDF）内の室内写真を参照トーンに自動使用
+            # 優先順位: ①手動アップの参照写真 → ②生成済み3Dパース → ③マイソク内写真の自動抽出 → ④最初のカット
+            if ref_bytes is None and st.session_state.get("m_persp_anchor") \
+                    and st.session_state.get("maisoku_perspective") is not None:
+                ref_bytes, ref_mime = st.session_state["maisoku_perspective"], "image/png"
+                st.caption("※生成済みの3Dパースを全体の配色アンカーに使用しています。")
+            # 手動指定も3Dパースもなければ、マイソク（PDF）内の室内写真を参照トーンに自動使用
             if ref_bytes is None and up is not None:
                 _raw = up.getvalue()
                 _is_pdf = (up.type == "application/pdf") or up.name.lower().endswith(".pdf")
@@ -403,6 +415,10 @@ with tab_maisoku:
                 st.error(f"3Dパース生成失敗: {err}")
             else:
                 results.append(("3Dパース", data))
+                # ルームツアーの全体配色アンカーとして再利用できるよう保存
+                st.session_state.maisoku_perspective = data
+                st.caption("※この3Dパースは、次にルームツアーを生成する際の"
+                           "『全体の配色アンカー』として自動で使えます。")
             prog.progress(1.0)
             prog.empty()
         else:
