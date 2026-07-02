@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v16 (マイソク丸ごと→実写真ルームツアー・実写真ベース)")
+    st.caption("build: stage-v17 (実写真ルームツアーに間取り図カットを追加)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -324,6 +324,10 @@ with tab_maisoku:
             default=["トイレ"], key="m_gap",
             help="マイソクに写真が無い部屋だけをここから生成します。"
                  "実写真がある部屋は自動で除外されるので、重複はしません。")
+        st.checkbox("間取り図もカットに含める（SNSツアー用・抽出した実物をそのまま添付）",
+                    value=True, key="m_include_fp",
+                    help="マイソクから抽出した間取り図を、ツアーの1カットとして出力に含めます。"
+                         "生成AIは通さず実物をそのまま使うので正確です。")
     elif mode.startswith("ルームツアー"):
         rooms = st.multiselect(
             "生成する部屋（カット）", list(core.ROOM_TOUR_PRESETS.keys()),
@@ -388,10 +392,15 @@ with tab_maisoku:
                     st.error("マイソクから使える室内写真が抽出できませんでした。"
                              "画像主体のマイソクか、別ページをお試しください。")
                 total = len(real) + len(gaps)
+                # 間取り図をカットに含める（生成AIを通さず実物をそのまま添付）
+                if st.session_state.get("m_include_fp") and floor_plan is not None:
+                    results.append(("間取り図", floor_plan))
                 if total > 0:
                     st.caption(
                         f"実写真 {len(real)}枚をステージング＋写真の無い部屋 {len(gaps)}件を生成します。"
-                        + ("間取り図も抽出済み。" if floor_plan is not None else ""))
+                        + ("間取り図も1カットとして添付します。" if (
+                            st.session_state.get("m_include_fp") and floor_plan is not None)
+                           else ""))
                     prog = st.progress(0.0, text="実写真をステージング中…")
                     done = 0
                     seen = {}
