@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v17 (実写真ルームツアーに間取り図カットを追加)")
+    st.caption("build: stage-v18 (外観除外強化・天井アーティファクト対策・収納廊下トグル)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -328,6 +328,10 @@ with tab_maisoku:
                     value=True, key="m_include_fp",
                     help="マイソクから抽出した間取り図を、ツアーの1カットとして出力に含めます。"
                          "生成AIは通さず実物をそのまま使うので正確です。")
+        st.checkbox("収納・廊下のカットも含める",
+                    value=False, key="m_include_storage_hall",
+                    help="収納やクローゼット・廊下のカットは見栄えがしにくいので既定では除外します。"
+                         "含めたい場合だけONにしてください。")
     elif mode.startswith("ルームツアー"):
         rooms = st.multiselect(
             "生成する部屋（カット）", list(core.ROOM_TOUR_PRESETS.keys()),
@@ -385,6 +389,9 @@ with tab_maisoku:
                 real = plan["real"]
                 anchor = plan["anchor"]
                 floor_plan = plan["floor_plan"]
+                # 収納・廊下は既定で除外（見栄えがしにくいため）
+                if not st.session_state.get("m_include_storage_hall"):
+                    real = [it for it in real if it["code"] not in ("STORAGE", "HALLWAY")]
                 # 写真の無い部屋のうち、実写真でカバーされていないものだけ生成対象にする
                 gaps = [g for g in gap_rooms
                         if core.GAP_LABEL_TO_CODE.get(g) not in plan["covered"]]

@@ -248,6 +248,7 @@ def build_staging_prompt(style_desc: str, room_use: str = "",
         f"{_request_line(user_request)}\n"
         "【厳守】実際にない窓・眺望・設備を足さない。部屋を実際より広く見せない。"
         "壁の色・間取り・設備のグレードを変えない。"
+        "天井に不自然な四角い枠・パネル・線を描き足さない（点検口などを勝手に強調しない）。"
         "画像内に文字・ロゴ・透かし・数字を一切入れない。"
     )
 
@@ -338,6 +339,7 @@ def build_water_staging_prompt(style_desc: str = "", user_request: str = "") -> 
         "【厳守】実際にない設備（食洗機・浴室乾燥・収納・窓・下駄箱など）を絶対に足さない。"
         "蛇口・コンロ・便器・浴槽・框などの設備や造作の形・数・グレードを変えない。"
         "玄関は靴を大量に散らかさない。部屋を実際より広く見せない。"
+        "天井に不自然な四角い枠・パネル・線を描き足さない（点検口などを勝手に強調しない）。"
         "画像内に文字・ロゴ・透かし・数字を一切入れない。"
     )
 
@@ -592,9 +594,13 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
             f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
             "各画像を次のコードのいずれかで分類してください：\n"
             "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
-            "BATH=浴室、WASH=洗面・脱衣所、TOILET=トイレ、ENTRANCE=玄関・玄関土間、"
+            "BATH=浴室、WASH=洗面・脱衣所、TOILET=トイレ、"
+            "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、"
             "HALLWAY=廊下、STORAGE=収納・クローゼット、BALCONY=バルコニー・ベランダ、"
-            "FLOORPLAN=間取り図・平面図、EXTERIOR=建物外観、MAP=地図・案内図、"
+            "FLOORPLAN=間取り図・平面図、"
+            "EXTERIOR=屋外から写した建物外観・外壁・共用部・玄関ドアの外側"
+            "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
+            "MAP=地図・案内図、"
             "BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
             f"出力はJSON配列のみ・長さ{n}。説明文は書かないこと。"
             '例: ["BEDROOM","KITCHEN","BATH","FLOORPLAN","EXTERIOR"]。'
