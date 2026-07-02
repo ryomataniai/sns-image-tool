@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v12 (白紙/不要画像を自動で使わないに)")
+    st.caption("build: stage-v13 (参照写真をマイソクから自動取得)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -319,10 +319,10 @@ with tab_maisoku:
         keep_style = st.checkbox("トーンを揃える（参照写真、なければ最初のカットを基準に統一）",
                                  value=True, key="m_keepstyle")
         ref_photo = st.file_uploader(
-            "雰囲気の参照写真（任意・実際の部屋写真）",
+            "雰囲気の参照写真（任意・未指定ならマイソク内の写真を自動使用）",
             type=["png", "jpg", "jpeg", "webp"], key="m_refphoto",
-            help="実際のリビング等をアップすると、そのトーン（床材・壁・照明・スタイル）に"
-                 "全部屋を合わせて生成します。トイレなど写真がない部屋も統一感を出せます")
+            help="未指定の場合、アップしたマイソク内の室内写真（リビング優先）を自動で"
+                 "参照トーンに使います。手動でアップすると、その写真のトーンで上書きします")
         st.caption("※写真のない部屋（トイレ等）は間取り＋参照写真から推定生成した"
                    "『イメージ』です。実物と異なるため投稿・提案時は『※イメージ』注記を強めに。")
     else:
@@ -353,6 +353,19 @@ with tab_maisoku:
         if mode.startswith("ルームツアー"):
             ref_bytes = ref_photo.getvalue() if ref_photo is not None else None
             ref_mime = (ref_photo.type or "image/png") if ref_photo is not None else "image/png"
+            # 手動指定がなければ、マイソク（PDF）内の室内写真を参照トーンに自動使用
+            if ref_bytes is None and up is not None:
+                _raw = up.getvalue()
+                _is_pdf = (up.type == "application/pdf") or up.name.lower().endswith(".pdf")
+                if _is_pdf:
+                    with st.spinner("マイソク内の写真から雰囲気の参照を自動取得中…"):
+                        auto_ref = core.pick_reference_photo(client, _raw)
+                    if auto_ref is not None:
+                        ref_bytes, ref_mime = auto_ref, "image/png"
+                        st.caption("※マイソク内の室内写真を参照トーンに使用しています。")
+                    else:
+                        st.caption("※マイソク内に参照できる室内写真が見つからず、"
+                                   "最初のカット基準でトーンを揃えます。")
             sel = list(rooms)
             # 参照写真がない時のみ、LDKを基準カットに先頭化
             if keep_style and ref_bytes is None and "LDK" in sel:

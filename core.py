@@ -365,6 +365,39 @@ def build_renovation_prompt(style_desc: str = "", user_request: str = "") -> str
     )
 
 
+def pick_reference_photo(client, pdf_bytes):
+    """マイソクPDFから室内写真を抽出し、トーン参照に最適な1枚を返す。
+
+    優先度：リビング → 寝室 → その他の居室 → 水回り。
+    白紙・ロゴ・地図・図面・外観（SKIP）は除外。見つからなければ None。
+    """
+    try:
+        photos = extract_pdf_photos(pdf_bytes, min_px=250)
+    except Exception:  # noqa: BLE001
+        return None
+    cand = [p[0] for p in photos if not is_blank_image(p[0])]
+    if not cand:
+        return None
+    try:
+        labels = classify_rooms(client, cand)
+    except Exception:  # noqa: BLE001
+        labels = [""] * len(cand)
+    priority = {
+        "リビングとしてステージング": 0,
+        "寝室としてステージング": 1,
+        "おまかせステージング": 2,
+        "水回り・玄関を演出": 3,
+    }
+    best, best_rank = None, 99
+    for b, lab in zip(cand, labels):
+        if lab == "使わない":      # SKIP（図面・外観・地図など）は参照にしない
+            continue
+        rank = priority.get(lab, 4)
+        if rank < best_rank:
+            best_rank, best = rank, b
+    return best if best is not None else cand[0]
+
+
 def pdf_page_count(pdf_bytes: bytes) -> int:
     import fitz
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
