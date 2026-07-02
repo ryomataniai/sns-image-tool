@@ -551,6 +551,114 @@ def build_3d_perspective_prompt(style_desc: str = "", user_request: str = "") ->
     )
 
 
+# ----------------------------------------------------------------------
+# マイソク丸ごと → 実写真ベースのルームツアー（実写真ステージング＋穴の補完）
+# ----------------------------------------------------------------------
+# 分類コード → 表示ラベル
+TOUR_ROOM_LABEL = {
+    "LIVING": "リビング", "BEDROOM": "洋室", "KITCHEN": "キッチン",
+    "BATH": "浴室", "WASH": "洗面所", "TOILET": "トイレ",
+    "ENTRANCE": "玄関", "HALLWAY": "廊下", "STORAGE": "収納",
+    "BALCONY": "バルコニー", "OTHER": "室内",
+}
+# 分類コード → 実写真の処理方法（実写真は構造を維持したまま演出する）
+_TOUR_TREATMENT = {
+    "LIVING": "staging_living", "BEDROOM": "staging_bedroom",
+    "KITCHEN": "water", "BATH": "water", "WASH": "water",
+    "TOILET": "water", "ENTRANCE": "water",
+    "HALLWAY": "enhance", "STORAGE": "enhance", "BALCONY": "enhance",
+    "OTHER": "staging_omakase",
+}
+# 実際の居室・設備として扱うコード（EXTERIOR/MAP/FLOORPLAN/BLANK は土台に使わない）
+_TOUR_ROOM_CODES = set(TOUR_ROOM_LABEL.keys())
+# 「写真が無い部屋」を生成で補うときの、ラベル→分類コード対応
+GAP_LABEL_TO_CODE = {
+    "玄関": "ENTRANCE", "トイレ": "TOILET", "洗面所": "WASH",
+    "浴室": "BATH", "キッチン": "KITCHEN", "バルコニー": "BALCONY",
+}
+
+
+def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
+    """マイソクから抽出した画像を、細かい部屋種別コードで分類する。
+    返り値: 各画像のコード（LIVING/BEDROOM/.../FLOORPLAN/EXTERIOR/MAP/BLANK/OTHER）のリスト。"""
+    import json as _json
+    n = len(images)
+    default = ["OTHER"] * n
+    if n == 0:
+        return default
+    try:
+        parts = [_image_part(b, "image/png") for b in images]
+        instruction = (
+            f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
+            "各画像を次のコードのいずれかで分類してください：\n"
+            "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
+            "BATH=浴室、WASH=洗面・脱衣所、TOILET=トイレ、ENTRANCE=玄関・玄関土間、"
+            "HALLWAY=廊下、STORAGE=収納・クローゼット、BALCONY=バルコニー・ベランダ、"
+            "FLOORPLAN=間取り図・平面図、EXTERIOR=建物外観、MAP=地図・案内図、"
+            "BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
+            f"出力はJSON配列のみ・長さ{n}。説明文は書かないこと。"
+            '例: ["BEDROOM","KITCHEN","BATH","FLOORPLAN","EXTERIOR"]。'
+        )
+        resp = client.models.generate_content(model=model, contents=parts + [instruction])
+        text = (getattr(resp, "text", "") or "").strip()
+        m = re.search(r"\[.*\]", text, re.S)
+        arr = _json.loads(m.group(0)) if m else []
+    except Exception:  # noqa: BLE001
+        return default
+    out = []
+    for i in range(n):
+        c = arr[i].upper() if i < len(arr) and isinstance(arr[i], str) else "OTHER"
+        out.append(c)
+    return out
+
+
+def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
+    """マイソクPDF → 実写真ベースのルームツアー計画を作る。
+
+    returns dict:
+      real:       [ {bytes, code, label, treatment} ... ]  # 実室内写真（演出対象）
+      floor_plan: bytes | None                              # 抽出した間取り図
+      anchor:     bytes | None                              # 配色アンカー（居室の実写真優先）
+      covered:    set(codes)                                # 実写真でカバー済みの部屋コード
+    """
+    try:
+        photos = extract_pdf_photos(pdf_bytes, min_px=min_px)
+    except Exception:  # noqa: BLE001
+        photos = []
+    cand = [p[0] for p in photos if not is_blank_image(p[0])]
+    codes = classify_maisoku_images(client, cand) if cand else []
+
+    real, floor_plan = [], None
+    for b, c in zip(cand, codes):
+        if c == "FLOORPLAN":
+            if floor_plan is None:
+                floor_plan = b
+            continue
+        if c in ("EXTERIOR", "MAP", "BLANK"):
+            continue
+        if c in _TOUR_ROOM_CODES:
+            real.append({
+                "bytes": b, "code": c,
+                "label": TOUR_ROOM_LABEL.get(c, "室内"),
+                "treatment": _TOUR_TREATMENT.get(c, "staging_omakase"),
+            })
+
+    # 配色アンカー：リビング → 居室 → キッチン → いずれか の順で選ぶ
+    anchor = None
+    for pref in ("LIVING", "BEDROOM", "KITCHEN"):
+        for it in real:
+            if it["code"] == pref:
+                anchor = it["bytes"]
+                break
+        if anchor is not None:
+            break
+    if anchor is None and real:
+        anchor = real[0]["bytes"]
+
+    covered = {it["code"] for it in real}
+    return {"real": real, "floor_plan": floor_plan, "anchor": anchor, "covered": covered}
+
+
 def generate_from_images(client, images, prompt, model=DEFAULT_MODEL,
                          aspect="4:5", size="1K", retries=1, add_safety=True):
     """複数の入力画像 [(bytes, mime), ...] ＋プロンプト → PNGバイト列。

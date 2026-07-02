@@ -76,7 +76,7 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v15 (部屋タイプ別家具ルール＋3Dパースを全体アンカー化)")
+    st.caption("build: stage-v16 (マイソク丸ごと→実写真ルームツアー・実写真ベース)")
 
 st.title("🏠 SNS画像量産ツール")
 
@@ -306,6 +306,7 @@ with tab_maisoku:
 
     mode = st.radio("生成モード", ["暮らしのイメージ（家具あり1枚）",
                                    "ビフォーアフター（空室＋家具あり 2枚）",
+                                   "マイソク丸ごと→実写真ルームツアー（推奨）",
                                    "ルームツアー（複数カット）",
                                    "3Dパース（間取り俯瞰イメージ・試験）"],
                     key="m_mode")
@@ -313,7 +314,17 @@ with tab_maisoku:
     # モード別オプション
     room = core.INTERIOR_ROOMS[0]
     rooms, keep_style, ref_photo = [], True, None
-    if mode.startswith("ルームツアー"):
+    gap_rooms = []
+    if mode.startswith("マイソク丸ごと"):
+        st.caption("マイソク内の実際の室内写真を土台に家具ステージングします。"
+                   "実物ベースなので間取りと乖離しません。写真の無い部屋だけ、実写真のトーンに"
+                   "合わせて生成で補います（間取り図も自動抽出して整合を取ります）。")
+        gap_rooms = st.multiselect(
+            "写真が無い部屋で生成して補うもの", ["玄関", "トイレ", "洗面所", "浴室", "バルコニー"],
+            default=["トイレ"], key="m_gap",
+            help="マイソクに写真が無い部屋だけをここから生成します。"
+                 "実写真がある部屋は自動で除外されるので、重複はしません。")
+    elif mode.startswith("ルームツアー"):
         rooms = st.multiselect(
             "生成する部屋（カット）", list(core.ROOM_TOUR_PRESETS.keys()),
             default=["玄関", "LDK", "洋室", "浴室", "トイレ"], key="m_rooms")
@@ -358,7 +369,75 @@ with tab_maisoku:
         style_desc = core.INTERIOR_STYLES[style_name]
         results = []  # (ラベル, bytes)
 
-        if mode.startswith("ルームツアー"):
+        if mode.startswith("マイソク丸ごと"):
+            _is_pdf = up is not None and (
+                (up.type == "application/pdf") or up.name.lower().endswith(".pdf"))
+            if not _is_pdf:
+                st.error("このモードはマイソクの「PDF」アップが必要です（埋め込み写真を抽出します）。")
+            else:
+                raw = up.getvalue()
+                with st.spinner("マイソクから室内写真と間取り図を抽出・分類中…"):
+                    plan = core.plan_maisoku_photo_tour(client, raw)
+                real = plan["real"]
+                anchor = plan["anchor"]
+                floor_plan = plan["floor_plan"]
+                # 写真の無い部屋のうち、実写真でカバーされていないものだけ生成対象にする
+                gaps = [g for g in gap_rooms
+                        if core.GAP_LABEL_TO_CODE.get(g) not in plan["covered"]]
+                if not real and not gaps:
+                    st.error("マイソクから使える室内写真が抽出できませんでした。"
+                             "画像主体のマイソクか、別ページをお試しください。")
+                total = len(real) + len(gaps)
+                if total > 0:
+                    st.caption(
+                        f"実写真 {len(real)}枚をステージング＋写真の無い部屋 {len(gaps)}件を生成します。"
+                        + ("間取り図も抽出済み。" if floor_plan is not None else ""))
+                    prog = st.progress(0.0, text="実写真をステージング中…")
+                    done = 0
+                    seen = {}
+                    # ① 実写真を構造維持で演出（実物ベース＝間取りと乖離しない）
+                    for it in real:
+                        lbl = it["label"]
+                        seen[lbl] = seen.get(lbl, 0) + 1
+                        disp = lbl if seen[lbl] == 1 else f"{lbl}{seen[lbl]}"
+                        tr = it["treatment"]
+                        if tr == "staging_living":
+                            p = core.build_staging_prompt(style_desc, "リビング", m_request)
+                        elif tr == "staging_bedroom":
+                            p = core.build_staging_prompt(style_desc, "寝室", m_request)
+                        elif tr == "water":
+                            p = core.build_water_staging_prompt(style_desc, m_request)
+                        elif tr == "enhance":
+                            p = core.build_enhance_prompt()
+                        else:
+                            p = core.build_staging_prompt(style_desc, "", m_request)
+                        data, err = core.generate_from_image_bytes(
+                            client, it["bytes"], p, model=model, aspect="4:5", size="1K")
+                        if err:
+                            st.error(f"{disp}（実写真）生成失敗: {err}")
+                        else:
+                            results.append((f"{disp}（実写真）", data))
+                        done += 1
+                        prog.progress(done / total, text=f"生成中… {done}/{total}")
+                    # ② 写真の無い部屋を、実写真のトーンに合わせて生成（間取り図を土台に）
+                    base = floor_plan if floor_plan is not None else input_png
+                    for g in gaps:
+                        p = core.build_room_tour_prompt(
+                            style_desc, g, core.ROOM_TOUR_PRESETS.get(g, ""),
+                            with_ref=(anchor is not None), user_request=m_request)
+                        imgs = [(base, "image/png")]
+                        if anchor is not None:
+                            imgs.append((anchor, "image/png"))
+                        data, err = core.generate_from_images(
+                            client, imgs, p, model=model, aspect="4:5", size="1K")
+                        if err:
+                            st.error(f"{g}（生成）失敗: {err}")
+                        else:
+                            results.append((f"{g}（生成）", data))
+                        done += 1
+                        prog.progress(done / total, text=f"生成中… {done}/{total}")
+                    prog.empty()
+        elif mode.startswith("ルームツアー"):
             ref_bytes = ref_photo.getvalue() if ref_photo is not None else None
             ref_mime = (ref_photo.type or "image/png") if ref_photo is not None else "image/png"
             # 優先順位: ①手動アップの参照写真 → ②生成済み3Dパース → ③マイソク内写真の自動抽出 → ④最初のカット
