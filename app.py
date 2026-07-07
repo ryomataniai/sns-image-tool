@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-SNS画像量産ツール — 社内Web版 (app.py)
+物件SNSスタジオ — 社内Web版 (app.py)
 ========================================
-2モード:
-  1) 単発画像量産  … プロンプト一覧から「暮らしのイメージ」を一括生成
-  2) カルーセル自動生成 … トピック→コピー生成→背景生成→文字焼き込みで完成カルーセル
+サイドバー常設ナビ（st.navigation）で以下のツールを提供:
+  ホーム／動画をつくる／内観画像をつくる（マイソク→内観）／
+  実写真ステージング／カルーセルをつくる／背景素材をつくる／設定
 
-生成ロジックは core.py / carousel.py を共有。
+各ツール本体は render_*() 関数。生成ロジックは core.py / carousel.py を共有。
 """
 
 import io
@@ -19,7 +19,8 @@ import streamlit as st
 import core
 import carousel
 
-st.set_page_config(page_title="SNS画像量産ツール", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="物件SNSスタジオ", page_icon=":material/apartment:",
+                   layout="wide")
 
 
 # ----------------------------------------------------------------------
@@ -43,7 +44,7 @@ def check_password():
         st.session_state["auth_ok"] = (st.session_state.get("pw_input") == app_pw)
         st.session_state["pw_input"] = ""
 
-    st.title("🔒 SNS画像量産ツール")
+    st.title("物件SNSスタジオ")
     st.caption("エンクス社内ツール。パスワードを入力してください。")
     st.text_input("パスワード", type="password", key="pw_input", on_change=_verify)
     if st.session_state.get("auth_ok") is False:
@@ -52,7 +53,9 @@ def check_password():
 
 
 check_password()
-GEMINI_KEY = get_secret("GEMINI_API_KEY") or core.get_api_key()
+GEMINI_KEY = (get_secret("GEMINI_API_KEY")
+              or st.session_state.get("manual_gemini_key")
+              or core.get_api_key())
 
 
 def make_client():
@@ -60,37 +63,55 @@ def make_client():
 
 
 # ----------------------------------------------------------------------
-# サイドバー（共通）
+# ホーム / 設定 ページ
 # ----------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ 設定")
+def render_home():
+    st.title("物件SNSスタジオ")
+    st.info("写真がある → **動画をつくる** ／ マイソクだけ → "
+            "**内観画像をつくる** で画像化してから動画へ。")
+    st.markdown("#### 何をしますか？")
+
+    # (page, icon, 名称, 1行説明, よく使う)
+    cards = [
+        (page_video, ":material/movie:", "動画をつくる",
+         "部屋写真を、カメラが動くルームツアー動画に。字幕・BGM付きで連結。", True),
+        (page_maisoku, ":material/apartment:", "内観画像をつくる",
+         "マイソク／間取り図・写真から、内観イメージ画像を生成。", False),
+        (page_carousel, ":material/view_carousel:", "カルーセルをつくる",
+         "トピック → コピー → 背景 → 文字入れで、投稿カルーセルを自動作成。", False),
+        (page_background, ":material/image:", "背景素材をつくる",
+         "暮らしのイメージ背景を一括生成（文字なしの素材）。", False),
+    ]
+    for row in range(0, len(cards), 2):
+        cols = st.columns(2)
+        for col, (page, icon, name, desc, featured) in zip(cols, cards[row:row + 2]):
+            with col.container(border=True):
+                if featured:
+                    st.markdown(":orange-background[**よく使う**]")
+                st.markdown(f"### {icon} {name}")
+                st.caption(desc)
+                if st.button("はじめる →", key=f"home_go_{name}",
+                             type="primary" if featured else "secondary",
+                             use_container_width=True):
+                    st.switch_page(page)
+
+
+def render_settings():
+    st.title("設定")
     if GEMINI_KEY:
         st.success("APIキー: 検出済み（Secrets/環境変数）")
-        sidebar_key = ""
     else:
-        sidebar_key = st.text_input(
-            "Gemini APIキー", type="password",
-            help="https://aistudio.google.com/apikey で取得",
-        )
-        if sidebar_key:
-            GEMINI_KEY = sidebar_key
-    st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
+        st.text_input("Gemini APIキー", type="password", key="manual_gemini_key",
+                      help="https://aistudio.google.com/apikey で取得")
+    st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: ia-v21 (タブ順序・改称／フローガイド／マイソク事前バリデーション)")
-
-st.title("🏠 SNS画像量産ツール")
-st.info("手持ちの写真がある → **🎬 動画をつくる** ／ "
-        "マイソクしかない → **🏠 内観画像をつくる** で画像化してから 🎬 へ。")
-
-tab_video, tab_maisoku, tab_stage, tab_carousel, tab_single = st.tabs(
-    ["🎬 動画をつくる（ルームツアー）", "🏠 内観画像をつくる（マイソク→内観）",
-     "🛋 実写真ステージング", "📚 カルーセルをつくる", "🖼️ 背景素材をつくる"])
+    st.caption("build: studio-v22 (ナビ刷新＋改名／マテリアルアイコン化・B1)")
 
 
 # ======================================================================
-# タブ1: 単発画像量産
+# 背景素材をつくる（旧タブ1: 単発画像量産）
 # ======================================================================
-with tab_single:
+def render_background():
     st.caption("プロンプト一覧から「暮らしのイメージ」を一括生成（文字なし背景素材）")
 
     c1, c2, c3 = st.columns(3)
@@ -178,9 +199,9 @@ with tab_single:
 
 
 # ======================================================================
-# タブ2: カルーセル自動生成
+# カルーセルをつくる（旧タブ2: カルーセル自動生成）
 # ======================================================================
-with tab_carousel:
+def render_carousel():
     st.caption("トピックを入れるだけ → コピー生成 → 背景生成 → 文字を焼いて完成カルーセル")
 
     cc1, cc2, cc3 = st.columns([2, 1, 1])
@@ -274,9 +295,9 @@ with tab_carousel:
 
 
 # ======================================================================
-# タブ3: マイソク／間取り図 → 内観シミュレーション（技術検証用）
+# 内観画像をつくる（旧タブ3: マイソク／間取り図 → 内観シミュレーション）
 # ======================================================================
-with tab_maisoku:
+def render_maisoku():
     st.caption("マイソク／間取り図をアップ → その間取りを参考にAIが内観イメージを生成します。"
                "（建物外観・図面の線や文字は出さず、内観のみ）")
 
@@ -588,9 +609,9 @@ with tab_maisoku:
 
 
 # ======================================================================
-# タブ4: 実写真ステージング（マイソクの実室内写真→高解像度化＋家具）
+# 実写真ステージング（旧タブ4: 実室内写真→高解像度化＋家具）
 # ======================================================================
-with tab_stage:
+def render_stage():
     st.caption("マイソク/写真の実際の室内写真を抽出して加工。"
                "賃貸モード＝設備・構造を変えず家具のみ（優良誤認回避）。"
                "リノベ提案モード＝事業B向け、床・壁・照明・水回りまで刷新した完成イメージ。")
@@ -768,9 +789,9 @@ with tab_stage:
 
 
 # ======================================================================
-# タブ5: ルームツアー動画化（画像→動画→連結）
+# 動画をつくる（旧タブ5: ルームツアー動画化・画像→動画→連結）
 # ======================================================================
-with tab_video:
+def render_video():
     import os as _os
     import room_tour_video as rtv
     _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
@@ -863,3 +884,31 @@ with tab_video:
                                        mime="video/mp4", key="v_dl_bgm")
             except Exception as e:  # noqa: BLE001
                 st.error(f"生成に失敗しました: {e}")
+
+
+# ======================================================================
+# ナビゲーション（サイドバー常設メニュー）
+#   ※ B1: 内観は旧タブ3(内観画像をつくる)＋旧タブ4(実写真ステージング)を
+#     暫定2ページのまま並置。B2でウィザード統合予定。
+# ======================================================================
+page_home = st.Page(render_home, title="ホーム", icon=":material/home:", default=True)
+page_video = st.Page(render_video, title="動画をつくる", icon=":material/movie:")
+page_maisoku = st.Page(render_maisoku, title="内観画像をつくる（マイソク→内観）",
+                       icon=":material/apartment:")
+page_stage = st.Page(render_stage, title="実写真ステージング", icon=":material/chair:")
+page_carousel = st.Page(render_carousel, title="カルーセルをつくる",
+                        icon=":material/view_carousel:")
+page_background = st.Page(render_background, title="背景素材をつくる",
+                         icon=":material/image:")
+page_settings = st.Page(render_settings, title="設定", icon=":material/settings:")
+
+nav = st.navigation({
+    "": [page_home],
+    "つくる": [page_video, page_maisoku, page_stage, page_carousel, page_background],
+    "その他": [page_settings],
+})
+with st.sidebar:
+    st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
+               "商用利用可否はGoogleの利用規約を最終確認してください。")
+    st.caption("build: studio-v22 (ナビ刷新＋改名／マテリアルアイコン化・B1)")
+nav.run()
