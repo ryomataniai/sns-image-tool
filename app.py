@@ -105,7 +105,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: studio-v22 (ナビ刷新＋改名／マテリアルアイコン化・B1)")
+    st.caption("build: handoff-v23 (内観→動画の直渡し／キャプション修正／進捗改善・B2a)")
 
 
 # ======================================================================
@@ -604,6 +604,10 @@ def render_maisoku():
                 st.image(data, caption=label, use_container_width=True)
                 st.download_button("⬇️", data, f"{idx+1:02d}_{label}.png", "image/png",
                                    key=f"m_dl_{idx}", use_container_width=True)
+        if st.button("→ この結果を動画化", key="pl_to_video_m", type="primary",
+                     use_container_width=True):
+            st.session_state["pl_handoff_images"] = list(mres)
+            st.switch_page(page_video)
         st.caption("※SNS投稿時は運用ルールに従い『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。")
 
@@ -784,6 +788,10 @@ def render_stage():
                 st.image(data, caption=label, use_container_width=True)
                 st.download_button("⬇️", data, f"{idx+1:02d}_{label.replace(' ', '_')}.png",
                                    "image/png", key=f"stg_dl_{idx}", use_container_width=True)
+        if st.button("→ この結果を動画化", key="pl_to_video_stg", type="primary",
+                     use_container_width=True):
+            st.session_state["pl_handoff_images"] = list(sres)
+            st.switch_page(page_video)
         st.caption("※SNS投稿時は『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。設備・広さは実物基準を崩さないこと。")
 
@@ -800,24 +808,56 @@ def render_video():
     if not get_secret("FAL_KEY", ""):
         st.warning("FAL_KEY 未設定。Secrets に fal.ai の APIキーを追加してください。")
 
-    v_files = st.file_uploader(
-        "部屋画像（再生順・複数可。JPG/PNG）", type=["png", "jpg", "jpeg"],
-        accept_multiple_files=True, key="v_files")
-
     ROOM_LABELS = {"generic": "指定なし", "entrance": "玄関", "ldk": "LDK",
                    "bedroom": "洋室/寝室", "bathroom": "浴室", "toilet": "トイレ"}
-    room_types, captions = [], []
-    if v_files:
+
+    def _guess_room_type(label):
+        s = str(label)
+        if "玄関" in s:
+            return "entrance"
+        if "LDK" in s or "リビング" in s:
+            return "ldk"
+        if "洋室" in s or "寝室" in s:
+            return "bedroom"
+        if "浴室" in s:
+            return "bathroom"
+        if "トイレ" in s:
+            return "toilet"
+        return "generic"
+
+    # 内観／ステージング結果からの直渡し（pl_handoff_images）を優先。DL・再アップ不要。
+    handoff = st.session_state.get("pl_handoff_images")
+    if handoff:
+        st.info(f"内観で生成した {len(handoff)}枚を読み込みました。（ダウンロード・再アップ不要）")
+        if st.button("読み込みを解除（手動アップに戻す）", key="pl_handoff_clear"):
+            del st.session_state["pl_handoff_images"]
+            st.rerun()
+        # (label, bytes)。表示・生成の両方に bytes を使う
+        src_items = [(str(label), data, data) for label, data in handoff]
+    else:
+        v_files = st.file_uploader(
+            "部屋画像（再生順・複数可。JPG/PNG）", type=["png", "jpg", "jpeg"],
+            accept_multiple_files=True, key="v_files")
+        src_items = [(f.name, f, f.getvalue()) for f in v_files] if v_files else []
+
+    room_types, captions, imgs = [], [], []
+    if src_items:
         st.markdown("**各画像の部屋種別とキャプション**")
-        for i, f in enumerate(v_files):
+        for i, (label, disp, data) in enumerate(src_items):
             c0, c1, c2 = st.columns([1, 1, 2])
-            c0.image(f, width=90)
-            rt = c1.selectbox(f"種別{i+1}", list(ROOM_LABELS), index=0,
-                              format_func=lambda k: ROOM_LABELS[k], key=f"v_rt_{i}")
-            cap = c2.text_input(f"キャプション{i+1}", value=ROOM_LABELS.get(rt, ""),
-                                key=f"v_cap_{i}")
+            c0.image(disp, width=90)
+            # handoff時はlabelから種別を推定。キーはモード別（手動=v_/直渡し=pl_）
+            _kp = "pl" if handoff else "v"
+            _def_rt = _guess_room_type(label) if handoff else "generic"
+            rt = c1.selectbox(f"種別{i+1}", list(ROOM_LABELS),
+                              index=list(ROOM_LABELS).index(_def_rt),
+                              format_func=lambda k: ROOM_LABELS[k], key=f"{_kp}_rt_{i}")
+            # 種別generic（指定なし）はキャプション初期値を空に（「指定なし」焼き込み防止）
+            cap_default = "" if rt == "generic" else ROOM_LABELS.get(rt, "")
+            cap = c2.text_input(f"キャプション{i+1}", value=cap_default, key=f"{_kp}_cap_{i}")
             room_types.append(rt)
             captions.append(cap)
+            imgs.append((label, data))
 
     st.markdown("**オプション**")
     o1, o2, o3 = st.columns(3)
@@ -845,23 +885,30 @@ def render_video():
     v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="v_note",
                            placeholder="例: ※画像はイメージです")
 
-    n_imgs = len(v_files) if v_files else 0
+    n_imgs = len(src_items)
     est_usd = {"kling2.6_pro": 0.35, "kling2.1_pro": 0.49, "kling3.0_pro": 0.84}\
         .get(v_model, 0.35) * n_imgs * (v_dur / 5)
-    st.metric("推定コスト", f"約 ${est_usd:.2f}", f"≈{est_usd*150:.0f}円 / {n_imgs}本")
+    mcol1, mcol2 = st.columns(2)
+    mcol1.metric("推定コスト", f"約 ${est_usd:.2f}", f"≈{est_usd*150:.0f}円 / {n_imgs}本")
+    if n_imgs:
+        mcol2.metric("推定所要時間", f"約 {round(n_imgs * 1.0)}〜{round(n_imgs * 1.5)}分")
+        st.caption(f"目安：{n_imgs}枚 × 約1〜1.5分／枚（連結・BGM含む）。fal生成は枚数に比例します。")
 
     if st.button("🎬 ルームツアーを生成", type="primary", key="v_gen",
                  disabled=(n_imgs == 0), use_container_width=True):
         if not get_secret("FAL_KEY", ""):
             st.error("FAL_KEY が未設定です。")
         else:
-            imgs = [(f.name, f.getvalue()) for f in v_files]
             bar = st.progress(0.0)
             status = st.empty()
 
             def _pg(step, total, msg):
                 bar.progress(min((step + 1) / (total + 1), 1.0))
-                status.write(f"{step+1}/{total+1} … {msg}")
+                if step < total:
+                    status.write(f"全{total}枚中 {step+1}枚目を生成中…"
+                                 "（1枚あたり約1〜1.5分）")
+                else:
+                    status.write("連結中…（クロスフェード＋BGM）")
 
             try:
                 out = rtv.build_tour(
@@ -910,5 +957,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: studio-v22 (ナビ刷新＋改名／マテリアルアイコン化・B1)")
+    st.caption("build: handoff-v23 (内観→動画の直渡し／キャプション修正／進捗改善・B2a)")
 nav.run()
