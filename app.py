@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: pipeline-v24 (一気通貫パイプライン B2b-1／旧3ツール残置)")
+    st.caption("build: quality-v25 (ステージング/リノベ プロンプト厳格化＋部屋種別追加・Batch1)")
 
 
 # ======================================================================
@@ -940,10 +940,12 @@ def render_video():
 #   入口2（PDF/写真）→ ①取り込み・種別 → ②画像化 → ★確認(Before/After) → ③動画
 #   ※ core.*/build_tour/既存キーは不変。新規は pl_ 接頭辞。旧3ツールは残置。
 # ======================================================================
-PL_ROOMS = ["玄関", "LDK", "洋室", "寝室", "浴室", "トイレ", "洗面", "バルコニー", "その他"]
+PL_ROOMS = ["玄関", "LDK", "キッチン", "洋室", "寝室", "クローゼット",
+            "浴室", "トイレ", "洗面", "バルコニー", "その他"]
 PL_TREATMENTS = ["家具ステージング", "リノベ後イメージ", "水回り・玄関を演出",
                  "高解像度化のみ", "使わない"]
-_PL_ROOM_TO_VIDEO = {"玄関": "entrance", "LDK": "ldk", "洋室": "bedroom", "寝室": "bedroom",
+_PL_ROOM_TO_VIDEO = {"玄関": "entrance", "LDK": "ldk", "キッチン": "ldk",
+                     "洋室": "bedroom", "寝室": "bedroom", "クローゼット": "generic",
                      "浴室": "bathroom", "トイレ": "toilet", "洗面": "generic",
                      "バルコニー": "generic", "その他": "generic"}
 
@@ -1326,5 +1328,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: pipeline-v24 (一気通貫パイプライン B2b-1／旧3ツール残置)")
+    st.caption("build: quality-v25 (ステージング/リノベ プロンプト厳格化＋部屋種別追加・Batch1)")
 nav.run()
