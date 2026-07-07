@@ -80,8 +80,9 @@ with st.sidebar:
 
 st.title("🏠 SNS画像量産ツール")
 
-tab_single, tab_carousel, tab_maisoku, tab_stage = st.tabs(
-    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観", "🛋 実写真ステージング"])
+tab_single, tab_carousel, tab_maisoku, tab_stage, tab_video = st.tabs(
+    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観",
+     "🛋 実写真ステージング", "🎬 ルームツアー動画化"])
 
 
 # ======================================================================
@@ -752,3 +753,100 @@ with tab_stage:
                                    "image/png", key=f"stg_dl_{idx}", use_container_width=True)
         st.caption("※SNS投稿時は『※AI加工のイメージです』の注記を焼き込み、"
                    "エリアは市区・駅ぼかしまで。設備・広さは実物基準を崩さないこと。")
+
+
+# ======================================================================
+# タブ5: ルームツアー動画化（画像→動画→連結）
+# ======================================================================
+with tab_video:
+    import os as _os
+    import room_tour_video as rtv
+    _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
+
+    st.caption("部屋画像をアップ → 各部屋をカメラの動く動画に → キャプション/BGMで1本のツアーに連結")
+    if not get_secret("FAL_KEY", ""):
+        st.warning("FAL_KEY 未設定。Secrets に fal.ai の APIキーを追加してください。")
+
+    v_files = st.file_uploader(
+        "部屋画像（再生順・複数可。JPG/PNG）", type=["png", "jpg", "jpeg"],
+        accept_multiple_files=True, key="v_files")
+
+    ROOM_LABELS = {"generic": "指定なし", "entrance": "玄関", "ldk": "LDK",
+                   "bedroom": "洋室/寝室", "bathroom": "浴室", "toilet": "トイレ"}
+    room_types, captions = [], []
+    if v_files:
+        st.markdown("**各画像の部屋種別とキャプション**")
+        for i, f in enumerate(v_files):
+            c0, c1, c2 = st.columns([1, 1, 2])
+            c0.image(f, width=90)
+            rt = c1.selectbox(f"種別{i+1}", list(ROOM_LABELS), index=0,
+                              format_func=lambda k: ROOM_LABELS[k], key=f"v_rt_{i}")
+            cap = c2.text_input(f"キャプション{i+1}", value=ROOM_LABELS.get(rt, ""),
+                                key=f"v_cap_{i}")
+            room_types.append(rt)
+            captions.append(cap)
+
+    st.markdown("**オプション**")
+    o1, o2, o3 = st.columns(3)
+    v_model = o1.selectbox("モデル", list(rtv.FAL_MODELS),
+                           index=0, key="v_model",
+                           help="日常運用=kling2.6_pro（安い）／見せ場=kling3.0_pro")
+    v_dur = o2.selectbox("1本の長さ(秒)", [5, 10], index=0, key="v_dur")
+    v_bgm = o3.checkbox("BGMを付ける", value=True, key="v_bgm")
+    v_caps = st.checkbox("キャプションを焼く", value=True, key="v_caps")
+    v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="v_tag",
+                          placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
+
+    # マイソクPDFから上部タグを自動生成（任意）
+    v_pdf = st.file_uploader("マイソクPDF（任意・上部タグ自動補完）", type=["pdf"], key="v_pdf")
+    if v_pdf is not None and not v_tag:
+        try:
+            specs = rtv.parse_maisoku_specs(v_pdf.getvalue())
+            auto = " ｜ ".join(x for x in [specs.get("madori"), specs.get("area"),
+                                          specs.get("built")] if x)
+            if auto:
+                st.info(f"マイソクから自動タグ候補: {auto}（上のタグ欄に貼り付け可）")
+        except Exception as e:  # noqa: BLE001
+            st.caption(f"マイソク解析スキップ: {e}")
+
+    v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="v_note",
+                           placeholder="例: ※画像はイメージです")
+
+    n_imgs = len(v_files) if v_files else 0
+    est_usd = {"kling2.6_pro": 0.35, "kling2.1_pro": 0.49, "kling3.0_pro": 0.84}\
+        .get(v_model, 0.35) * n_imgs * (v_dur / 5)
+    st.metric("推定コスト", f"約 ${est_usd:.2f}", f"≈{est_usd*150:.0f}円 / {n_imgs}本")
+
+    if st.button("🎬 ルームツアーを生成", type="primary", key="v_gen",
+                 disabled=(n_imgs == 0), use_container_width=True):
+        if not get_secret("FAL_KEY", ""):
+            st.error("FAL_KEY が未設定です。")
+        else:
+            imgs = [(f.name, f.getvalue()) for f in v_files]
+            bar = st.progress(0.0)
+            status = st.empty()
+
+            def _pg(step, total, msg):
+                bar.progress(min((step + 1) / (total + 1), 1.0))
+                status.write(f"{step+1}/{total+1} … {msg}")
+
+            try:
+                out = rtv.build_tour(
+                    imgs, captions=captions if v_caps else [""] * n_imgs,
+                    top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
+                    also_silent=True, model_key=v_model, duration=v_dur,
+                    room_types=room_types, image_note=v_note, progress=_pg)
+                bar.progress(1.0)
+                status.write("完成")
+                st.success("ルームツアーを生成しました。")
+                if out.get("silent"):
+                    st.video(out["silent"])
+                    st.download_button("⬇️ 無音版 mp4", out["silent"],
+                                       file_name="room_tour_silent.mp4",
+                                       mime="video/mp4", key="v_dl_silent")
+                if out.get("bgm"):
+                    st.download_button("⬇️ BGM版 mp4", out["bgm"],
+                                       file_name="room_tour_bgm.mp4",
+                                       mime="video/mp4", key="v_dl_bgm")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"生成に失敗しました: {e}")
