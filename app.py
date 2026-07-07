@@ -73,8 +73,10 @@ def render_home():
 
     # (page, icon, 名称, 1行説明, よく使う)
     cards = [
-        (page_video, ":material/movie:", "動画をつくる",
-         "部屋写真を、カメラが動くルームツアー動画に。字幕・BGM付きで連結。", True),
+        (page_pipeline, ":material/auto_awesome_motion:", "物件から動画をつくる",
+         "マイソク/写真 → 内観画像 → ルームツアー動画までを一気通貫で。", True),
+        (page_video, ":material/movie:", "動画をつくる（画像から）",
+         "手持ちの部屋画像を、字幕・BGM付きルームツアー動画に。", False),
         (page_maisoku, ":material/apartment:", "内観画像をつくる",
          "マイソク／間取り図・写真から、内観イメージ画像を生成。", False),
         (page_carousel, ":material/view_carousel:", "カルーセルをつくる",
@@ -105,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: handoff-v23 (内観→動画の直渡し／キャプション修正／進捗改善・B2a)")
+    st.caption("build: pipeline-v24 (一気通貫パイプライン B2b-1／旧3ツール残置)")
 
 
 # ======================================================================
@@ -934,12 +936,378 @@ def render_video():
 
 
 # ======================================================================
+# 物件から動画をつくる（B2b-1: 一気通貫パイプライン）
+#   入口2（PDF/写真）→ ①取り込み・種別 → ②画像化 → ★確認(Before/After) → ③動画
+#   ※ core.*/build_tour/既存キーは不変。新規は pl_ 接頭辞。旧3ツールは残置。
+# ======================================================================
+PL_ROOMS = ["玄関", "LDK", "洋室", "寝室", "浴室", "トイレ", "洗面", "バルコニー", "その他"]
+PL_TREATMENTS = ["家具ステージング", "リノベ後イメージ", "水回り・玄関を演出",
+                 "高解像度化のみ", "使わない"]
+_PL_ROOM_TO_VIDEO = {"玄関": "entrance", "LDK": "ldk", "洋室": "bedroom", "寝室": "bedroom",
+                     "浴室": "bathroom", "トイレ": "toilet", "洗面": "generic",
+                     "バルコニー": "generic", "その他": "generic"}
+
+
+def _pl_video_room_type(room):
+    return _PL_ROOM_TO_VIDEO.get(room, "generic")
+
+
+def _pl_room_use(room):
+    """build_staging_prompt の room_use（room指定を生成に効かせる＝痛み#3対策）。"""
+    if room == "LDK":
+        return "リビング"
+    if room == "寝室":
+        return "寝室"
+    return ""
+
+
+def _pl_sel_index(options, value, default=0):
+    return options.index(value) if value in options else default
+
+
+def _pl_guess_room_treat(ai_label, blank):
+    """classify_rooms のラベル＋白紙判定 → (room, treatment) 初期値。"""
+    if blank or ai_label == "使わない":
+        return ("その他", "使わない")
+    return {
+        "リビングとしてステージング": ("LDK", "家具ステージング"),
+        "寝室としてステージング": ("寝室", "家具ステージング"),
+        "おまかせステージング": ("洋室", "家具ステージング"),
+        "水回り・玄関を演出": ("玄関", "水回り・玄関を演出"),
+        "高解像度化のみ": ("浴室", "高解像度化のみ"),
+    }.get(ai_label, ("洋室", "家具ステージング"))
+
+
+def _pl_reset():
+    for k in [k for k in list(st.session_state)
+              if k.startswith("pl_") and k != "pl_handoff_images"]:
+        del st.session_state[k]
+
+
+def _pl_generate_one(client, it, style_desc, model, aspect, req):
+    """1itemを treatment/room に従い生成。(bytes|None, err|None) を返す。"""
+    t = it["treatment"]
+    if t == "リノベ後イメージ":
+        pr = core.build_renovation_prompt(style_desc, user_request=req)
+        disc = "※リノベ後のイメージ（仕上がりは設計により異なります）"
+    elif t == "家具ステージング":
+        pr = core.build_staging_prompt(style_desc, _pl_room_use(it["room"]), user_request=req)
+        disc = "※AI加工のイメージ"
+    elif t == "水回り・玄関を演出":
+        pr = core.build_water_staging_prompt(style_desc, user_request=req)
+        disc = "※AI加工のイメージ"
+    else:  # 高解像度化のみ
+        pr = core.build_enhance_prompt()
+        disc = None
+    data, err = core.generate_from_images(
+        client, [(it["src_bytes"], "image/png")], pr,
+        model=model, aspect=aspect, size="2K", add_safety=False)
+    if not err and disc:
+        try:
+            data = core.add_disclaimer(data, disc)
+        except Exception:  # noqa: BLE001
+            pass
+    return data, err
+
+
+def _pl_run_generation(jobs, style_name, model, aspect, req):
+    import concurrent.futures as _cf
+    try:
+        client = make_client()
+    except RuntimeError as e:
+        st.error(str(e)); return
+    style_desc = core.INTERIOR_STYLES[style_name]
+    prog = st.progress(0.0, text=f"画像化中… 0/{len(jobs)}")
+    done = 0
+    with _cf.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_pl_generate_one, client, it, style_desc, model, aspect, req): it["id"]
+                for it in jobs}
+        for fut in _cf.as_completed(futs):
+            iid = futs[fut]
+            try:
+                data, err = fut.result()
+            except Exception as e:  # noqa: BLE001
+                data, err = None, str(e)
+            done += 1
+            if err:
+                st.warning(f"#{iid+1} 生成失敗: {err}")
+            else:
+                for it in st.session_state.get("pl_items", []):
+                    if it["id"] == iid:
+                        it["gen_bytes"] = data
+            prog.progress(done / len(jobs), text=f"画像化中… {done}/{len(jobs)}")
+    prog.empty()
+    if any(it.get("gen_bytes") for it in st.session_state.get("pl_items", [])):
+        st.session_state["pl_stage"] = "review"
+        st.rerun()
+    else:
+        st.error("生成できた画像がありませんでした。処理やアップ画像を見直してください。")
+
+
+def _pl_stage_input():
+    import hashlib as _hashlib
+    st.markdown("#### ① 取り込み・種別わけ")
+    c1, c2 = st.columns(2)
+    pdf = c1.file_uploader("マイソクPDF（埋め込み写真を抽出）", type=["pdf"], key="pl_pdf")
+    photos_up = c2.file_uploader("手持ち写真（複数可）",
+                                 type=["png", "jpg", "jpeg", "webp"],
+                                 accept_multiple_files=True, key="pl_photos")
+    raw_srcs = []
+    if pdf is not None:
+        try:
+            raw_srcs += [b for (b, _w, _h) in core.extract_pdf_photos(pdf.getvalue(), min_px=250)]
+        except Exception as e:  # noqa: BLE001
+            st.error(f"PDF抽出に失敗: {e}")
+        if not raw_srcs:
+            st.warning("PDFから使える室内写真が見つかりませんでした（手持ち写真をお使いください）。")
+    if photos_up:
+        raw_srcs += [f.getvalue() for f in photos_up]
+
+    if not raw_srcs:
+        st.info("マイソクPDF か 手持ち写真をアップしてください。")
+        return
+
+    sig = _hashlib.md5(b"".join(s[:2000] for s in raw_srcs)
+                       + str(len(raw_srcs)).encode()).hexdigest()
+    if st.session_state.get("pl_src_sig") != sig:
+        blanks = [core.is_blank_image(b) for b in raw_srcs]
+        ai = ["おまかせステージング"] * len(raw_srcs)
+        try:
+            with st.spinner("AIが各写真の部屋種別を判定中…"):
+                ai = core.classify_rooms(make_client(), raw_srcs)
+        except Exception:  # noqa: BLE001
+            pass
+        items = []
+        for i, b in enumerate(raw_srcs):
+            room, treat = _pl_guess_room_treat(
+                ai[i] if i < len(ai) else "おまかせステージング", blanks[i])
+            items.append({"id": i, "order": i, "src_bytes": b, "room": room,
+                          "treatment": treat, "gen_bytes": None, "caption": ""})
+        st.session_state["pl_items"] = items
+        st.session_state["pl_src_sig"] = sig
+        for k in [k for k in list(st.session_state)
+                  if k.startswith(("pl_room_", "pl_treat_"))]:
+            del st.session_state[k]
+
+    items = st.session_state.get("pl_items", [])
+
+    st.markdown("**何をつくる？**（各画像の処理を下で個別に調整できます）")
+    st.caption("家具ステージング＝空室に家具／リノベ後イメージ＝フル刷新(事業B)／"
+               "水回り・玄関＝小物演出／高解像度化のみ＝内容そのまま綺麗に")
+    gc1, gc2, gc3 = st.columns(3)
+    style_name = gc1.selectbox("スタイル", list(core.INTERIOR_STYLES.keys()), key="pl_style")
+    model = gc2.selectbox("モデル", core.MODELS, index=0, key="pl_model")
+    aspect = gc3.radio("比率", ["4:5", "1:1", "3:4"], horizontal=True, key="pl_aspect")
+    req = st.text_area("要望（任意・全体に反映）", key="pl_request",
+                       placeholder="例：木目強め、観葉植物多め、生活感控えめ など")
+
+    st.markdown("**各画像：部屋種別と処理**"
+                "（AI初期値を編集可。部屋種別は動画の連結・字幕にも使われます）")
+    cols = st.columns(3)
+    for it in items:
+        i = it["id"]
+        with cols[i % 3]:
+            st.image(it["src_bytes"], use_container_width=True)
+            it["room"] = st.selectbox(
+                f"部屋#{i+1}", PL_ROOMS,
+                index=_pl_sel_index(PL_ROOMS, it["room"], len(PL_ROOMS) - 1),
+                key=f"pl_room_{i}")
+            it["treatment"] = st.selectbox(
+                f"処理#{i+1}", PL_TREATMENTS,
+                index=_pl_sel_index(PL_TREATMENTS, it["treatment"], 0),
+                key=f"pl_treat_{i}")
+
+    jobs = [it for it in items if it["treatment"] != "使わない"]
+    st.divider()
+    st.warning("⚠️ 次の「画像化」で Gemini の生成コストが発生します。")
+    if st.button(f"② 選択した {len(jobs)}枚 を画像化する（並行生成）", type="primary",
+                 disabled=(len(jobs) == 0), key="pl_gen_btn", use_container_width=True):
+        _pl_run_generation(jobs, style_name, model, aspect, req)
+
+
+def _pl_stage_review():
+    st.markdown("#### ③ 確認（Before / After）")
+    items = st.session_state.get("pl_items", [])
+    gen_items = [it for it in items if it.get("gen_bytes")]
+    if not gen_items:
+        st.warning("生成画像がありません。取り込みに戻ってやり直してください。")
+        if st.button("← 取り込みに戻る", key="pl_back_input0"):
+            st.session_state["pl_stage"] = "input"; st.rerun()
+        return
+    st.caption("各画像を Before/After で確認。採用／除外／この画像だけ再生成 が選べます。"
+               "動画化は下のボタンから（falコスト発生）。")
+    try:
+        client = make_client()
+    except RuntimeError:
+        client = None
+
+    for it in gen_items:
+        i = it["id"]
+        with st.container(border=True):
+            bc, ac = st.columns(2)
+            bc.caption("Before（元）")
+            bc.image(it["src_bytes"], use_container_width=True)
+            ac.caption("After（生成）")
+            ac.image(it["gen_bytes"], use_container_width=True)
+            o1, o2, o3 = st.columns([1, 1, 2])
+            it["_adopt"] = o1.checkbox("採用", value=it.get("_adopt", True),
+                                       key=f"pl_adopt_{i}")
+            it["room"] = o2.selectbox(
+                "部屋", PL_ROOMS,
+                index=_pl_sel_index(PL_ROOMS, it["room"], len(PL_ROOMS) - 1),
+                key=f"pl_rv_room_{i}")
+            it["caption"] = o3.text_input("字幕（動画・空で無し）",
+                                          value=it.get("caption", ""), key=f"pl_rvcap_{i}")
+            rc1, rc2 = st.columns([1, 1])
+            it["treatment"] = rc1.selectbox(
+                "処理（再生成用）", PL_TREATMENTS[:-1],
+                index=_pl_sel_index(PL_TREATMENTS[:-1], it["treatment"], 0),
+                key=f"pl_rv_treat_{i}")
+            if rc2.button("この画像だけ再生成", key=f"pl_regen_{i}",
+                          use_container_width=True):
+                if client is None:
+                    st.error("APIキーが未設定です（設定ページで確認）。")
+                else:
+                    style_desc = core.INTERIOR_STYLES[
+                        st.session_state.get("pl_style", list(core.INTERIOR_STYLES)[0])]
+                    with st.spinner(f"#{i+1} を再生成中…"):
+                        data, err = _pl_generate_one(
+                            client, it, style_desc,
+                            st.session_state.get("pl_model", core.MODELS[0]),
+                            st.session_state.get("pl_aspect", "4:5"),
+                            st.session_state.get("pl_request", ""))
+                    if err:
+                        st.error(f"再生成失敗: {err}")
+                    else:
+                        it["gen_bytes"] = data
+                        st.rerun()
+
+    adopted = [it for it in gen_items if it.get("_adopt", True)]
+    st.divider()
+    st.write(f"採用 **{len(adopted)}**枚 / 生成 {len(gen_items)}枚")
+    e1, e2, e3 = st.columns(3)
+    if e1.button("← 取り込みに戻る", key="pl_back_input", use_container_width=True):
+        st.session_state["pl_stage"] = "input"; st.rerun()
+    if adopted:
+        zbuf = io.BytesIO()
+        with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for k, it in enumerate(adopted, 1):
+                zf.writestr(f"{k:02d}_{it['room']}.png", it["gen_bytes"])
+        e2.download_button("画像だけ保存（ZIP）", zbuf.getvalue(), "naikan_set.zip",
+                           "application/zip", key="pl_zip", use_container_width=True)
+    if e3.button(f"→ 採用{len(adopted)}枚で動画化へ", type="primary",
+                 disabled=(len(adopted) == 0), key="pl_to_video_next",
+                 use_container_width=True):
+        st.session_state["pl_stage"] = "video"; st.rerun()
+
+
+def _pl_stage_video():
+    import os as _os
+    import room_tour_video as rtv
+    _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
+    st.markdown("#### ④ 動画化（ルームツアー）")
+    items = st.session_state.get("pl_items", [])
+    adopted = [it for it in items if it.get("gen_bytes") and it.get("_adopt", True)]
+    adopted.sort(key=lambda it: it.get("order", 0))
+    if not adopted:
+        st.warning("採用画像がありません。確認に戻ってください。")
+        if st.button("← 確認に戻る", key="pl_back_review0"):
+            st.session_state["pl_stage"] = "review"; st.rerun()
+        return
+    if not get_secret("FAL_KEY", ""):
+        st.warning("FAL_KEY 未設定。Secrets に fal.ai の APIキーを追加してください。")
+
+    st.caption(f"採用 {len(adopted)}枚 を順番に動画化して1本に連結します。（DL・再アップ不要）")
+    o1, o2, o3 = st.columns(3)
+    v_model = o1.selectbox("モデル", list(rtv.FAL_MODELS), index=0, key="pl_v_model")
+    v_dur = o2.selectbox("1本の長さ(秒)", [5, 10], index=0, key="pl_v_dur")
+    v_bgm = o3.checkbox("BGMを付ける", value=True, key="pl_v_bgm")
+    v_caps = st.checkbox("キャプションを焼く", value=True, key="pl_v_caps")
+    v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
+                          placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
+    v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="pl_v_note",
+                           placeholder="例: ※画像はイメージです")
+
+    n = len(adopted)
+    est_usd = {"kling2.6_pro": 0.35, "kling2.1_pro": 0.49, "kling3.0_pro": 0.84}\
+        .get(v_model, 0.35) * n * (v_dur / 5)
+    m1, m2 = st.columns(2)
+    m1.metric("推定コスト", f"約 ${est_usd:.2f}", f"≈{est_usd*150:.0f}円 / {n}本")
+    m2.metric("推定所要時間", f"約 {round(n * 1.0)}〜{round(n * 1.5)}分")
+    st.caption(f"目安：{n}枚 × 約1〜1.5分／枚（連結・BGM含む）。")
+
+    bcol, gcol = st.columns([1, 2])
+    if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
+        st.session_state["pl_stage"] = "review"; st.rerun()
+    if gcol.button("🎬 ルームツアーを生成", type="primary", key="pl_v_gen",
+                   use_container_width=True):
+        if not get_secret("FAL_KEY", ""):
+            st.error("FAL_KEY が未設定です。")
+            return
+        imgs = [(it.get("caption") or it["room"], it["gen_bytes"]) for it in adopted]
+        room_types = [_pl_video_room_type(it["room"]) for it in adopted]
+        captions = [it.get("caption", "") for it in adopted]
+        bar = st.progress(0.0)
+        status = st.empty()
+
+        def _pg(step, total, msg):
+            bar.progress(min((step + 1) / (total + 1), 1.0))
+            if step < total:
+                status.write(f"全{total}枚中 {step+1}枚目を生成中…（1枚あたり約1〜1.5分）")
+            else:
+                status.write("連結中…（クロスフェード＋BGM）")
+
+        try:
+            out = rtv.build_tour(
+                imgs, captions=captions if v_caps else [""] * n,
+                top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
+                also_silent=True, model_key=v_model, duration=v_dur,
+                room_types=room_types, image_note=v_note, progress=_pg)
+            bar.progress(1.0)
+            status.write("完成")
+            st.success("ルームツアーを生成しました。")
+            if out.get("silent"):
+                st.video(out["silent"])
+                st.download_button("⬇️ 無音版 mp4", out["silent"],
+                                   file_name="room_tour_silent.mp4",
+                                   mime="video/mp4", key="pl_dl_silent")
+            if out.get("bgm"):
+                st.video(out["bgm"])
+                st.download_button("⬇️ BGM版 mp4", out["bgm"],
+                                   file_name="room_tour_bgm.mp4",
+                                   mime="video/mp4", key="pl_dl_bgm")
+        except Exception as e:  # noqa: BLE001
+            st.error(f"生成に失敗しました: {e}")
+
+
+def render_pipeline():
+    st.subheader("物件から動画をつくる")
+    st.caption("マイソクPDF や 手持ち写真 → 内観画像 → ルームツアー動画 までを一気通貫で。"
+               "（途中のダウンロード・再アップは不要）")
+    stage = st.session_state.get("pl_stage", "input")
+    steps = ["① 取り込み・種別", "② 画像化", "③ 確認", "④ 動画化"]
+    cur = {"input": 0, "review": 2, "video": 3}.get(stage, 0)
+    st.caption("　→　".join(f"**{s}**" if i == cur else s for i, s in enumerate(steps)))
+    if st.button("最初からやり直す", key="pl_reset_btn"):
+        _pl_reset(); st.rerun()
+    st.divider()
+    if stage == "review":
+        _pl_stage_review()
+    elif stage == "video":
+        _pl_stage_video()
+    else:
+        _pl_stage_input()
+
+
+# ======================================================================
 # ナビゲーション（サイドバー常設メニュー）
-#   ※ B1: 内観は旧タブ3(内観画像をつくる)＋旧タブ4(実写真ステージング)を
-#     暫定2ページのまま並置。B2でウィザード統合予定。
+#   ※ B2b-1: 「物件から動画をつくる」(render_pipeline) を追加。
+#     旧「動画/内観/実写真ステージング」は残置（並存）。撤去はB2b-2。
 # ======================================================================
 page_home = st.Page(render_home, title="ホーム", icon=":material/home:", default=True)
-page_video = st.Page(render_video, title="動画をつくる", icon=":material/movie:")
+page_pipeline = st.Page(render_pipeline, title="物件から動画をつくる",
+                        icon=":material/auto_awesome_motion:")
+page_video = st.Page(render_video, title="動画をつくる（画像から）", icon=":material/movie:")
 page_maisoku = st.Page(render_maisoku, title="内観画像をつくる（マイソク→内観）",
                        icon=":material/apartment:")
 page_stage = st.Page(render_stage, title="実写真ステージング", icon=":material/chair:")
@@ -951,11 +1319,12 @@ page_settings = st.Page(render_settings, title="設定", icon=":material/setting
 
 nav = st.navigation({
     "": [page_home],
-    "つくる": [page_video, page_maisoku, page_stage, page_carousel, page_background],
+    "つくる": [page_pipeline, page_video, page_maisoku, page_stage,
+             page_carousel, page_background],
     "その他": [page_settings],
 })
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: handoff-v23 (内観→動画の直渡し／キャプション修正／進捗改善・B2a)")
+    st.caption("build: pipeline-v24 (一気通貫パイプライン B2b-1／旧3ツール残置)")
 nav.run()
