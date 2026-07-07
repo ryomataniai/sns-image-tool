@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: quality-v25 (ステージング/リノベ プロンプト厳格化＋部屋種別追加・Batch1)")
+    st.caption("build: ratio-v26 (動画の比率選択9:16/1:1/16:9＋画像比率用途明示＋STEP1横並び・Batch2)")
 
 
 # ======================================================================
@@ -1096,28 +1096,34 @@ def _pl_stage_input():
     st.markdown("**何をつくる？**（各画像の処理を下で個別に調整できます）")
     st.caption("家具ステージング＝空室に家具／リノベ後イメージ＝フル刷新(事業B)／"
                "水回り・玄関＝小物演出／高解像度化のみ＝内容そのまま綺麗に")
+    _IMG_ASPECT_LABEL = {"4:5": "4:5（Instagram投稿）", "1:1": "1:1（正方形）", "3:4": "3:4（縦）"}
     gc1, gc2, gc3 = st.columns(3)
     style_name = gc1.selectbox("スタイル", list(core.INTERIOR_STYLES.keys()), key="pl_style")
     model = gc2.selectbox("モデル", core.MODELS, index=0, key="pl_model")
-    aspect = gc3.radio("比率", ["4:5", "1:1", "3:4"], horizontal=True, key="pl_aspect")
+    aspect = gc3.radio("画像の比率", ["4:5", "1:1", "3:4"], horizontal=True, key="pl_aspect",
+                       format_func=lambda a: _IMG_ASPECT_LABEL.get(a, a))
     req = st.text_area("要望（任意・全体に反映）", key="pl_request",
                        placeholder="例：木目強め、観葉植物多め、生活感控えめ など")
 
     st.markdown("**各画像：部屋種別と処理**"
                 "（AI初期値を編集可。部屋種別は動画の連結・字幕にも使われます）")
-    cols = st.columns(3)
+    # 1画像=1行の横並び（画像 / 部屋種別 / 処理）
+    hc1, hc2, hc3 = st.columns([1, 2, 2])
+    hc1.caption("画像")
+    hc2.caption("部屋種別")
+    hc3.caption("処理")
     for it in items:
         i = it["id"]
-        with cols[i % 3]:
-            st.image(it["src_bytes"], use_container_width=True)
-            it["room"] = st.selectbox(
-                f"部屋#{i+1}", PL_ROOMS,
-                index=_pl_sel_index(PL_ROOMS, it["room"], len(PL_ROOMS) - 1),
-                key=f"pl_room_{i}")
-            it["treatment"] = st.selectbox(
-                f"処理#{i+1}", PL_TREATMENTS,
-                index=_pl_sel_index(PL_TREATMENTS, it["treatment"], 0),
-                key=f"pl_treat_{i}")
+        rc1, rc2, rc3 = st.columns([1, 2, 2])
+        rc1.image(it["src_bytes"], width=110)
+        it["room"] = rc2.selectbox(
+            "部屋種別", PL_ROOMS,
+            index=_pl_sel_index(PL_ROOMS, it["room"], len(PL_ROOMS) - 1),
+            key=f"pl_room_{i}", label_visibility="collapsed")
+        it["treatment"] = rc3.selectbox(
+            "処理", PL_TREATMENTS,
+            index=_pl_sel_index(PL_TREATMENTS, it["treatment"], 0),
+            key=f"pl_treat_{i}", label_visibility="collapsed")
 
     jobs = [it for it in items if it["treatment"] != "使わない"]
     st.divider()
@@ -1220,10 +1226,15 @@ def _pl_stage_video():
         st.warning("FAL_KEY 未設定。Secrets に fal.ai の APIキーを追加してください。")
 
     st.caption(f"採用 {len(adopted)}枚 を順番に動画化して1本に連結します。（DL・再アップ不要）")
+    _VID_ASPECT_LABEL = {"9:16": "9:16（リール/TikTok/ショート）", "1:1": "1:1（正方形）",
+                         "16:9": "16:9（横）"}
     o1, o2, o3 = st.columns(3)
     v_model = o1.selectbox("モデル", list(rtv.FAL_MODELS), index=0, key="pl_v_model")
     v_dur = o2.selectbox("1本の長さ(秒)", [5, 10], index=0, key="pl_v_dur")
     v_bgm = o3.checkbox("BGMを付ける", value=True, key="pl_v_bgm")
+    v_aspect = st.selectbox("動画の向き", ["9:16", "1:1", "16:9"], index=0, key="pl_v_aspect",
+                            format_func=lambda a: _VID_ASPECT_LABEL.get(a, a))
+    st.caption("動画は選んだ向きで生成。採用画像を自動リフレーム（ぼかし背景で収める）。")
     v_caps = st.checkbox("キャプションを焼く", value=True, key="pl_v_caps")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
@@ -1264,7 +1275,7 @@ def _pl_stage_video():
                 imgs, captions=captions if v_caps else [""] * n,
                 top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                 also_silent=True, model_key=v_model, duration=v_dur,
-                room_types=room_types, image_note=v_note, progress=_pg)
+                room_types=room_types, image_note=v_note, aspect=v_aspect, progress=_pg)
             bar.progress(1.0)
             status.write("完成")
             st.success("ルームツアーを生成しました。")
@@ -1328,5 +1339,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: quality-v25 (ステージング/リノベ プロンプト厳格化＋部屋種別追加・Batch1)")
+    st.caption("build: ratio-v26 (動画の比率選択9:16/1:1/16:9＋画像比率用途明示＋STEP1横並び・Batch2)")
 nav.run()
