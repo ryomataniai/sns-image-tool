@@ -76,13 +76,15 @@ with st.sidebar:
             GEMINI_KEY = sidebar_key
     st.caption("⚠️ 生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: stage-v20 (実写真ルームツアーにリノベ後の仕上げ切替を追加)")
+    st.caption("build: ia-v21 (タブ順序・改称／フローガイド／マイソク事前バリデーション)")
 
 st.title("🏠 SNS画像量産ツール")
+st.info("手持ちの写真がある → **🎬 動画をつくる** ／ "
+        "マイソクしかない → **🏠 内観画像をつくる** で画像化してから 🎬 へ。")
 
-tab_single, tab_carousel, tab_maisoku, tab_stage, tab_video = st.tabs(
-    ["🖼️ 単発画像量産", "📚 カルーセル自動生成", "🏠 マイソク→内観",
-     "🛋 実写真ステージング", "🎬 ルームツアー動画化"])
+tab_video, tab_maisoku, tab_stage, tab_carousel, tab_single = st.tabs(
+    ["🎬 動画をつくる（ルームツアー）", "🏠 内観画像をつくる（マイソク→内観）",
+     "🛋 実写真ステージング", "📚 カルーセルをつくる", "🖼️ 背景素材をつくる"])
 
 
 # ======================================================================
@@ -308,7 +310,7 @@ with tab_maisoku:
     mode = st.radio("生成モード", ["暮らしのイメージ（家具あり1枚）",
                                    "ビフォーアフター（空室＋家具あり 2枚）",
                                    "マイソク丸ごと→実写真ルームツアー（推奨）",
-                                   "ルームツアー（複数カット）",
+                                   "複数部屋を一括生成（画像）",
                                    "3Dパース（間取り俯瞰イメージ・試験）"],
                     key="m_mode")
 
@@ -339,7 +341,7 @@ with tab_maisoku:
                     value=False, key="m_include_storage_hall",
                     help="収納やクローゼット・廊下のカットは見栄えがしにくいので既定では除外します。"
                          "含めたい場合だけONにしてください。")
-    elif mode.startswith("ルームツアー"):
+    elif mode.startswith("複数部屋"):
         rooms = st.multiselect(
             "生成する部屋（カット）", list(core.ROOM_TOUR_PRESETS.keys()),
             default=["玄関", "LDK", "洋室", "浴室", "トイレ"], key="m_rooms")
@@ -371,7 +373,17 @@ with tab_maisoku:
     if input_png is not None:
         st.image(input_png, caption="入力（この画像を参考に生成）", width=280)
 
-    gen_disabled = (input_png is None) or (mode.startswith("ルームツアー") and not rooms)
+    # マイソク丸ごとモードはPDF必須 → 押下前に理由を明示し、ボタンを無効化（事後エラー回避）
+    _needs_pdf = mode.startswith("マイソク丸ごと")
+    _has_pdf = up is not None and (
+        (up.type == "application/pdf") or up.name.lower().endswith(".pdf"))
+    _pdf_missing = _needs_pdf and not _has_pdf
+    if _pdf_missing:
+        st.warning("このモードはマイソクの「PDF」が必要です（埋め込み写真を抽出します）。"
+                   "PDFをアップすると生成できます。")
+    gen_disabled = ((input_png is None)
+                    or (mode.startswith("複数部屋") and not rooms)
+                    or _pdf_missing)
     if st.button("🏠 内観を生成", type="primary", key="m_gen",
                  disabled=gen_disabled, use_container_width=True):
         try:
@@ -469,7 +481,7 @@ with tab_maisoku:
                         done += 1
                         prog.progress(done / total, text=f"生成中… {done}/{total}")
                     prog.empty()
-        elif mode.startswith("ルームツアー"):
+        elif mode.startswith("複数部屋"):
             ref_bytes = ref_photo.getvalue() if ref_photo is not None else None
             ref_mime = (ref_photo.type or "image/png") if ref_photo is not None else "image/png"
             # 優先順位: ①手動アップの参照写真 → ②生成済み3Dパース → ③マイソク内写真の自動抽出 → ④最初のカット
@@ -496,7 +508,7 @@ with tab_maisoku:
                 sel = ["LDK"] + [r for r in sel if r != "LDK"]
             anchor = ref_bytes            # 参照写真があれば最初からトーン基準に
             anchor_mime = ref_mime
-            prog = st.progress(0.0, text="ルームツアーを生成中…")
+            prog = st.progress(0.0, text="複数部屋の画像を生成中…")
             for i, r in enumerate(sel, 1):
                 use_ref = keep_style and anchor is not None
                 prompt = core.build_room_tour_prompt(
@@ -845,6 +857,7 @@ with tab_video:
                                        file_name="room_tour_silent.mp4",
                                        mime="video/mp4", key="v_dl_silent")
                 if out.get("bgm"):
+                    st.video(out["bgm"])
                     st.download_button("⬇️ BGM版 mp4", out["bgm"],
                                        file_name="room_tour_bgm.mp4",
                                        mime="video/mp4", key="v_dl_bgm")
