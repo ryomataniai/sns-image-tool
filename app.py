@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: junk-ext-v38 (空枠除外＋配列ズレ対策＋外観を部屋種別化)")
+    st.caption("build: telop-p1a-v39 (シーンテロップ2役化：部屋名+帖+情感2行・clean/pop・英和・冒頭極短)")
 
 
 # ======================================================================
@@ -917,7 +917,8 @@ def render_video():
                     imgs, captions=captions if v_caps else [""] * n_imgs,
                     top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                     also_silent=True, model_key=v_model, duration=v_dur,
-                    room_types=room_types, image_note=v_note, progress=_pg)
+                    room_types=room_types, image_note=v_note,
+                    taste="pop", progress=_pg)   # 旧ツールは従来の座布団テロップを維持
                 bar.progress(1.0)
                 status.write("完成")
                 st.success("ルームツアーを生成しました。")
@@ -952,6 +953,52 @@ _PL_ROOM_TO_VIDEO = {"外観": "generic", "玄関": "entrance", "LDK": "ldk", "�
 
 def _pl_video_room_type(room):
     return _PL_ROOM_TO_VIDEO.get(room, "generic")
+
+
+# シーンテロップ用：部屋種別 → 英名 / 和名
+_PL_ROOM_EN = {"外観": "exterior", "玄関": "entrance", "LDK": "living room", "キッチン": "kitchen",
+               "洋室": "bedroom", "寝室": "bedroom", "クローゼット": "closet", "浴室": "bathroom",
+               "トイレ": "toilet", "洗面": "washroom", "バルコニー": "balcony", "その他": "room"}
+_PL_ROOM_JP = {"外観": "外観", "玄関": "玄関", "LDK": "リビング", "キッチン": "キッチン",
+               "洋室": "洋室", "寝室": "寝室", "クローゼット": "クローゼット", "浴室": "浴室",
+               "トイレ": "トイレ", "洗面": "洗面", "バルコニー": "バルコニー", "その他": "その他"}
+# 情感2行の下書きテンプレ（P1a・LLMなし）。無い種別は帖数入り汎用文
+_PL_SUB_TEMPLATE = {
+    "外観": ["街並みになじむ佇まい", "帰るのが楽しみになる外観"],
+    "玄関": ["おかえりを迎える明るい玄関", "余裕のある土間で身支度もスムーズ"],
+    "LDK": ["朝は光が差し込む窓辺で", "夜は家族で並んでくつろぐ時間"],
+    "キッチン": ["料理がはかどる使いやすい設え", "家族と会話しながら過ごせる"],
+    "洋室": ["自然光が心地よいプライベート空間", "一日の終わりにゆっくり休める"],
+    "寝室": ["静かに眠りにつける落ち着き", "朝は柔らかな光で目覚める"],
+    "浴室": ["一日の疲れをゆっくり流せる", "清潔感のあるくつろぎのバス"],
+    "洗面": ["朝の身支度がはかどる洗面", "清潔で使いやすい水まわり"],
+    "トイレ": ["清潔感のある落ち着いた空間", "毎日を気持ちよく過ごせる"],
+    "バルコニー": ["風が抜ける開放的なバルコニー", "洗濯物も気持ちよく干せる"],
+    "クローゼット": ["たっぷり収納で部屋すっきり", "衣類も小物もきれいに片づく"],
+}
+
+
+def _pl_caption_main(it, lang):
+    """メインライン（部屋名＋帖）。lang='en'→'living room 10.9J' / 'ja'→'リビング 10.9帖'。"""
+    room = it.get("room", "その他")
+    jo = it.get("jo")
+    if lang == "en":
+        name = _PL_ROOM_EN.get(room, "room")
+        return f"{name} {jo:g}J" if jo else name
+    name = _PL_ROOM_JP.get(room, room)
+    return f"{name} {jo:g}帖" if jo else name
+
+
+def _pl_caption_sub(it):
+    """情感2行の自動下書き（改行区切り）。種別テンプレ→無ければ帖数入り汎用。"""
+    room = it.get("room", "その他")
+    t = _PL_SUB_TEMPLATE.get(room)
+    if t:
+        return "\n".join(t)
+    name = _PL_ROOM_JP.get(room, room)
+    jo = it.get("jo")
+    line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
+    return line1 + "\n自然光が心地よい空間"
 
 
 def _pl_room_use(room):
@@ -1668,11 +1715,41 @@ def _pl_stage_video():
                "（正方形素材を9:16にすると左右が大きめに切れます）。")
     st.caption("正方形素材は 1:1 動画が最も無駄なし。横長できれいに見せたい場合は、"
                "元写真（横長の撮影原本）を『手持ち写真』の入口で取り込むと余白・トリミングが減ります。")
-    v_caps = st.checkbox("キャプションを焼く", value=True, key="pl_v_caps")
+    v_caps = st.checkbox("シーンテロップ（部屋名＋情感2行）を焼く", value=True, key="pl_v_caps")
+    t1, t2, t3 = st.columns(3)
+    v_taste = t1.radio("テロップの見た目", ["clean", "pop"], index=0, key="pl_telop_taste",
+                       format_func=lambda x: {"clean": "clean（白・影・すっきり）",
+                                              "pop": "pop（座布団box）"}.get(x, x))
+    v_lang = t2.radio("部屋名の表記", ["en", "ja"], index=0, key="pl_room_lang",
+                      format_func=lambda x: {"en": "英（living room 10.9J）",
+                                             "ja": "和（リビング 10.9帖）"}.get(x, x))
+    v_open = t3.radio("冒頭タイトル", ["none", "flash"], index=0, key="pl_open_title",
+                      format_func=lambda x: {"none": "無し（映像から開始・離脱防止）",
+                                             "flash": "極短フラッシュ（0.5秒）"}.get(x, x))
+    v_flash = ""
+    if v_open == "flash":
+        v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳）", key="pl_flash_text",
+                                placeholder="例: ニューモート204 ｜ 2LDK")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
     v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="pl_v_note",
                            placeholder="例: ※画像はイメージです")
+
+    # 部屋名表記を切り替えたら、各シーンのメイン文の自動下書きをリセットして追従させる
+    if st.session_state.get("_pl_lang_sig") != v_lang:
+        for it in adopted:
+            st.session_state.pop(f"pl_capmain_{it['id']}", None)
+        st.session_state["_pl_lang_sig"] = v_lang
+
+    if v_caps:
+        with st.expander(f"各シーンのテロップを編集（{len(adopted)}シーン・自動下書き）", expanded=False):
+            st.caption("メイン＝部屋名＋帖（自動）。情感2行＝下書き。どちらも自由に編集できます。")
+            for pos, it in enumerate(adopted):
+                st.markdown(f"**{pos + 1}. {_PL_ROOM_JP.get(it['room'], it['room'])}**")
+                st.text_input("メイン", value=_pl_caption_main(it, v_lang),
+                              key=f"pl_capmain_{it['id']}")
+                st.text_area("情感2行（1行ずつ改行）", value=_pl_caption_sub(it),
+                             key=f"pl_capsub_{it['id']}", height=70)
 
     n = len(adopted)
     est_usd = {"kling2.6_pro": 0.35, "kling2.1_pro": 0.49, "kling3.0_pro": 0.84}\
@@ -1692,7 +1769,10 @@ def _pl_stage_video():
             return
         imgs = [(it.get("caption") or it["room"], it["gen_bytes"]) for it in adopted]
         room_types = [_pl_video_room_type(it["room"]) for it in adopted]
-        captions = [it.get("caption", "") for it in adopted]
+        # テロップ：編集済みがあれば優先、無ければ自動下書き
+        captions = [st.session_state.get(f"pl_capmain_{it['id']}") or _pl_caption_main(it, v_lang)
+                    for it in adopted]
+        sub_captions = [st.session_state.get(f"pl_capsub_{it['id']}", "") for it in adopted]
         bar = st.progress(0.0)
         status = st.empty()
 
@@ -1706,9 +1786,11 @@ def _pl_stage_video():
         try:
             out = rtv.build_tour(
                 imgs, captions=captions if v_caps else [""] * n,
+                sub_captions=sub_captions if v_caps else None,
                 top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                 also_silent=True, model_key=v_model, duration=v_dur,
-                room_types=room_types, image_note=v_note, aspect=v_aspect,
+                room_types=room_types, image_note=v_note,
+                taste=v_taste, flash_text=v_flash, aspect=v_aspect,
                 fit_mode=v_fit, progress=_pg)
             bar.progress(1.0)
             status.write("完成")
@@ -1779,4 +1861,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: junk-ext-v38 (空枠除外＋配列ズレ対策＋外観を部屋種別化)")
+    st.caption("build: telop-p1a-v39 (シーンテロップ2役化：部屋名+帖+情感2行・clean/pop・英和・冒頭極短)")

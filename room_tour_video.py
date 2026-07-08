@@ -244,16 +244,35 @@ ROOM_PROMPTS = {
 # ======================================================================
 # ffmpeg 後処理
 # ======================================================================
+_CAP_FADE = "alpha='if(lt(t\\,0.4)\\,t/0.4\\,1)'"
+
+
+def _cap_draw(fontref: str, text: str, size: int, y: str, taste: str,
+              box_bw: Optional[int] = None, box_alpha: float = 0.45) -> str:
+    """シーンテロップ1行の drawtext を作る。clean=白＋影／pop=白＋座布団box。中央・下部。
+    pop の box は旧キャプションと同一（boxcolor=black@0.45）。box_bw 未指定はサイズ比例。"""
+    if taste == "pop":
+        bw = box_bw if box_bw is not None else max(12, int(size * 0.45))
+        style = f"fontcolor=white:fontsize={size}:box=1:boxcolor=black@{box_alpha}:boxborderw={bw}"
+    else:  # clean（既定・Simple内見準拠）：影付き・boxなし
+        style = (f"fontcolor=white:fontsize={size}:"
+                 f"shadowcolor=black@0.55:shadowx=2:shadowy=2")
+    return f"drawtext={fontref}:text='{_esc(text)}':{style}:x=(w-text_w)/2:y={y}:{_CAP_FADE}"
+
+
 def _normalize_clip(in_path: str, out_path: str, caption: str = "",
-                    top_tag: str = "", note: str = "",
+                    sub_lines: Optional[list] = None, top_tag: str = "", note: str = "",
+                    taste: str = "clean", flash: str = "",
                     out_w: int = 1080, out_h: int = 1920,
                     fit_mode: str = "fill") -> str:
-    """out_w×out_h（既定=縦1080x1920）に整形し、上部タグ・下部キャプション・任意注記を焼く。30fps化。
+    """out_w×out_h（既定=縦1080x1920）に整形し、テロップ（部屋名＋情感2行）・上部タグ・注記を焼く。30fps化。
 
-    fit_mode:
-      "fill"（既定）= 画面いっぱいにカバー（crop-to-fill・余白ゼロ・端が切れる）
-      "contain"    = 全体を収め、余白はぼかし背景で埋める（従来挙動）
-    out_w/out_h で 9:16・1:1・16:9 など任意比率に対応。
+    caption   : シーンのメインライン（例 "living room 10.9J"）
+    sub_lines : 情感コピー（最大2行・下部中央）
+    taste     : "clean"（既定・白＋影・boxなし）/ "pop"（白＋座布団box）
+    flash     : 冒頭極短フラッシュ文言（先頭クリップのみ・0.5秒フェードで重畳）
+    fit_mode  : "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・ぼかし余白）
+    キー文字は下部中央・最下部200px回避（SNS UIのsafe-zone）。out_w/out_h で任意比率対応。
     """
     ff = _ffmpeg()
     font = _font()
@@ -273,13 +292,20 @@ def _normalize_clip(in_path: str, out_path: str, caption: str = "",
         draws.append(f"drawtext={fontref}:text='{_esc(top_tag)}':fontcolor=white:fontsize=40:"
                      f"box=1:boxcolor=black@0.40:boxborderw=18:x=(w-text_w)/2:y=150:"
                      f"alpha='if(lt(t\\,0.4)\\,t/0.4\\,1)'")
-    if caption:
-        draws.append(f"drawtext={fontref}:text='{_esc(caption)}':fontcolor=white:fontsize=56:"
-                     f"box=1:boxcolor=black@0.45:boxborderw=26:x=(w-text_w)/2:y=h-400:"
-                     f"alpha='if(lt(t\\,0.4)\\,t/0.4\\,1)'")
+    if caption:                                   # メインライン（旧キャプションと同一の56/box26/y=h-400）
+        draws.append(_cap_draw(fontref, caption, 56, "h-400", taste, box_bw=26))
+    for k, s in enumerate((sub_lines or [])[:2]):  # 情感2行（メインの下・最下部200px回避）
+        if s and s.strip():
+            draws.append(_cap_draw(fontref, s, 34, f"h-{330 - k * 52}", taste))
     if note:
         draws.append(f"drawtext={fontref}:text='{_esc(note)}':fontcolor=white@0.85:fontsize=26:"
                      f"box=1:boxcolor=black@0.35:boxborderw=10:x=w-text_w-40:y=h-70")
+    if flash:                                     # 冒頭極短フラッシュ（0.5秒・中央・フェードイン/アウト）
+        fa = ("alpha='if(lt(t\\,0.15)\\,t/0.15\\,if(lt(t\\,0.35)\\,1\\,"
+              "if(lt(t\\,0.5)\\,(0.5-t)/0.15\\,0)))'")
+        draws.append(f"drawtext={fontref}:text='{_esc(flash)}':fontcolor=white:fontsize=76:"
+                     f"shadowcolor=black@0.6:shadowx=3:shadowy=3:"
+                     f"x=(w-text_w)/2:y=(h-text_h)/2:{fa}")
     chain = base + ";[base]" + (",".join(draws) + "," if draws else "") + "fps=30,format=yuv420p,setsar=1[v]"
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", in_path,
                     "-filter_complex", chain, "-map", "[v]", "-an",
@@ -356,10 +382,12 @@ ASPECT_DIMS = {"9:16": (1080, 1920), "1:1": (1080, 1080), "16:9": (1920, 1080)}
 
 
 def build_tour(images: list[tuple], *, captions: Optional[list] = None,
+               sub_captions: Optional[list] = None,
                top_tag: str = "", with_captions: bool = True,
                with_bgm: bool = True, also_silent: bool = True,
                model_key: str = "kling2.6_pro", duration: int = 5,
                room_types: Optional[list] = None, image_note: str = "",
+               taste: str = "clean", flash_text: str = "",
                aspect: str = "9:16", fit_mode: str = "fill", progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
@@ -393,8 +421,16 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                 f.write(clip_bytes)
             seg = os.path.join(workdir, f"seg_{i}.mp4")
             cap = captions[i] if (with_captions and i < len(captions)) else ""
-            _normalize_clip(raw, seg, caption=cap, top_tag=top_tag if with_captions else "",
-                            note=image_note, out_w=out_w, out_h=out_h, fit_mode=fit_mode)
+            subs = None
+            if with_captions and sub_captions and i < len(sub_captions):
+                raw_sub = sub_captions[i]
+                parts = raw_sub.split("\n") if isinstance(raw_sub, str) else (raw_sub or [])
+                subs = [s for s in parts if s and s.strip()][:2]
+            flash = flash_text if (i == 0 and flash_text) else ""   # 冒頭は先頭クリップのみ
+            _normalize_clip(raw, seg, caption=cap, sub_lines=subs,
+                            top_tag=top_tag if with_captions else "",
+                            note=image_note, taste=taste, flash=flash,
+                            out_w=out_w, out_h=out_h, fit_mode=fit_mode)
             seg_paths.append(seg)
 
         # ③ クロスフェード連結
