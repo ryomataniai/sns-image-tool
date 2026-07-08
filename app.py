@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: named-v34 (名前付き部屋リンクUI：洋室A/B確定・帖数紐付け・B2b-2b-2)")
+    st.caption("build: reorder-v35 (関所の並べ替え↑↓＋動線順自動整列)")
 
 
 # ======================================================================
@@ -1194,6 +1194,37 @@ def _pl_link_items(items, pl_rooms):
             it["jo"] = byid[rid].get("jo")
 
 
+# 動線順（ツアーらしい並び）。同種内は現orderを維持して安定ソート
+_PL_ROOM_RANK = {"玄関": 0, "LDK": 1, "キッチン": 2, "洋室": 3, "寝室": 4,
+                 "クローゼット": 5, "洗面": 6, "浴室": 7, "トイレ": 8,
+                 "バルコニー": 9, "その他": 10}
+
+
+def _pl_gen_sorted():
+    """生成済アイテムを order 昇順で返す。"""
+    return sorted([it for it in st.session_state.get("pl_items", [])
+                   if it.get("gen_bytes")], key=lambda it: it.get("order", 0))
+
+
+def _pl_auto_reorder():
+    """生成済アイテムの order を部屋種別の動線順で振り直す（同種は現order維持＝安定）。"""
+    gen = sorted(_pl_gen_sorted(),
+                 key=lambda it: (_PL_ROOM_RANK.get(it.get("room"), 10), it.get("order", 0)))
+    for i, it in enumerate(gen):
+        it["order"] = i
+
+
+def _pl_move(iid, delta):
+    """order 順で iid のアイテムを delta 方向の隣と order を入れ替える。"""
+    gen = _pl_gen_sorted()
+    idx = next((k for k, it in enumerate(gen) if it["id"] == iid), None)
+    if idx is None:
+        return
+    j = idx + delta
+    if 0 <= j < len(gen):
+        gen[idx]["order"], gen[j]["order"] = gen[j]["order"], gen[idx]["order"]
+
+
 # 家具ステージングを許すのは居室のみ（非居室は窓・別室の捏造事故を防ぐ）
 PL_RESIDENTIAL = ("LDK", "洋室", "寝室")
 
@@ -1268,6 +1299,7 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
             prog.progress(done / len(jobs), text=f"画像化中… {done}/{len(jobs)}")
     prog.empty()
     if any(it.get("gen_bytes") for it in st.session_state.get("pl_items", [])):
+        st.session_state["pl_reordered"] = False   # 新バッチは関所で動線順を初回自動適用
         st.session_state["pl_stage"] = "review"
         st.rerun()
     else:
@@ -1422,16 +1454,35 @@ def _pl_stage_review():
         if st.button("← 取り込みに戻る", key="pl_back_input0"):
             st.session_state["pl_stage"] = "input"; st.rerun()
         return
-    st.caption("各画像を Before/After で確認。採用／除外／この画像だけ再生成 が選べます。"
-               "動画化は下のボタンから（falコスト発生）。")
+    st.caption("各画像を Before/After で確認。採用／除外／この画像だけ再生成／並べ替え が選べます。"
+               "この並び順で動画が連結されます。動画化は下のボタンから（falコスト発生）。")
+    # D: 初回入場時に動線順を自動適用（以降は手動並べ替えを尊重して再適用しない）
+    if not st.session_state.get("pl_reordered"):
+        _pl_auto_reorder()
+        st.session_state["pl_reordered"] = True
+    # C: いつでも動線順に一発整列
+    if st.button("↕ 動線順に整列（玄関→LDK→洋室→…→水回り→バルコニー）",
+                 key="pl_reorder_btn", use_container_width=True):
+        _pl_auto_reorder(); st.rerun()
     try:
         client = make_client()
     except RuntimeError:
         client = None
 
-    for it in gen_items:
+    ordered = _pl_gen_sorted()     # A: order 昇順で表示
+    n = len(ordered)
+    for pos, it in enumerate(ordered):
         i = it["id"]
         with st.container(border=True):
+            # B: ↑/↓ で隣と並べ替え（端は無効）
+            mv1, mv2, mv3 = st.columns([1, 1, 6])
+            if mv1.button("↑ 上へ", key=f"pl_up_{i}", disabled=(pos == 0),
+                          use_container_width=True):
+                _pl_move(i, -1); st.rerun()
+            if mv2.button("↓ 下へ", key=f"pl_down_{i}", disabled=(pos == n - 1),
+                          use_container_width=True):
+                _pl_move(i, +1); st.rerun()
+            mv3.caption(f"{pos + 1}番目 / {n}枚　・　{it.get('room', '')}")
             bc, ac = st.columns(2)
             bc.caption("Before（元）")
             bc.image(it["src_bytes"], use_container_width=True)
@@ -1478,9 +1529,9 @@ def _pl_stage_review():
                         it["gen_bytes"] = data
                         st.rerun()
 
-    adopted = [it for it in gen_items if it.get("_adopt", True)]
+    adopted = [it for it in ordered if it.get("_adopt", True)]   # 動線順で採用
     st.divider()
-    st.write(f"採用 **{len(adopted)}**枚 / 生成 {len(gen_items)}枚")
+    st.write(f"採用 **{len(adopted)}**枚 / 生成 {len(ordered)}枚（上の並び順で連結）")
     e1, e2, e3 = st.columns(3)
     if e1.button("← 取り込みに戻る", key="pl_back_input", use_container_width=True):
         st.session_state["pl_stage"] = "input"; st.rerun()
@@ -1641,4 +1692,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: named-v34 (名前付き部屋リンクUI：洋室A/B確定・帖数紐付け・B2b-2b-2)")
+    st.caption("build: reorder-v35 (関所の並べ替え↑↓＋動線順自動整列)")
