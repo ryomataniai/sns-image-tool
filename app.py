@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: ratio-v26 (動画の比率選択9:16/1:1/16:9＋画像比率用途明示＋STEP1横並び・Batch2)")
+    st.caption("build: roomaware-v27 (用途モード＋部屋別ステージング/リノベ・room-aware品質hotfix)")
 
 
 # ======================================================================
@@ -986,15 +986,62 @@ def _pl_reset():
         del st.session_state[k]
 
 
+# 用途モード（度合いだけを切り替える。機能＝部屋種別は不変）
+PL_MODES = ["賃貸ステージング", "リノベ提案（事業B）"]
+
+
+def _pl_default_treatment(room, mode):
+    """部屋種別 × 用途モード → 既定の処理（treatment）。処理は部屋から自動決定。"""
+    if mode == "リノベ提案（事業B）":
+        if room in ("クローゼット", "バルコニー", "その他"):
+            return "高解像度化のみ"      # 大改変しない
+        return "リノベ後イメージ"
+    # 賃貸ステージング
+    if room in ("LDK", "洋室", "寝室"):
+        return "家具ステージング"
+    if room in ("キッチン", "玄関"):
+        return "水回り・玄関を演出"
+    return "高解像度化のみ"              # 浴室・洗面・トイレ・クローゼット・バルコニー・その他
+
+
+def _pl_apply_mode_defaults():
+    """用途モード変更時：全itemの処理を 部屋×モード で再導出（手動選択より優先）。"""
+    mode = st.session_state.get("pl_mode", PL_MODES[0])
+    for it in st.session_state.get("pl_items", []):
+        r = st.session_state.get(f"pl_room_{it['id']}", it.get("room", "その他"))
+        st.session_state[f"pl_treat_{it['id']}"] = _pl_default_treatment(r, mode)
+
+
+def _pl_apply_room_default(i):
+    """部屋種別変更時：そのitemの処理を 部屋×モード で再導出。"""
+    mode = st.session_state.get("pl_mode", PL_MODES[0])
+    r = st.session_state.get(f"pl_room_{i}", "その他")
+    st.session_state[f"pl_treat_{i}"] = _pl_default_treatment(r, mode)
+
+
+# 家具ステージングを許すのは居室のみ（非居室は窓・別室の捏造事故を防ぐ）
+PL_RESIDENTIAL = ("LDK", "洋室", "寝室")
+
+
 def _pl_generate_one(client, it, style_desc, model, aspect, req):
     """1itemを treatment/room に従い生成。(bytes|None, err|None) を返す。"""
     t = it["treatment"]
+    room = it.get("room", "")
     if t == "リノベ後イメージ":
-        pr = core.build_renovation_prompt(style_desc, user_request=req)
+        # room-aware（部屋の機能を保ったまま刷新）
+        pr = core.build_renovation_prompt(style_desc, user_request=req, room=room)
         disc = "※リノベ後のイメージ（仕上がりは設計により異なります）"
-    elif t == "家具ステージング":
-        pr = core.build_staging_prompt(style_desc, _pl_room_use(it["room"]), user_request=req)
+    elif t == "家具ステージング" and room in PL_RESIDENTIAL:
+        pr = core.build_staging_prompt(style_desc, _pl_room_use(room), user_request=req)
         disc = "※AI加工のイメージ"
+    elif t == "家具ステージング":
+        # 非居室に家具ステージングが来た場合の最終防波堤（居室用ステージングは流さない）
+        if room in ("キッチン", "玄関", "廊下", "バルコニー"):
+            pr = core.build_water_staging_prompt(style_desc, user_request=req)
+            disc = "※AI加工のイメージ"
+        else:  # 浴室・洗面・トイレ・クローゼット・その他
+            pr = core.build_enhance_prompt()
+            disc = None
     elif t == "水回り・玄関を演出":
         pr = core.build_water_staging_prompt(style_desc, user_request=req)
         disc = "※AI加工のイメージ"
@@ -1079,10 +1126,13 @@ def _pl_stage_input():
                 ai = core.classify_rooms(make_client(), raw_srcs)
         except Exception:  # noqa: BLE001
             pass
+        _mode = st.session_state.get("pl_mode", PL_MODES[0])
         items = []
         for i, b in enumerate(raw_srcs):
-            room, treat = _pl_guess_room_treat(
+            room, guessed = _pl_guess_room_treat(
                 ai[i] if i < len(ai) else "おまかせステージング", blanks[i])
+            # 白紙・SKIPは「使わない」、それ以外は 部屋×用途モード で処理を自動決定
+            treat = "使わない" if guessed == "使わない" else _pl_default_treatment(room, _mode)
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
                           "treatment": treat, "gen_bytes": None, "caption": ""})
         st.session_state["pl_items"] = items
@@ -1090,12 +1140,19 @@ def _pl_stage_input():
         for k in [k for k in list(st.session_state)
                   if k.startswith(("pl_room_", "pl_treat_"))]:
             del st.session_state[k]
+        # ウィジェットの値は session_state で管理（room/mode変更コールバックが上書きするため）
+        for it in items:
+            st.session_state[f"pl_room_{it['id']}"] = it["room"]
+            st.session_state[f"pl_treat_{it['id']}"] = it["treatment"]
 
     items = st.session_state.get("pl_items", [])
 
-    st.markdown("**何をつくる？**（各画像の処理を下で個別に調整できます）")
-    st.caption("家具ステージング＝空室に家具／リノベ後イメージ＝フル刷新(事業B)／"
-               "水回り・玄関＝小物演出／高解像度化のみ＝内容そのまま綺麗に")
+    st.markdown("**何をつくる？**（用途を選ぶと各画像の処理が部屋種別から自動で決まります）")
+    st.radio("用途", PL_MODES, horizontal=True, key="pl_mode",
+             on_change=_pl_apply_mode_defaults)
+    st.caption("賃貸ステージング＝家具を置いて魅せる（構造は維持）／"
+               "リノベ提案（事業B）＝内装ごと刷新した完成イメージ（機能と骨格は維持）。"
+               "処理は部屋種別ごとに自動設定され、必要なら個別に変更できます。")
     _IMG_ASPECT_LABEL = {"4:5": "4:5（Instagram投稿）", "1:1": "1:1（正方形）", "3:4": "3:4（縦）"}
     gc1, gc2, gc3 = st.columns(3)
     style_name = gc1.selectbox("スタイル", list(core.INTERIOR_STYLES.keys()), key="pl_style")
@@ -1116,14 +1173,12 @@ def _pl_stage_input():
         i = it["id"]
         rc1, rc2, rc3 = st.columns([1, 2, 2])
         rc1.image(it["src_bytes"], width=110)
+        # 値は session_state（pl_room_/pl_treat_）で管理するため index は渡さない
         it["room"] = rc2.selectbox(
-            "部屋種別", PL_ROOMS,
-            index=_pl_sel_index(PL_ROOMS, it["room"], len(PL_ROOMS) - 1),
-            key=f"pl_room_{i}", label_visibility="collapsed")
+            "部屋種別", PL_ROOMS, key=f"pl_room_{i}", label_visibility="collapsed",
+            on_change=_pl_apply_room_default, args=(i,))
         it["treatment"] = rc3.selectbox(
-            "処理", PL_TREATMENTS,
-            index=_pl_sel_index(PL_TREATMENTS, it["treatment"], 0),
-            key=f"pl_treat_{i}", label_visibility="collapsed")
+            "処理", PL_TREATMENTS, key=f"pl_treat_{i}", label_visibility="collapsed")
 
     jobs = [it for it in items if it["treatment"] != "使わない"]
     st.divider()
@@ -1339,5 +1394,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: ratio-v26 (動画の比率選択9:16/1:1/16:9＋画像比率用途明示＋STEP1横並び・Batch2)")
+    st.caption("build: roomaware-v27 (用途モード＋部屋別ステージング/リノベ・room-aware品質hotfix)")
 nav.run()
