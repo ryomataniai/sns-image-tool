@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: roomaware-v27 (用途モード＋部屋別ステージング/リノベ・room-aware品質hotfix)")
+    st.caption("build: fill-v28 (動画の余白の扱い：埋める/全体表示 crop-to-fill・hotfix)")
 
 
 # ======================================================================
@@ -1289,7 +1289,14 @@ def _pl_stage_video():
     v_bgm = o3.checkbox("BGMを付ける", value=True, key="pl_v_bgm")
     v_aspect = st.selectbox("動画の向き", ["9:16", "1:1", "16:9"], index=0, key="pl_v_aspect",
                             format_func=lambda a: _VID_ASPECT_LABEL.get(a, a))
-    st.caption("動画は選んだ向きで生成。採用画像を自動リフレーム（ぼかし背景で収める）。")
+    _FIT_LABEL = {"fill": "埋める（余白なし・端が少し切れる）",
+                  "contain": "全体を見せる（上下に余白）"}
+    v_fit = st.radio("余白の扱い", ["fill", "contain"], index=0, horizontal=True,
+                     key="pl_v_fit", format_func=lambda m: _FIT_LABEL.get(m, m))
+    st.caption("埋める＝余白ゼロですが、写真の端が少し切れます"
+               "（正方形素材を9:16にすると左右が大きめに切れます）。")
+    st.caption("正方形素材は 1:1 動画が最も無駄なし。横長できれいに見せたい場合は、"
+               "元写真（横長の撮影原本）を『手持ち写真』の入口で取り込むと余白・トリミングが減ります。")
     v_caps = st.checkbox("キャプションを焼く", value=True, key="pl_v_caps")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
@@ -1330,7 +1337,8 @@ def _pl_stage_video():
                 imgs, captions=captions if v_caps else [""] * n,
                 top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                 also_silent=True, model_key=v_model, duration=v_dur,
-                room_types=room_types, image_note=v_note, aspect=v_aspect, progress=_pg)
+                room_types=room_types, image_note=v_note, aspect=v_aspect,
+                fit_mode=v_fit, progress=_pg)
             bar.progress(1.0)
             status.write("完成")
             st.success("ルームツアーを生成しました。")
@@ -1394,5 +1402,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: roomaware-v27 (用途モード＋部屋別ステージング/リノベ・room-aware品質hotfix)")
+    st.caption("build: fill-v28 (動画の余白の扱い：埋める/全体表示 crop-to-fill・hotfix)")
 nav.run()

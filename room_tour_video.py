@@ -246,16 +246,27 @@ ROOM_PROMPTS = {
 # ======================================================================
 def _normalize_clip(in_path: str, out_path: str, caption: str = "",
                     top_tag: str = "", note: str = "",
-                    out_w: int = 1080, out_h: int = 1920) -> str:
-    """ぼかし背景で out_w×out_h（既定=縦1080x1920）に収め、上部タグ・下部キャプション・
-    任意注記を焼く。30fps化。out_w/out_h で 9:16・1:1・16:9 など任意比率に対応。"""
+                    out_w: int = 1080, out_h: int = 1920,
+                    fit_mode: str = "fill") -> str:
+    """out_w×out_h（既定=縦1080x1920）に整形し、上部タグ・下部キャプション・任意注記を焼く。30fps化。
+
+    fit_mode:
+      "fill"（既定）= 画面いっぱいにカバー（crop-to-fill・余白ゼロ・端が切れる）
+      "contain"    = 全体を収め、余白はぼかし背景で埋める（従来挙動）
+    out_w/out_h で 9:16・1:1・16:9 など任意比率に対応。
+    """
     ff = _ffmpeg()
     font = _font()
-    # 背景=フレーム全体をぼかし埋め、前景=元画像を縮小してフレーム内に収める（比率非依存）
-    base = (f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-            f"crop={out_w}:{out_h},boxblur=40:1,eq=brightness=-0.12[bg];"
-            f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2[base]")
+    if fit_mode == "contain":
+        # 全体を収める：前景を縮小して中央配置、余白はぼかし背景（従来）
+        base = (f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                f"crop={out_w}:{out_h},boxblur=40:1,eq=brightness=-0.12[bg];"
+                f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2[base]")
+    else:
+        # 埋める：拡大してフレームを覆い、はみ出しをcrop（余白ゼロ）
+        base = (f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                f"crop={out_w}:{out_h}[base]")
     draws = []
     fontref = f"fontfile='{font}'" if font else "font='Noto Sans CJK JP'"
     if top_tag:
@@ -349,12 +360,13 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                with_bgm: bool = True, also_silent: bool = True,
                model_key: str = "kling2.6_pro", duration: int = 5,
                room_types: Optional[list] = None, image_note: str = "",
-               aspect: str = "9:16", progress=None) -> dict:
+               aspect: str = "9:16", fit_mode: str = "fill", progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
     captions: 各クリップ下部の文言（None かつ with_captions=True なら name を使用）
     room_types: 各画像の部屋種別キー（ROOM_PROMPTS のキー）。None は 'generic'
     aspect: 動画の向き "9:16"（既定）/ "1:1" / "16:9"
+    fit_mode: 余白の扱い "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・余白あり）
     progress: callable(step:int, total:int, msg:str) 進捗コールバック（任意）
     戻り値: {'silent': bytes, 'bgm': bytes}（生成した版のみ）
     """
@@ -382,7 +394,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
             seg = os.path.join(workdir, f"seg_{i}.mp4")
             cap = captions[i] if (with_captions and i < len(captions)) else ""
             _normalize_clip(raw, seg, caption=cap, top_tag=top_tag if with_captions else "",
-                            note=image_note, out_w=out_w, out_h=out_h)
+                            note=image_note, out_w=out_w, out_h=out_h, fit_mode=fit_mode)
             seg_paths.append(seg)
 
         # ③ クロスフェード連結
