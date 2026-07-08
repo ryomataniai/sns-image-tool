@@ -172,28 +172,41 @@ def synth_bgm(out_wav: str, seconds: float = 24.0, sr: int = 44100) -> str:
 #   image_key … 画像URLの引数名（モデルで異なる）
 #   audio_off … 無音化に必要な追加引数（2.6/v3 は generate_audio 既定true→falseで無音&低コスト）
 #   ※ i2v pro は aspect_ratio 非対応（入力画像基準）。最終9:16化はffmpeg側で実施。
+# Kling（v2.1/v2.6/v3 image-to-video）は negative_prompt / cfg_scale をサポート。
+# 非対応モデルを足す場合は supports_negative=False にすれば無害スキップされる。
 FAL_MODELS = {
     "kling2.6_pro": {  # 既定・無音推奨
         "endpoint": "fal-ai/kling-video/v2.6/pro/image-to-video",
         "image_key": "start_image_url",
         "audio_off": {"generate_audio": False},
+        "supports_negative": True,
     },
     "kling2.1_pro": {
         "endpoint": "fal-ai/kling-video/v2.1/pro/image-to-video",
         "image_key": "image_url",
         "audio_off": {},  # 2.1 はそもそも無音
+        "supports_negative": True,
     },
     "kling3.0_pro": {  # 見せ場・最上（エンドポイントは v3）
         "endpoint": "fal-ai/kling-video/v3/pro/image-to-video",
         "image_key": "start_image_url",
         "audio_off": {"generate_audio": False},
+        "supports_negative": True,
     },
 }
 
+# 全クリップ共通の除外プロンプト（外観のmorph抑制＋室内の破綻抑制に効く）
+DEFAULT_NEGATIVE_PROMPT = (
+    "distortion, morphing, warping, deforming building, changing architecture, "
+    "extra or missing windows, melting walls, bending structure, people, text, watermark"
+)
+
 
 def generate_clip_fal(image_bytes: bytes, prompt: str, duration: int = 5,
-                      model_key: str = "kling2.6_pro", silent: bool = True) -> bytes:
-    """1枚の画像を image-to-video で動画化し mp4 バイト列を返す。要 FAL_KEY。"""
+                      model_key: str = "kling2.6_pro", silent: bool = True,
+                      negative_prompt: str = "", cfg_scale: Optional[float] = None) -> bytes:
+    """1枚の画像を image-to-video で動画化し mp4 バイト列を返す。要 FAL_KEY。
+    negative_prompt/cfg_scale は supports_negative なモデルのみ送る（非対応は無害スキップ）。"""
     import fal_client  # 遅延import（未導入環境でモジュール自体は読める）
 
     if not os.environ.get("FAL_KEY"):
@@ -213,6 +226,11 @@ def generate_clip_fal(image_bytes: bytes, prompt: str, duration: int = 5,
         }
         if silent:
             args.update(cfg.get("audio_off", {}))  # 無音化（対応モデルのみ）
+        if cfg.get("supports_negative"):           # 対応モデルのみ（非対応は400回避でスキップ）
+            if negative_prompt:
+                args["negative_prompt"] = negative_prompt
+            if cfg_scale is not None:
+                args["cfg_scale"] = cfg_scale
         result = fal_client.subscribe(cfg["endpoint"], arguments=args, with_logs=False)
     finally:
         try:
@@ -238,6 +256,7 @@ ROOM_PROMPTS = {
     "bathroom": "Real estate room tour. Slow gentle pan across a clean bathroom. Fixtures stay completely still. No people. Soft lighting, stable cinematic camera, no warping.",
     "toilet":   "Real estate room tour. Slow gentle push-in in a clean toilet room. Fixtures stay completely still. No people. Soft lighting, stable cinematic camera, no warping.",
     "generic":  "Real estate room tour. Slow smooth push-in across the room. Everything stays completely still. No people. Natural light, stable cinematic camera, no warping.",
+    "exterior": "Real estate exterior. Slow cinematic forward dolly, walking toward the building facade and entrance, revealing depth and parallax. Keep the building architecture, walls, windows, number of floors and overall shape exactly as-is; do not change, add or remove any structural detail. Photorealistic, stable camera, no morphing, no warping, no deformation, no people. Natural daylight.",
 }
 
 
@@ -404,6 +423,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                room_types: Optional[list] = None, image_note: str = "",
                taste: str = "clean", tastes: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
+               negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
                aspect: str = "9:16", fit_mode: str = "fill", progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
@@ -431,7 +451,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                 progress(i, n, f"{name}: 動画生成中…")
             rt = room_types[i] if i < len(room_types) else "generic"
             prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
-            clip_bytes = generate_clip_fal(img, prompt, duration=duration, model_key=model_key)
+            clip_bytes = generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
+                                           negative_prompt=negative_prompt, cfg_scale=cfg_scale)
             raw = os.path.join(workdir, f"raw_{i}.mp4")
             with open(raw, "wb") as f:
                 f.write(clip_bytes)

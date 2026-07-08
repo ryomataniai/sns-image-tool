@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: telop-p1a1-v40 (テロップ画像ごと配置/スタイル：全体既定＋上書き＋種別自動)")
+    st.caption("build: ext-faithful-v41 (外観morph抑制：exteriorプロンプト＋negative_prompt・AIモーション維持)")
 
 
 # ======================================================================
@@ -945,7 +945,7 @@ PL_ROOMS = ["外観", "玄関", "LDK", "キッチン", "洋室", "寝室", "ク�
             "浴室", "トイレ", "洗面", "バルコニー", "その他"]
 PL_TREATMENTS = ["家具ステージング", "リノベ後イメージ", "水回り・玄関を演出",
                  "高解像度化のみ", "使わない"]
-_PL_ROOM_TO_VIDEO = {"外観": "generic", "玄関": "entrance", "LDK": "ldk", "キッチン": "ldk",
+_PL_ROOM_TO_VIDEO = {"外観": "exterior", "玄関": "entrance", "LDK": "ldk", "キッチン": "ldk",
                      "洋室": "bedroom", "寝室": "bedroom", "クローゼット": "generic",
                      "浴室": "bathroom", "トイレ": "toilet", "洗面": "generic",
                      "バルコニー": "generic", "その他": "generic"}
@@ -1906,4 +1906,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: telop-p1a1-v40 (テロップ画像ごと配置/スタイル：全体既定＋上書き＋種別自動)")
+    st.caption("build: ext-faithful-v41 (外観morph抑制：exteriorプロンプト＋negative_prompt・AIモーション維持)")
