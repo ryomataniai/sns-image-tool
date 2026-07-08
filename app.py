@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: reorder-v35 (関所の並べ替え↑↓＋動線順自動整列)")
+    st.caption("build: fpdetect-v36 (間取り図選定をローカル画像判定に切替・LLM誤タグ対策)")
 
 
 # ======================================================================
@@ -1035,16 +1035,44 @@ def _pl_apply_roomlink(i):
             return
 
 
-def _pl_detect_floorplan(pdf_imgs):
-    """PDF抽出画像から間取り図(FLOORPLAN)を1枚特定して bytes を返す。取り込み時1回のみ呼ぶ。"""
-    if not pdf_imgs:
-        return None
+def _pl_score_floorplan(img_bytes):
+    """間取り図らしさをローカル画像判定。→ (gate:bool, score:float)。
+    間取り図＝白地が多い＋黒い線がある＋ほぼ無彩色。写真/地図/外観/白紙枠と物理的に区別。"""
     try:
-        codes = core.classify_maisoku_images(make_client(), pdf_imgs)
+        import numpy as _np
+        from io import BytesIO as _BytesIO
+        from PIL import Image as _Image
+        im = _Image.open(_BytesIO(img_bytes)).convert("RGB")
+        im.thumbnail((160, 160))
+        a = _np.asarray(im, dtype="float32")
     except Exception:  # noqa: BLE001
-        return None
-    for b, c in zip(pdf_imgs, codes):
-        if c == "FLOORPLAN":
+        return (False, 0.0)
+    if a.size == 0:
+        return (False, 0.0)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    white_ratio = float((lum > 235).mean())
+    black_ratio = float((lum < 60).mean())
+    mx = a.max(axis=2)
+    mn = a.min(axis=2)
+    sat_mean = float(_np.where(mx > 0, (mx - mn) / _np.maximum(mx, 1e-6), 0.0).mean())
+    gate = (white_ratio > 0.6 and 0.02 < black_ratio < 0.20 and sat_mean < 0.15)
+    score = white_ratio * (1.0 - sat_mean)
+    return (gate, score)
+
+
+def _pl_choose_floorplan(pdf_imgs, codes):
+    """PDF抽出画像から間取り図を1枚選ぶ。ローカル判定（決定的）→ LLMフォールバック→ None。"""
+    best_b, best_score = None, -1.0
+    for b in pdf_imgs:
+        gate, score = _pl_score_floorplan(b)
+        if gate and score > best_score:
+            best_b, best_score = b, score
+    if best_b is not None:
+        return best_b
+    # フォールバック：classify_maisoku_images が FLOORPLAN とタグした最初の画像
+    for i, b in enumerate(pdf_imgs):
+        if i < len(codes) and codes[i] == "FLOORPLAN":
             return b
     return None
 
@@ -1343,13 +1371,13 @@ def _pl_stage_input():
             pass
         parsed = _pl_parse_maisoku(pdf.getvalue()) if pdf is not None else {"rooms": [], "summary": ""}
         _mode = st.session_state.get("pl_mode", PL_MODES[0])
-        items, floor_plan = [], None
+        # 間取り図はローカル画像判定で選ぶ（LLM誤タグ対策・決定的）。候補はPDF抽出画像のみ
+        floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)])
+        items = []
         for i, b in enumerate(raw_srcs):
             code = codes[i] if i < len(codes) else "OTHER"
-            if code == "FLOORPLAN" and floor_plan is None:
-                floor_plan = b
             room = _PL_CODE_TO_ROOM.get(code, "その他")
-            if code in _PL_EXCLUDE_CODES or core.is_blank_image(b):
+            if code in _PL_EXCLUDE_CODES or core.is_blank_image(b) or b is floor_plan:
                 treat = "使わない"     # 間取り図・外観・地図・白紙は生成対象から除外
             else:
                 treat = _pl_default_treatment(room, _mode)
@@ -1692,4 +1720,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: reorder-v35 (関所の並べ替え↑↓＋動線順自動整列)")
+    st.caption("build: fpdetect-v36 (間取り図選定をローカル画像判定に切替・LLM誤タグ対策)")
