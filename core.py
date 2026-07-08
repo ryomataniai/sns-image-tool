@@ -643,7 +643,10 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
             "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
             "BATH=浴室、WASH=洗面・脱衣所、TOILET=トイレ、"
             "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、"
-            "HALLWAY=廊下、STORAGE=収納・クローゼット、BALCONY=バルコニー・ベランダ、"
+            "HALLWAY=廊下、"
+            "STORAGE=収納・クローゼット・ウォークインクローゼット(WIC)・納戸・シューズクローク"
+            "（棚やハンガーパイプ主体で、生活家具〈ベッド/ソファ〉や掃き出し窓が無い小部屋は居室でなくSTORAGE）、"
+            "BALCONY=バルコニー・ベランダ、"
             "FLOORPLAN=間取り図・平面図、"
             "EXTERIOR=屋外から写した建物外観・外壁・共用部・玄関ドアの外側"
             "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
@@ -662,6 +665,78 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
     for i in range(n):
         c = arr[i].upper() if i < len(arr) and isinstance(arr[i], str) else "OTHER"
         out.append(c)
+    return out
+
+
+# 間取り図の記載ラベル → 部屋種別（PL_ROOMS 準拠）へ正規化
+_FLOORPLAN_TYPE_NORMALIZE = {
+    "居室": "洋室", "洋室": "洋室", "和室": "洋室", "寝室": "洋室", "洋": "洋室",
+    "LDK": "LDK", "DK": "LDK", "LD": "LDK", "リビング": "LDK", "リビングダイニング": "LDK",
+    "キッチン": "キッチン", "K": "キッチン", "台所": "キッチン",
+    "浴室": "浴室", "ユニットバス": "浴室", "UB": "浴室", "バス": "浴室", "風呂": "浴室",
+    "洗面": "洗面", "洗面所": "洗面", "脱衣所": "洗面", "洗面脱衣": "洗面",
+    "トイレ": "トイレ", "WC": "トイレ", "便所": "トイレ",
+    "玄関": "玄関", "エントランス": "玄関",
+    "ホール": "その他", "廊下": "その他", "ろうか": "その他",
+    "ウォークインクローゼット": "クローゼット", "WIC": "クローゼット", "納戸": "クローゼット",
+    "収納": "クローゼット", "クローゼット": "クローゼット", "CL": "クローゼット",
+    "シューズクローク": "クローゼット", "SIC": "クローゼット", "SC": "クローゼット", "物入": "クローゼット",
+    "バルコニー": "バルコニー", "ベランダ": "バルコニー", "BL": "バルコニー", "テラス": "バルコニー",
+    "その他": "その他",
+}
+
+
+def _normalize_floorplan_type(raw):
+    """間取り図のtypeラベルを PL_ROOMS 種別に正規化（部分一致でフォールバック）。"""
+    s = str(raw or "").strip()
+    if s in _FLOORPLAN_TYPE_NORMALIZE:
+        return _FLOORPLAN_TYPE_NORMALIZE[s]
+    for key, val in _FLOORPLAN_TYPE_NORMALIZE.items():   # 部分一致（例「洋室(1)」）
+        if key in s:
+            return val
+    return "その他"
+
+
+def read_floorplan_rooms(client, floorplan_bytes, model="gemini-2.5-flash"):
+    """間取り図画像1枚をGeminiに読ませ、記載ラベルから部屋を列挙。
+    返り値: [{"type":正規化種別, "label":図の文字, "jo":帖float|None, "position":位置str}]。失敗/空は []。"""
+    import json as _json
+    try:
+        part = _image_part(floorplan_bytes, "image/png")
+        instruction = (
+            "この画像は日本の賃貸物件の間取り図（平面図）です。"
+            "図に文字で書かれている部屋・空間をすべて列挙してください（線や寸法ではなく、記載ラベルを読む）。\n"
+            "各部屋を {\"type\":種別, \"label\":図の文字そのまま, \"jo\":帖数, \"position\":位置} で表現。\n"
+            "type は次から：居室 / LDK / DK / キッチン / 浴室 / 洗面 / トイレ / 玄関 / ホール / "
+            "ウォークインクローゼット / 納戸 / 収納 / シューズクローク / クローゼット / バルコニー / その他。\n"
+            "jo は『6』『6.2帖』等の畳数を数値で（記載が無ければ null）。"
+            "position は図の中の大まかな位置（上/下/左/右/中央/左上 等、分からなければ空文字）。\n"
+            "同じ部屋が複数あれば複数要素で列挙。出力はJSON配列のみ・説明文なし。\n"
+            "例：[{\"type\":\"居室\",\"label\":\"洋室\",\"jo\":6,\"position\":\"上\"},"
+            "{\"type\":\"LDK\",\"label\":\"LDK\",\"jo\":11,\"position\":\"下\"},"
+            "{\"type\":\"ウォークインクローゼット\",\"label\":\"WIC\",\"jo\":null,\"position\":\"右\"}]"
+        )
+        resp = client.models.generate_content(model=model, contents=[part, instruction])
+        text = (getattr(resp, "text", "") or "").strip()
+        m = re.search(r"\[.*\]", text, re.S)
+        arr = _json.loads(m.group(0)) if m else []
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for d in arr if isinstance(arr, list) else []:
+        if not isinstance(d, dict):
+            continue
+        jo = d.get("jo")
+        try:
+            jo = float(jo) if jo is not None else None
+        except (TypeError, ValueError):
+            jo = None
+        out.append({
+            "type": _normalize_floorplan_type(d.get("type") or d.get("label")),
+            "label": str(d.get("label", "")).strip(),
+            "jo": jo,
+            "position": str(d.get("position", "")).strip(),
+        })
     return out
 
 

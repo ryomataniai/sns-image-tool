@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fpdetect-v36 (間取り図選定をローカル画像判定に切替・LLM誤タグ対策)")
+    st.caption("build: fproom-v37 (間取り図vision読取で部屋リスト化＋標準部屋常設＋WIC検出)")
 
 
 # ======================================================================
@@ -1172,31 +1172,65 @@ def _pl_assign_jo(items, madori_rooms):
 
 # 間取タイプの室記号 → 部屋種別（PL_ROOMS）
 _PL_SYM_TO_TYPE = {"洋": "洋室", "洋室": "洋室", "LDK": "LDK", "DK": "LDK"}
-# 名前付き部屋リストに載せる水回り・その他（写真が存在した種別のみ・帖数なし）
-_PL_WATER_TYPES = ["キッチン", "浴室", "洗面", "トイレ", "玄関", "クローゼット", "バルコニー"]
+# 全物件に存在するため、写真の有無に関わらず常に部屋リストへ入れる標準部屋
+_PL_STANDARD_TYPES = ["玄関", "キッチン", "浴室", "洗面", "トイレ", "バルコニー", "クローゼット"]
 
 
-def _pl_build_rooms(madori_rooms, items):
-    """物件固有の名前付き部屋リストを生成。→ [{id, name, type, jo}]。
-    間取タイプ（居室）が取れないマイソク・手持ち写真のみは空を返す（＝汎用ドロップダウンにフォールバック）。"""
-    if not madori_rooms:
-        return []
-    from collections import Counter
+def _pl_build_rooms(madori_rooms, items, vision_rooms=None):
+    """物件固有の名前付き部屋リスト。→ [{id, name, type, jo}]。
+    優先：間取り図読み取り(vision_rooms) ∪ 間取タイプ居室 ∪ 標準部屋。帖数は間取タイプ文字列を優先。"""
+    from collections import Counter, deque
+    vision_rooms = vision_rooms or []
     rooms, rid = [], 0
-    total = Counter(_PL_SYM_TO_TYPE.get(t, "その他") for t, _ in madori_rooms)
-    seen = {}
-    for sym, jo in madori_rooms:               # 居室（間取タイプ由来・帖数付き）
-        rtype = _PL_SYM_TO_TYPE.get(sym, "その他")
-        seen[rtype] = seen.get(rtype, 0) + 1
-        suffix = chr(ord("A") + seen[rtype] - 1) if total[rtype] > 1 else ""
-        rooms.append({"id": rid, "name": f"{rtype}{suffix}（{jo:g}帖）",
-                      "type": rtype, "jo": jo})
+
+    def add(name, rtype, jo=None):
+        nonlocal rid
+        rooms.append({"id": rid, "name": name, "type": rtype, "jo": jo})
         rid += 1
-    present = {it["room"] for it in items if it.get("treatment") != "使わない"}
-    for wt in _PL_WATER_TYPES:                  # 水回り・その他（帖数なし）
-        if wt in present:
-            rooms.append({"id": rid, "name": wt, "type": wt, "jo": None})
-            rid += 1
+
+    # 居室の帖数は間取タイプ文字列を優先（テキスト値が正確）→ 種別ごとのキュー
+    yo_q = deque(jo for t, jo in madori_rooms if _PL_SYM_TO_TYPE.get(t) == "洋室")
+    ldk_q = deque(jo for t, jo in madori_rooms if _PL_SYM_TO_TYPE.get(t) == "LDK")
+
+    # 1) 居室（vision優先＝位置つき。無ければ間取タイプ）。帖数はテキスト優先で上書き
+    vis_living = [v for v in vision_rooms if v.get("type") in ("洋室", "LDK")]
+    if vis_living:
+        living = []
+        for v in vis_living:
+            t = v["type"]
+            jo = (yo_q.popleft() if t == "洋室" and yo_q
+                  else ldk_q.popleft() if t == "LDK" and ldk_q else v.get("jo"))
+            living.append((t, jo, v.get("position", "")))
+    else:
+        living = [(_PL_SYM_TO_TYPE.get(t, "その他"), jo, "") for t, jo in madori_rooms]
+
+    total = Counter(t for t, _, _ in living)
+    seen = {}
+    for t, jo, pos in living:
+        seen[t] = seen.get(t, 0) + 1
+        suffix = chr(ord("A") + seen[t] - 1) if total[t] > 1 else ""
+        detail = "・".join(p for p in [pos, (f"{jo:g}帖" if jo else "")] if p)
+        add(f"{t}{suffix}" + (f"（{detail}）" if detail else ""), t, jo)
+
+    # 2) vision の非居室（WIC/納戸/水回り/玄関/バルコニー等）。クローゼットは記載名を活かす
+    for v in vision_rooms:
+        t = v.get("type", "その他")
+        if t in ("洋室", "LDK", "その他"):
+            continue
+        label = (v.get("label") or "").strip()
+        if t == "クローゼット" and label:
+            name = label + (f"（{v['position']}）" if v.get("position") else "")
+        else:
+            name = t
+        if any(r["name"] == name for r in rooms):
+            continue
+        add(name, t, None)
+
+    # 3) 標準部屋を必ず含める（未登録 type のみ）＝「玄関等が選べない」バグの解消
+    for t in _PL_STANDARD_TYPES:
+        if not any(r["type"] == t for r in rooms):
+            add(t, t, None)
+
     return rooms
 
 
@@ -1384,12 +1418,21 @@ def _pl_stage_input():
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
                           "treatment": treat, "gen_bytes": None, "caption": "",
                           "jo": None, "room_id": None})
-        # 名前付き部屋リストを生成し、各写真を best-guess でリンク（帖数はリンク先から取得）
-        pl_rooms = _pl_build_rooms(parsed["rooms"], items)
-        if pl_rooms:
+        # 間取り図をvisionで読んで部屋を列挙（取り込み時1回・floor_planがある時のみ）
+        vision_rooms = []
+        if floor_plan is not None:
+            try:
+                with st.spinner("間取り図から部屋を読み取り中…"):
+                    vision_rooms = core.read_floorplan_rooms(make_client(), floor_plan)
+            except Exception:  # noqa: BLE001
+                pass
+        # 名前付き部屋リスト（間取り図読取∪間取タイプ居室∪標準部屋）。マイソク文脈がある時のみ
+        if floor_plan is not None or parsed["rooms"] or vision_rooms:
+            pl_rooms = _pl_build_rooms(parsed["rooms"], items, vision_rooms)
             _pl_link_items(items, pl_rooms)
         else:
-            _pl_assign_jo(items, parsed["rooms"])   # フォールバック：帖数を順割当のみ
+            pl_rooms = []                            # 手持ち写真のみ→汎用ドロップダウン
+            _pl_assign_jo(items, parsed["rooms"])
         st.session_state["pl_items"] = items
         st.session_state["pl_rooms"] = pl_rooms
         st.session_state["pl_src_sig"] = sig
@@ -1720,4 +1763,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fpdetect-v36 (間取り図選定をローカル画像判定に切替・LLM誤タグ対策)")
+    st.caption("build: fproom-v37 (間取り図vision読取で部屋リスト化＋標準部屋常設＋WIC検出)")
