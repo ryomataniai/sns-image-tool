@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: floorplan-fix-v33 (間取り図の手動指定UIをradio化・サイドバー上部へ)")
+    st.caption("build: named-v34 (名前付き部屋リンクUI：洋室A/B確定・帖数紐付け・B2b-2b-2)")
 
 
 # ======================================================================
@@ -1005,18 +1005,34 @@ def _pl_default_treatment(room, mode):
 
 
 def _pl_apply_mode_defaults():
-    """用途モード変更時：全itemの処理を 部屋×モード で再導出（手動選択より優先）。"""
+    """用途モード変更時：全itemの処理を 部屋種別×モード で再導出（手動選択より優先）。"""
     mode = st.session_state.get("pl_mode", PL_MODES[0])
     for it in st.session_state.get("pl_items", []):
-        r = st.session_state.get(f"pl_room_{it['id']}", it.get("room", "その他"))
-        st.session_state[f"pl_treat_{it['id']}"] = _pl_default_treatment(r, mode)
+        # item["room"]（種別）はグリッド描画で常時同期される単一の真実
+        st.session_state[f"pl_treat_{it['id']}"] = _pl_default_treatment(
+            it.get("room", "その他"), mode)
 
 
 def _pl_apply_room_default(i):
-    """部屋種別変更時：そのitemの処理を 部屋×モード で再導出。"""
+    """部屋種別変更時（汎用ドロップダウン）：そのitemの処理を 部屋×モード で再導出。"""
     mode = st.session_state.get("pl_mode", PL_MODES[0])
     r = st.session_state.get(f"pl_room_{i}", "その他")
     st.session_state[f"pl_treat_{i}"] = _pl_default_treatment(r, mode)
+
+
+def _pl_apply_roomlink(i):
+    """名前付き部屋リンク変更時：リンク先から room(種別)/jo を取得し処理を再導出。"""
+    rid = st.session_state.get(f"pl_roomid_{i}")
+    rooms = st.session_state.get("pl_rooms", [])
+    r = next((x for x in rooms if x["id"] == rid), None)
+    mode = st.session_state.get("pl_mode", PL_MODES[0])
+    for it in st.session_state.get("pl_items", []):
+        if it["id"] == i:
+            it["room_id"] = rid if r else None
+            it["room"] = r["type"] if r else "その他"
+            it["jo"] = r.get("jo") if r else None
+            st.session_state[f"pl_treat_{i}"] = _pl_default_treatment(it["room"], mode)
+            return
 
 
 def _pl_detect_floorplan(pdf_imgs):
@@ -1124,6 +1140,58 @@ def _pl_assign_jo(items, madori_rooms):
             it["jo"] = yo[yi]; yi += 1
         elif r in ("LDK", "キッチン") and li < len(ldk):
             it["jo"] = ldk[li]; li += 1
+
+
+# 間取タイプの室記号 → 部屋種別（PL_ROOMS）
+_PL_SYM_TO_TYPE = {"洋": "洋室", "洋室": "洋室", "LDK": "LDK", "DK": "LDK"}
+# 名前付き部屋リストに載せる水回り・その他（写真が存在した種別のみ・帖数なし）
+_PL_WATER_TYPES = ["キッチン", "浴室", "洗面", "トイレ", "玄関", "クローゼット", "バルコニー"]
+
+
+def _pl_build_rooms(madori_rooms, items):
+    """物件固有の名前付き部屋リストを生成。→ [{id, name, type, jo}]。
+    間取タイプ（居室）が取れないマイソク・手持ち写真のみは空を返す（＝汎用ドロップダウンにフォールバック）。"""
+    if not madori_rooms:
+        return []
+    from collections import Counter
+    rooms, rid = [], 0
+    total = Counter(_PL_SYM_TO_TYPE.get(t, "その他") for t, _ in madori_rooms)
+    seen = {}
+    for sym, jo in madori_rooms:               # 居室（間取タイプ由来・帖数付き）
+        rtype = _PL_SYM_TO_TYPE.get(sym, "その他")
+        seen[rtype] = seen.get(rtype, 0) + 1
+        suffix = chr(ord("A") + seen[rtype] - 1) if total[rtype] > 1 else ""
+        rooms.append({"id": rid, "name": f"{rtype}{suffix}（{jo:g}帖）",
+                      "type": rtype, "jo": jo})
+        rid += 1
+    present = {it["room"] for it in items if it.get("treatment") != "使わない"}
+    for wt in _PL_WATER_TYPES:                  # 水回り・その他（帖数なし）
+        if wt in present:
+            rooms.append({"id": rid, "name": wt, "type": wt, "jo": None})
+            rid += 1
+    return rooms
+
+
+def _pl_link_items(items, pl_rooms):
+    """各itemをbest-guessで部屋にリンク（room_id）。room(種別)/jo をリンク先から取得。
+    同種複数（洋室A/B）は未使用スロットへ順に割当（外れても人が入替）。"""
+    from collections import defaultdict, deque
+    queue = defaultdict(deque)
+    for r in pl_rooms:
+        queue[r["type"]].append(r["id"])
+    byid = {r["id"]: r for r in pl_rooms}
+    for it in items:
+        if it.get("treatment") == "使わない":
+            it["room_id"] = None
+            continue
+        t = it.get("room")
+        rid = queue[t].popleft() if queue.get(t) else None   # 未使用の同種スロット
+        if rid is None:                                       # スロット無し→同種の先頭を再利用
+            rid = next((r["id"] for r in pl_rooms if r["type"] == t), None)
+        it["room_id"] = rid
+        if rid is not None:
+            it["room"] = byid[rid]["type"]
+            it["jo"] = byid[rid].get("jo")
 
 
 # 家具ステージングを許すのは居室のみ（非居室は窓・別室の捏造事故を防ぐ）
@@ -1254,18 +1322,28 @@ def _pl_stage_input():
             else:
                 treat = _pl_default_treatment(room, _mode)
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
-                          "treatment": treat, "gen_bytes": None, "caption": "", "jo": None})
-        _pl_assign_jo(items, parsed["rooms"])   # 間取タイプの帖数を居室へ順割当
+                          "treatment": treat, "gen_bytes": None, "caption": "",
+                          "jo": None, "room_id": None})
+        # 名前付き部屋リストを生成し、各写真を best-guess でリンク（帖数はリンク先から取得）
+        pl_rooms = _pl_build_rooms(parsed["rooms"], items)
+        if pl_rooms:
+            _pl_link_items(items, pl_rooms)
+        else:
+            _pl_assign_jo(items, parsed["rooms"])   # フォールバック：帖数を順割当のみ
         st.session_state["pl_items"] = items
+        st.session_state["pl_rooms"] = pl_rooms
         st.session_state["pl_src_sig"] = sig
         st.session_state["pl_floorplan"] = floor_plan
         st.session_state["pl_summary"] = parsed["summary"]
         for k in [k for k in list(st.session_state)
-                  if k.startswith(("pl_room_", "pl_treat_", "pl_fp_pick"))]:
+                  if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick"))]:
             del st.session_state[k]
-        # ウィジェットの値は session_state で管理（room/mode変更コールバックが上書きするため）
+        # ウィジェットの値は session_state で管理（変更コールバックが上書きするため）
         for it in items:
-            st.session_state[f"pl_room_{it['id']}"] = it["room"]
+            if pl_rooms:
+                st.session_state[f"pl_roomid_{it['id']}"] = it["room_id"]
+            else:
+                st.session_state[f"pl_room_{it['id']}"] = it["room"]
             st.session_state[f"pl_treat_{it['id']}"] = it["treatment"]
 
     items = st.session_state.get("pl_items", [])
@@ -1288,21 +1366,42 @@ def _pl_stage_input():
     req = st.text_area("要望（任意・全体に反映）", key="pl_request",
                        placeholder="例：木目強め、観葉植物多め、生活感控えめ など")
 
-    st.markdown("**各画像：部屋種別と処理**"
-                "（AI初期値を編集可。部屋種別は動画の連結・字幕にも使われます）")
-    # 1画像=1行の横並び（画像 / 部屋種別 / 処理）
+    pl_rooms = st.session_state.get("pl_rooms")
+    st.markdown("**各画像：部屋と処理**"
+                "（AI初期値を編集可。部屋は動画の連結・字幕・帖数にも使われます）")
+    if pl_rooms:
+        st.caption("部屋は物件の間取りから自動リンク。サイドバーの間取り図を見て "
+                   "洋室A/B 等を入れ替えできます。")
+
+    def _fmt_room(rid):
+        if rid is None:
+            return "その他（リンクなし）"
+        r = next((x for x in (pl_rooms or []) if x["id"] == rid), None)
+        return r["name"] if r else "その他"
+
+    # 1画像=1行の横並び（画像 / 部屋 / 処理）
     hc1, hc2, hc3 = st.columns([1, 2, 2])
     hc1.caption("画像")
-    hc2.caption("部屋種別")
+    hc2.caption("部屋")
     hc3.caption("処理")
     for it in items:
         i = it["id"]
         rc1, rc2, rc3 = st.columns([1, 2, 2])
         rc1.image(it["src_bytes"], width=110)
-        # 値は session_state（pl_room_/pl_treat_）で管理するため index は渡さない
-        it["room"] = rc2.selectbox(
-            "部屋種別", PL_ROOMS, key=f"pl_room_{i}", label_visibility="collapsed",
-            on_change=_pl_apply_room_default, args=(i,))
+        # 値は session_state（pl_roomid_/pl_room_/pl_treat_）で管理するため index は渡さない
+        if pl_rooms:
+            sel = rc2.selectbox(
+                "部屋", [None] + [r["id"] for r in pl_rooms], format_func=_fmt_room,
+                key=f"pl_roomid_{i}", label_visibility="collapsed",
+                on_change=_pl_apply_roomlink, args=(i,))
+            r = next((x for x in pl_rooms if x["id"] == sel), None)
+            it["room_id"] = sel
+            it["room"] = r["type"] if r else "その他"
+            it["jo"] = r.get("jo") if r else None
+        else:
+            it["room"] = rc2.selectbox(
+                "部屋種別", PL_ROOMS, key=f"pl_room_{i}", label_visibility="collapsed",
+                on_change=_pl_apply_room_default, args=(i,))
         it["treatment"] = rc3.selectbox(
             "処理", PL_TREATMENTS, key=f"pl_treat_{i}", label_visibility="collapsed")
 
@@ -1542,4 +1641,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: floorplan-fix-v33 (間取り図の手動指定UIをradio化・サイドバー上部へ)")
+    st.caption("build: named-v34 (名前付き部屋リンクUI：洋室A/B確定・帖数紐付け・B2b-2b-2)")
