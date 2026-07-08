@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: roomlink-v32 (部屋種別高精度化＋非部屋除外＋帖数継承・B2b-2b-1)")
+    st.caption("build: floorplan-fix-v33 (間取り図の手動指定UIをradio化・サイドバー上部へ)")
 
 
 # ======================================================================
@@ -1064,9 +1064,12 @@ def _pl_render_floorplan_sidebar():
                     return "（自動検出のまま）"
                 it = next((t for t in items if t["id"] == x), None)
                 return f"#{x + 1} {it['room'] if it else ''}"
-            st.selectbox("これは間取り図（手動指定）", [-1] + [it["id"] for it in items],
+            # ドロップダウンは選択肢が多いと画面外に溢れて選べないため、
+            # expander内のradio（インライン・サイドバーごとスクロール可）にする
+            with st.expander("これは間取り図（手動指定）", expanded=not fp):
+                st.radio("抽出画像から選択", [-1] + [it["id"] for it in items],
                          format_func=_fmt, key="pl_fp_pick",
-                         on_change=_pl_pick_floorplan)
+                         on_change=_pl_pick_floorplan, label_visibility="collapsed")
 
 
 # classify_maisoku_images のコード → 部屋種別（PL_ROOMS）
@@ -1533,8 +1536,10 @@ nav = st.navigation({
              page_carousel, page_background],
     "その他": [page_settings],
 })
+nav.run()
+# 脚注は nav.run() の後に置き、ページがサイドバーに足す内容（間取り図ピン留め等）を
+# ナビ直下＝上部に寄せる（下部に置くと selectbox 等が画面外に溢れるため）
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: roomlink-v32 (部屋種別高精度化＋非部屋除外＋帖数継承・B2b-2b-1)")
-nav.run()
+    st.caption("build: floorplan-fix-v33 (間取り図の手動指定UIをradio化・サイドバー上部へ)")
