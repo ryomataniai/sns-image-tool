@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: telop-p1a-v39 (シーンテロップ2役化：部屋名+帖+情感2行・clean/pop・英和・冒頭極短)")
+    st.caption("build: telop-p1a1-v40 (テロップ画像ごと配置/スタイル：全体既定＋上書き＋種別自動)")
 
 
 # ======================================================================
@@ -1001,6 +1001,31 @@ def _pl_caption_sub(it):
     return line1 + "\n自然光が心地よい空間"
 
 
+# テロップのスタイル自動既定：水回りは座布団(pop)で可読性、居室・その他は clean
+_PL_TELOP_WATER = ("浴室", "洗面", "トイレ", "キッチン")
+_PL_TELOP_LIVING = ("LDK", "洋室", "寝室")
+_PL_TELOP_POSITIONS = ["下中央", "下左", "上中央", "中央"]
+
+
+def _pl_resolve_taste(it, global_taste):
+    """クリップのテロップ見た目を決定：明示 → 部屋種別自動 → 種別不明は全体既定。"""
+    v = st.session_state.get(f"pl_taste_{it['id']}", "auto")
+    if v in ("clean", "pop"):
+        return v
+    room = it.get("room")
+    if room in _PL_TELOP_WATER:
+        return "pop"
+    if room in _PL_TELOP_LIVING or room in ("玄関", "バルコニー", "クローゼット", "外観", "その他"):
+        return "clean"
+    return global_taste                       # 種別不明→全体既定
+
+
+def _pl_resolve_pos(it, global_pos):
+    """クリップのテロップ配置を決定：明示 → auto は全体既定。"""
+    v = st.session_state.get(f"pl_pos_{it['id']}", "auto")
+    return v if v in _PL_TELOP_POSITIONS else global_pos
+
+
 def _pl_room_use(room):
     """build_staging_prompt の room_use（room指定を生成に効かせる＝痛み#3対策）。"""
     if room == "LDK":
@@ -1716,14 +1741,18 @@ def _pl_stage_video():
     st.caption("正方形素材は 1:1 動画が最も無駄なし。横長できれいに見せたい場合は、"
                "元写真（横長の撮影原本）を『手持ち写真』の入口で取り込むと余白・トリミングが減ります。")
     v_caps = st.checkbox("シーンテロップ（部屋名＋情感2行）を焼く", value=True, key="pl_v_caps")
-    t1, t2, t3 = st.columns(3)
-    v_taste = t1.radio("テロップの見た目", ["clean", "pop"], index=0, key="pl_telop_taste",
+    st.caption("下は「全体既定」。個別に変えたい写真だけ、下の各シーンで上書きできます。")
+    t1, t2 = st.columns(2)
+    v_taste = t1.radio("テロップの見た目（全体既定）", ["clean", "pop"], index=0, key="pl_telop_taste",
                        format_func=lambda x: {"clean": "clean（白・影・すっきり）",
                                               "pop": "pop（座布団box）"}.get(x, x))
-    v_lang = t2.radio("部屋名の表記", ["en", "ja"], index=0, key="pl_room_lang",
+    v_pos = t2.selectbox("テロップの配置（全体既定）", _PL_TELOP_POSITIONS, index=0,
+                         key="pl_telop_pos")
+    t3, t4 = st.columns(2)
+    v_lang = t3.radio("部屋名の表記", ["en", "ja"], index=0, key="pl_room_lang",
                       format_func=lambda x: {"en": "英（living room 10.9J）",
                                              "ja": "和（リビング 10.9帖）"}.get(x, x))
-    v_open = t3.radio("冒頭タイトル", ["none", "flash"], index=0, key="pl_open_title",
+    v_open = t4.radio("冒頭タイトル", ["none", "flash"], index=0, key="pl_open_title",
                       format_func=lambda x: {"none": "無し（映像から開始・離脱防止）",
                                              "flash": "極短フラッシュ（0.5秒）"}.get(x, x))
     v_flash = ""
@@ -1744,12 +1773,23 @@ def _pl_stage_video():
     if v_caps:
         with st.expander(f"各シーンのテロップを編集（{len(adopted)}シーン・自動下書き）", expanded=False):
             st.caption("メイン＝部屋名＋帖（自動）。情感2行＝下書き。どちらも自由に編集できます。")
+            st.caption("スタイル/配置の『既定に従う』＝部屋種別（居室clean／水回りpop）→全体既定 の順で自動決定。")
+            _TASTE_LABEL = {"auto": "既定に従う", "clean": "clean（白・影）", "pop": "pop（座布団）"}
+            _POS_LABEL = {"auto": "既定に従う", "下中央": "下中央", "下左": "下左",
+                          "上中央": "上中央", "中央": "中央"}
             for pos, it in enumerate(adopted):
                 st.markdown(f"**{pos + 1}. {_PL_ROOM_JP.get(it['room'], it['room'])}**")
                 st.text_input("メイン", value=_pl_caption_main(it, v_lang),
                               key=f"pl_capmain_{it['id']}")
                 st.text_area("情感2行（1行ずつ改行）", value=_pl_caption_sub(it),
                              key=f"pl_capsub_{it['id']}", height=70)
+                sc1, sc2 = st.columns(2)
+                sc1.selectbox("スタイル", ["auto", "clean", "pop"], index=0,
+                              key=f"pl_taste_{it['id']}",
+                              format_func=lambda x: _TASTE_LABEL.get(x, x))
+                sc2.selectbox("配置", ["auto"] + _PL_TELOP_POSITIONS, index=0,
+                              key=f"pl_pos_{it['id']}",
+                              format_func=lambda x: _POS_LABEL.get(x, x))
 
     n = len(adopted)
     est_usd = {"kling2.6_pro": 0.35, "kling2.1_pro": 0.49, "kling3.0_pro": 0.84}\
@@ -1773,6 +1813,9 @@ def _pl_stage_video():
         captions = [st.session_state.get(f"pl_capmain_{it['id']}") or _pl_caption_main(it, v_lang)
                     for it in adopted]
         sub_captions = [st.session_state.get(f"pl_capsub_{it['id']}", "") for it in adopted]
+        # スタイル/配置：画像ごと上書き→部屋種別自動→全体既定 の順で解決
+        tastes = [_pl_resolve_taste(it, v_taste) for it in adopted]
+        positions = [_pl_resolve_pos(it, v_pos) for it in adopted]
         bar = st.progress(0.0)
         status = st.empty()
 
@@ -1790,7 +1833,9 @@ def _pl_stage_video():
                 top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                 also_silent=True, model_key=v_model, duration=v_dur,
                 room_types=room_types, image_note=v_note,
-                taste=v_taste, flash_text=v_flash, aspect=v_aspect,
+                taste=v_taste, tastes=tastes if v_caps else None,
+                positions=positions if v_caps else None,
+                flash_text=v_flash, aspect=v_aspect,
                 fit_mode=v_fit, progress=_pg)
             bar.progress(1.0)
             status.write("完成")
@@ -1861,4 +1906,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: telop-p1a-v39 (シーンテロップ2役化：部屋名+帖+情感2行・clean/pop・英和・冒頭極短)")
+    st.caption("build: telop-p1a1-v40 (テロップ画像ごと配置/スタイル：全体既定＋上書き＋種別自動)")

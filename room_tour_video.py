@@ -247,32 +247,46 @@ ROOM_PROMPTS = {
 _CAP_FADE = "alpha='if(lt(t\\,0.4)\\,t/0.4\\,1)'"
 
 
-def _cap_draw(fontref: str, text: str, size: int, y: str, taste: str,
+def _cap_draw(fontref: str, text: str, size: int, x: str, y: str, taste: str,
               box_bw: Optional[int] = None, box_alpha: float = 0.45) -> str:
-    """シーンテロップ1行の drawtext を作る。clean=白＋影／pop=白＋座布団box。中央・下部。
-    pop の box は旧キャプションと同一（boxcolor=black@0.45）。box_bw 未指定はサイズ比例。"""
+    """シーンテロップ1行の drawtext を作る。clean=白＋影／pop=白＋座布団box。
+    x/y は drawtext の式（配置プリセットで決定）。pop の box は旧キャプションと同一（black@0.45）。"""
     if taste == "pop":
         bw = box_bw if box_bw is not None else max(12, int(size * 0.45))
         style = f"fontcolor=white:fontsize={size}:box=1:boxcolor=black@{box_alpha}:boxborderw={bw}"
     else:  # clean（既定・Simple内見準拠）：影付き・boxなし
         style = (f"fontcolor=white:fontsize={size}:"
                  f"shadowcolor=black@0.55:shadowx=2:shadowy=2")
-    return f"drawtext={fontref}:text='{_esc(text)}':{style}:x=(w-text_w)/2:y={y}:{_CAP_FADE}"
+    return f"drawtext={fontref}:text='{_esc(text)}':{style}:x={x}:y={y}:{_CAP_FADE}"
+
+
+# テロップ配置プリセット（4種・safe-zone厳守：最下部200px回避／左右マージン）
+# 返り値: (x式, メインy, [情感1y, 情感2y])。下中央は旧キャプション（x中央/y=h-400）と同一。
+def _telop_layout(pos: str) -> tuple:
+    if pos == "下左":                     # 左マージン・下部（依頼の「pop左寄せ」相当）
+        return ("60", "h-400", ["h-330", "h-278"])
+    if pos == "上中央":                   # 上部中央（上部タグ y=150 の下・下が家具で詰まる写真向け）
+        return ("(w-text_w)/2", "260", ["330", "382"])
+    if pos == "中央":                     # 画面中央（余白の効いたミニマル写真向け）
+        return ("(w-text_w)/2", "(h-text_h)/2-60", ["(h-text_h)/2+10", "(h-text_h)/2+62"])
+    # 下中央（既定・現行と同一）
+    return ("(w-text_w)/2", "h-400", ["h-330", "h-278"])
 
 
 def _normalize_clip(in_path: str, out_path: str, caption: str = "",
                     sub_lines: Optional[list] = None, top_tag: str = "", note: str = "",
-                    taste: str = "clean", flash: str = "",
+                    taste: str = "clean", pos: str = "下中央", flash: str = "",
                     out_w: int = 1080, out_h: int = 1920,
                     fit_mode: str = "fill") -> str:
     """out_w×out_h（既定=縦1080x1920）に整形し、テロップ（部屋名＋情感2行）・上部タグ・注記を焼く。30fps化。
 
     caption   : シーンのメインライン（例 "living room 10.9J"）
-    sub_lines : 情感コピー（最大2行・下部中央）
+    sub_lines : 情感コピー（最大2行）
     taste     : "clean"（既定・白＋影・boxなし）/ "pop"（白＋座布団box）
+    pos       : 配置プリセット "下中央"（既定）/ "下左" / "上中央" / "中央"
     flash     : 冒頭極短フラッシュ文言（先頭クリップのみ・0.5秒フェードで重畳）
     fit_mode  : "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・ぼかし余白）
-    キー文字は下部中央・最下部200px回避（SNS UIのsafe-zone）。out_w/out_h で任意比率対応。
+    キー文字は safe-zone（最下部200px回避・左右マージン）内。out_w/out_h で任意比率対応。
     """
     ff = _ffmpeg()
     font = _font()
@@ -292,11 +306,12 @@ def _normalize_clip(in_path: str, out_path: str, caption: str = "",
         draws.append(f"drawtext={fontref}:text='{_esc(top_tag)}':fontcolor=white:fontsize=40:"
                      f"box=1:boxcolor=black@0.40:boxborderw=18:x=(w-text_w)/2:y=150:"
                      f"alpha='if(lt(t\\,0.4)\\,t/0.4\\,1)'")
-    if caption:                                   # メインライン（旧キャプションと同一の56/box26/y=h-400）
-        draws.append(_cap_draw(fontref, caption, 56, "h-400", taste, box_bw=26))
-    for k, s in enumerate((sub_lines or [])[:2]):  # 情感2行（メインの下・最下部200px回避）
+    x_expr, y_main, y_subs = _telop_layout(pos)   # 配置プリセット→x/y式
+    if caption:                                   # メインライン（下中央は旧と同一の56/box26/y=h-400）
+        draws.append(_cap_draw(fontref, caption, 56, x_expr, y_main, taste, box_bw=26))
+    for k, s in enumerate((sub_lines or [])[:2]):  # 情感2行（メインの近傍・safe-zone内）
         if s and s.strip():
-            draws.append(_cap_draw(fontref, s, 34, f"h-{330 - k * 52}", taste))
+            draws.append(_cap_draw(fontref, s, 34, x_expr, y_subs[k], taste))
     if note:
         draws.append(f"drawtext={fontref}:text='{_esc(note)}':fontcolor=white@0.85:fontsize=26:"
                      f"box=1:boxcolor=black@0.35:boxborderw=10:x=w-text_w-40:y=h-70")
@@ -387,7 +402,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                with_bgm: bool = True, also_silent: bool = True,
                model_key: str = "kling2.6_pro", duration: int = 5,
                room_types: Optional[list] = None, image_note: str = "",
-               taste: str = "clean", flash_text: str = "",
+               taste: str = "clean", tastes: Optional[list] = None,
+               positions: Optional[list] = None, flash_text: str = "",
                aspect: str = "9:16", fit_mode: str = "fill", progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
@@ -427,9 +443,11 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                 parts = raw_sub.split("\n") if isinstance(raw_sub, str) else (raw_sub or [])
                 subs = [s for s in parts if s and s.strip()][:2]
             flash = flash_text if (i == 0 and flash_text) else ""   # 冒頭は先頭クリップのみ
+            tst = tastes[i] if (tastes and i < len(tastes)) else taste
+            pos = positions[i] if (positions and i < len(positions)) else "下中央"
             _normalize_clip(raw, seg, caption=cap, sub_lines=subs,
                             top_tag=top_tag if with_captions else "",
-                            note=image_note, taste=taste, flash=flash,
+                            note=image_note, taste=tst, pos=pos, flash=flash,
                             out_w=out_w, out_h=out_h, fit_mode=fit_mode)
             seg_paths.append(seg)
 
