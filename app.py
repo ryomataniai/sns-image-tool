@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: regennote-v30 (個別再生成メモ＋家具ステージングの開口部・扉保持hotfix)")
+    st.caption("build: floorplan-v31 (間取り図の検出＋サイドバー常時ピン留め・B2b-2a)")
 
 
 # ======================================================================
@@ -1019,6 +1019,56 @@ def _pl_apply_room_default(i):
     st.session_state[f"pl_treat_{i}"] = _pl_default_treatment(r, mode)
 
 
+def _pl_detect_floorplan(pdf_imgs):
+    """PDF抽出画像から間取り図(FLOORPLAN)を1枚特定して bytes を返す。取り込み時1回のみ呼ぶ。"""
+    if not pdf_imgs:
+        return None
+    try:
+        codes = core.classify_maisoku_images(make_client(), pdf_imgs)
+    except Exception:  # noqa: BLE001
+        return None
+    for b, c in zip(pdf_imgs, codes):
+        if c == "FLOORPLAN":
+            return b
+    return None
+
+
+def _pl_pick_floorplan():
+    """サイドバーの手動上書き：選んだitem画像を間取り図に差し替える。"""
+    x = st.session_state.get("pl_fp_pick")
+    if x is None or x == -1:
+        return
+    for it in st.session_state.get("pl_items", []):
+        if it["id"] == x:
+            st.session_state["pl_floorplan"] = it["src_bytes"]
+            return
+
+
+def _pl_render_floorplan_sidebar():
+    """間取り図を STEP1〜関所まで サイドバーに常時ピン留め（手動上書き付き）。"""
+    fp = st.session_state.get("pl_floorplan")
+    items = st.session_state.get("pl_items", [])
+    if not fp and not items:
+        return  # 取り込み前は非表示
+    with st.sidebar:
+        st.divider()
+        st.markdown("### 間取り図")
+        if fp:
+            st.image(fp, caption="間取り図（種別選択の参照用）", use_container_width=True)
+        else:
+            st.caption("間取り図は未検出（手持ち写真のみ／未対応レイアウト等）。"
+                       "下で手動指定できます。")
+        if items:
+            def _fmt(x):
+                if x == -1:
+                    return "（自動検出のまま）"
+                it = next((t for t in items if t["id"] == x), None)
+                return f"#{x + 1} {it['room'] if it else ''}"
+            st.selectbox("これは間取り図（手動指定）", [-1] + [it["id"] for it in items],
+                         format_func=_fmt, key="pl_fp_pick",
+                         on_change=_pl_pick_floorplan)
+
+
 # 家具ステージングを許すのは居室のみ（非居室は窓・別室の捏造事故を防ぐ）
 PL_RESIDENTIAL = ("LDK", "洋室", "寝室")
 
@@ -1102,11 +1152,13 @@ def _pl_stage_input():
                                  type=["png", "jpg", "jpeg", "webp"],
                                  accept_multiple_files=True, key="pl_photos")
     raw_srcs = []
+    pdf_imgs = []
     if pdf is not None:
         try:
-            raw_srcs += [b for (b, _w, _h) in core.extract_pdf_photos(pdf.getvalue(), min_px=250)]
+            pdf_imgs = [b for (b, _w, _h) in core.extract_pdf_photos(pdf.getvalue(), min_px=250)]
         except Exception as e:  # noqa: BLE001
             st.error(f"PDF抽出に失敗: {e}")
+        raw_srcs += pdf_imgs
         if not raw_srcs:
             st.warning("PDFから使える室内写真が見つかりませんでした（手持ち写真をお使いください）。")
     if photos_up:
@@ -1137,8 +1189,10 @@ def _pl_stage_input():
                           "treatment": treat, "gen_bytes": None, "caption": ""})
         st.session_state["pl_items"] = items
         st.session_state["pl_src_sig"] = sig
+        # 間取り図を検出してピン留め用に保持（PDF画像のみ・取り込み時1回）
+        st.session_state["pl_floorplan"] = _pl_detect_floorplan(pdf_imgs)
         for k in [k for k in list(st.session_state)
-                  if k.startswith(("pl_room_", "pl_treat_"))]:
+                  if k.startswith(("pl_room_", "pl_treat_", "pl_fp_pick"))]:
             del st.session_state[k]
         # ウィジェットの値は session_state で管理（room/mode変更コールバックが上書きするため）
         for it in items:
@@ -1375,6 +1429,9 @@ def render_pipeline():
     if st.button("最初からやり直す", key="pl_reset_btn"):
         _pl_reset(); st.rerun()
     st.divider()
+    # 間取り図をサイドバーに常時ピン留め（取り込み〜関所まで見ながら選べる）
+    if stage in ("input", "review", "video"):
+        _pl_render_floorplan_sidebar()
     if stage == "review":
         _pl_stage_review()
     elif stage == "video":
@@ -1410,5 +1467,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: regennote-v30 (個別再生成メモ＋家具ステージングの開口部・扉保持hotfix)")
+    st.caption("build: floorplan-v31 (間取り図の検出＋サイドバー常時ピン留め・B2b-2a)")
 nav.run()
