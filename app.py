@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fill-v28 (動画の余白の扱い：埋める/全体表示 crop-to-fill・hotfix)")
+    st.caption("build: finishlock-v29 (水回り演出：既存設備の色・仕上げを固定・プロンプトhotfix)")
 
 
 # ======================================================================
@@ -1402,5 +1402,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fill-v28 (動画の余白の扱い：埋める/全体表示 crop-to-fill・hotfix)")
+    st.caption("build: finishlock-v29 (水回り演出：既存設備の色・仕上げを固定・プロンプトhotfix)")
 nav.run()
