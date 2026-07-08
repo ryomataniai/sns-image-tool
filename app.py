@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: floorplan-v31 (間取り図の検出＋サイドバー常時ピン留め・B2b-2a)")
+    st.caption("build: roomlink-v32 (部屋種別高精度化＋非部屋除外＋帖数継承・B2b-2b-1)")
 
 
 # ======================================================================
@@ -1069,6 +1069,60 @@ def _pl_render_floorplan_sidebar():
                          on_change=_pl_pick_floorplan)
 
 
+# classify_maisoku_images のコード → 部屋種別（PL_ROOMS）
+_PL_CODE_TO_ROOM = {
+    "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
+    "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
+    "BALCONY": "バルコニー", "HALLWAY": "その他", "OTHER": "その他",
+}
+# 生成対象から除外するコード（間取り図・外観・地図・白紙）
+_PL_EXCLUDE_CODES = ("FLOORPLAN", "EXTERIOR", "MAP", "BLANK")
+
+
+def _pl_parse_maisoku(pdf_bytes):
+    """間取タイプ欄・面積をパース。→ {"rooms":[(部屋種別, 帖float)], "summary": 表示用文字列}。取れなければ空。"""
+    import re
+    rooms, tokens, type_str, area = [], [], "", ""
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = "\n".join(p.get_text() for p in doc)
+        doc.close()
+    except Exception:  # noqa: BLE001
+        return {"rooms": [], "summary": ""}
+    m = re.search(r"間取タイプ\s*([0-9A-Za-z]+)\[([^\]]*)\]", text)
+    if m:
+        type_str = m.group(1)
+        for tok in m.group(2).split("x"):          # 半角 ' x ' 区切り
+            tok = tok.strip()
+            mm = re.match(r"([^\d.]+)([\d.]+)", tok)
+            if mm:
+                sym, jo = mm.group(1).strip(), mm.group(2)
+                tokens.append(f"{sym}{jo}")
+                try:
+                    rooms.append(("洋室" if sym == "洋" else sym, float(jo)))
+                except ValueError:  # noqa: PERF203
+                    pass
+    ma = re.search(r"(\d+(?:\.\d+)?)\s*㎡", text)
+    if ma:
+        area = ma.group(1) + "㎡"
+    summary = " ／ ".join(x for x in [type_str, "・".join(tokens), area] if x)
+    return {"rooms": rooms, "summary": summary}
+
+
+def _pl_assign_jo(items, madori_rooms):
+    """間取タイプの帖数を居室アイテムへ順に割当（item['jo']）。複数洋室は取り込み順で仮割当。"""
+    yo = [jo for t, jo in madori_rooms if t == "洋室"]
+    ldk = [jo for t, jo in madori_rooms if t in ("LDK", "DK")]
+    yi = li = 0
+    for it in items:
+        r = it.get("room")
+        if r == "洋室" and yi < len(yo):
+            it["jo"] = yo[yi]; yi += 1
+        elif r in ("LDK", "キッチン") and li < len(ldk):
+            it["jo"] = ldk[li]; li += 1
+
+
 # 家具ステージングを許すのは居室のみ（非居室は窓・別室の捏造事故を防ぐ）
 PL_RESIDENTIAL = ("LDK", "洋室", "寝室")
 
@@ -1077,6 +1131,12 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
     """1itemを treatment/room に従い生成。(bytes|None, err|None) を返す。"""
     t = it["treatment"]
     room = it.get("room", "")
+    # 帖数ヒントを先頭に付加（帖数→全体要望→個別メモ の順で効かせる。core署名は変えない）
+    jo = it.get("jo")
+    if jo:
+        _hint = (f"約{jo:g}帖の部屋。家具の大きさ・量を部屋の広さに合わせる"
+                 "（実際より広く見せない）。")
+        req = "\n".join(x for x in [_hint, req] if x)
     if t == "リノベ後イメージ":
         # room-aware（部屋の機能を保ったまま刷新）
         pr = core.build_renovation_prompt(style_desc, user_request=req, room=room)
@@ -1171,26 +1231,32 @@ def _pl_stage_input():
     sig = _hashlib.md5(b"".join(s[:2000] for s in raw_srcs)
                        + str(len(raw_srcs)).encode()).hexdigest()
     if st.session_state.get("pl_src_sig") != sig:
-        blanks = [core.is_blank_image(b) for b in raw_srcs]
-        ai = ["おまかせステージング"] * len(raw_srcs)
+        # 細粒度分類を取り込み時1回だけ（部屋種別＋間取り図/外観/地図/白紙の判定を兼ねる）
+        codes = ["OTHER"] * len(raw_srcs)
         try:
             with st.spinner("AIが各写真の部屋種別を判定中…"):
-                ai = core.classify_rooms(make_client(), raw_srcs)
+                codes = core.classify_maisoku_images(make_client(), raw_srcs)
         except Exception:  # noqa: BLE001
             pass
+        parsed = _pl_parse_maisoku(pdf.getvalue()) if pdf is not None else {"rooms": [], "summary": ""}
         _mode = st.session_state.get("pl_mode", PL_MODES[0])
-        items = []
+        items, floor_plan = [], None
         for i, b in enumerate(raw_srcs):
-            room, guessed = _pl_guess_room_treat(
-                ai[i] if i < len(ai) else "おまかせステージング", blanks[i])
-            # 白紙・SKIPは「使わない」、それ以外は 部屋×用途モード で処理を自動決定
-            treat = "使わない" if guessed == "使わない" else _pl_default_treatment(room, _mode)
+            code = codes[i] if i < len(codes) else "OTHER"
+            if code == "FLOORPLAN" and floor_plan is None:
+                floor_plan = b
+            room = _PL_CODE_TO_ROOM.get(code, "その他")
+            if code in _PL_EXCLUDE_CODES or core.is_blank_image(b):
+                treat = "使わない"     # 間取り図・外観・地図・白紙は生成対象から除外
+            else:
+                treat = _pl_default_treatment(room, _mode)
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
-                          "treatment": treat, "gen_bytes": None, "caption": ""})
+                          "treatment": treat, "gen_bytes": None, "caption": "", "jo": None})
+        _pl_assign_jo(items, parsed["rooms"])   # 間取タイプの帖数を居室へ順割当
         st.session_state["pl_items"] = items
         st.session_state["pl_src_sig"] = sig
-        # 間取り図を検出してピン留め用に保持（PDF画像のみ・取り込み時1回）
-        st.session_state["pl_floorplan"] = _pl_detect_floorplan(pdf_imgs)
+        st.session_state["pl_floorplan"] = floor_plan
+        st.session_state["pl_summary"] = parsed["summary"]
         for k in [k for k in list(st.session_state)
                   if k.startswith(("pl_room_", "pl_treat_", "pl_fp_pick"))]:
             del st.session_state[k]
@@ -1200,6 +1266,9 @@ def _pl_stage_input():
             st.session_state[f"pl_treat_{it['id']}"] = it["treatment"]
 
     items = st.session_state.get("pl_items", [])
+
+    if st.session_state.get("pl_summary"):
+        st.info(f"この物件：{st.session_state['pl_summary']}")
 
     st.markdown("**何をつくる？**（用途を選ぶと各画像の処理が部屋種別から自動で決まります）")
     st.radio("用途", PL_MODES, horizontal=True, key="pl_mode",
@@ -1467,5 +1536,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: floorplan-v31 (間取り図の検出＋サイドバー常時ピン留め・B2b-2a)")
+    st.caption("build: roomlink-v32 (部屋種別高精度化＋非部屋除外＋帖数継承・B2b-2b-1)")
 nav.run()
