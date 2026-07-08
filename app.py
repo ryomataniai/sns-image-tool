@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fproom-v37 (間取り図vision読取で部屋リスト化＋標準部屋常設＋WIC検出)")
+    st.caption("build: junk-ext-v38 (空枠除外＋配列ズレ対策＋外観を部屋種別化)")
 
 
 # ======================================================================
@@ -940,11 +940,11 @@ def render_video():
 #   入口2（PDF/写真）→ ①取り込み・種別 → ②画像化 → ★確認(Before/After) → ③動画
 #   ※ core.*/build_tour/既存キーは不変。新規は pl_ 接頭辞。旧3ツールは残置。
 # ======================================================================
-PL_ROOMS = ["玄関", "LDK", "キッチン", "洋室", "寝室", "クローゼット",
+PL_ROOMS = ["外観", "玄関", "LDK", "キッチン", "洋室", "寝室", "クローゼット",
             "浴室", "トイレ", "洗面", "バルコニー", "その他"]
 PL_TREATMENTS = ["家具ステージング", "リノベ後イメージ", "水回り・玄関を演出",
                  "高解像度化のみ", "使わない"]
-_PL_ROOM_TO_VIDEO = {"玄関": "entrance", "LDK": "ldk", "キッチン": "ldk",
+_PL_ROOM_TO_VIDEO = {"外観": "generic", "玄関": "entrance", "LDK": "ldk", "キッチン": "ldk",
                      "洋室": "bedroom", "寝室": "bedroom", "クローゼット": "generic",
                      "浴室": "bathroom", "トイレ": "toilet", "洗面": "generic",
                      "バルコニー": "generic", "その他": "generic"}
@@ -992,6 +992,8 @@ PL_MODES = ["賃貸ステージング", "リノベ提案（事業B）"]
 
 def _pl_default_treatment(room, mode):
     """部屋種別 × 用途モード → 既定の処理（treatment）。処理は部屋から自動決定。"""
+    if room == "外観":
+        return "高解像度化のみ"          # 建物外観はステージング/リノベしない
     if mode == "リノベ提案（事業B）":
         if room in ("クローゼット", "バルコニー", "その他"):
             return "高解像度化のみ"      # 大改変しない
@@ -1035,9 +1037,8 @@ def _pl_apply_roomlink(i):
             return
 
 
-def _pl_score_floorplan(img_bytes):
-    """間取り図らしさをローカル画像判定。→ (gate:bool, score:float)。
-    間取り図＝白地が多い＋黒い線がある＋ほぼ無彩色。写真/地図/外観/白紙枠と物理的に区別。"""
+def _pl_img_stats(img_bytes):
+    """画像の (白地率, 黒線率, 平均彩度) をローカル計算。160pxに縮小。失敗時 (0,0,0)。"""
     try:
         import numpy as _np
         from io import BytesIO as _BytesIO
@@ -1046,9 +1047,9 @@ def _pl_score_floorplan(img_bytes):
         im.thumbnail((160, 160))
         a = _np.asarray(im, dtype="float32")
     except Exception:  # noqa: BLE001
-        return (False, 0.0)
+        return (0.0, 0.0, 0.0)
     if a.size == 0:
-        return (False, 0.0)
+        return (0.0, 0.0, 0.0)
     r, g, b = a[..., 0], a[..., 1], a[..., 2]
     lum = 0.299 * r + 0.587 * g + 0.114 * b
     white_ratio = float((lum > 235).mean())
@@ -1056,9 +1057,22 @@ def _pl_score_floorplan(img_bytes):
     mx = a.max(axis=2)
     mn = a.min(axis=2)
     sat_mean = float(_np.where(mx > 0, (mx - mn) / _np.maximum(mx, 1e-6), 0.0).mean())
+    return (white_ratio, black_ratio, sat_mean)
+
+
+def _pl_score_floorplan(img_bytes):
+    """間取り図らしさをローカル画像判定。→ (gate:bool, score:float)。
+    間取り図＝白地が多い＋黒い線がある＋ほぼ無彩色。写真/地図/外観/白紙枠と物理的に区別。"""
+    white_ratio, black_ratio, sat_mean = _pl_img_stats(img_bytes)
     gate = (white_ratio > 0.6 and 0.02 < black_ratio < 0.20 and sat_mean < 0.15)
-    score = white_ratio * (1.0 - sat_mean)
-    return (gate, score)
+    return (gate, white_ratio * (1.0 - sat_mean))
+
+
+def _pl_is_blank_frame(img_bytes):
+    """マイソクの白い枠・白紙（中身ゼロ）＝白地率>0.9 かつ 黒線率<0.01。抽出から除外する。
+    （間取り図は黒線率0.04〜、写真は白地率が低いので誤除外しない）"""
+    white_ratio, black_ratio, _ = _pl_img_stats(img_bytes)
+    return white_ratio > 0.9 and black_ratio < 0.01
 
 
 def _pl_choose_floorplan(pdf_imgs, codes):
@@ -1120,10 +1134,10 @@ def _pl_render_floorplan_sidebar():
 _PL_CODE_TO_ROOM = {
     "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
     "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
-    "BALCONY": "バルコニー", "HALLWAY": "その他", "OTHER": "その他",
+    "BALCONY": "バルコニー", "EXTERIOR": "外観", "HALLWAY": "その他", "OTHER": "その他",
 }
-# 生成対象から除外するコード（間取り図・外観・地図・白紙）
-_PL_EXCLUDE_CODES = ("FLOORPLAN", "EXTERIOR", "MAP", "BLANK")
+# 生成対象から除外するコード（間取り図・地図・白紙）。外観はツアーの掴みに使うため除外しない
+_PL_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
 
 
 def _pl_parse_maisoku(pdf_bytes):
@@ -1173,7 +1187,7 @@ def _pl_assign_jo(items, madori_rooms):
 # 間取タイプの室記号 → 部屋種別（PL_ROOMS）
 _PL_SYM_TO_TYPE = {"洋": "洋室", "洋室": "洋室", "LDK": "LDK", "DK": "LDK"}
 # 全物件に存在するため、写真の有無に関わらず常に部屋リストへ入れる標準部屋
-_PL_STANDARD_TYPES = ["玄関", "キッチン", "浴室", "洗面", "トイレ", "バルコニー", "クローゼット"]
+_PL_STANDARD_TYPES = ["外観", "玄関", "キッチン", "浴室", "洗面", "トイレ", "バルコニー", "クローゼット"]
 
 
 def _pl_build_rooms(madori_rooms, items, vision_rooms=None):
@@ -1257,7 +1271,7 @@ def _pl_link_items(items, pl_rooms):
 
 
 # 動線順（ツアーらしい並び）。同種内は現orderを維持して安定ソート
-_PL_ROOM_RANK = {"玄関": 0, "LDK": 1, "キッチン": 2, "洋室": 3, "寝室": 4,
+_PL_ROOM_RANK = {"外観": -1, "玄関": 0, "LDK": 1, "キッチン": 2, "洋室": 3, "寝室": 4,
                  "クローゼット": 5, "洗面": 6, "浴室": 7, "トイレ": 8,
                  "バルコニー": 9, "その他": 10}
 
@@ -1383,6 +1397,8 @@ def _pl_stage_input():
             pdf_imgs = [b for (b, _w, _h) in core.extract_pdf_photos(pdf.getvalue(), min_px=250)]
         except Exception as e:  # noqa: BLE001
             st.error(f"PDF抽出に失敗: {e}")
+        # 中身ゼロの白い枠（マイソク枠）を除外＝空行防止＋classify配列ズレ防止
+        pdf_imgs = [b for b in pdf_imgs if not _pl_is_blank_frame(b)]
         raw_srcs += pdf_imgs
         if not raw_srcs:
             st.warning("PDFから使える室内写真が見つかりませんでした（手持ち写真をお使いください）。")
@@ -1763,4 +1779,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fproom-v37 (間取り図vision読取で部屋リスト化＋標準部屋常設＋WIC検出)")
+    st.caption("build: junk-ext-v38 (空枠除外＋配列ズレ対策＋外観を部屋種別化)")
