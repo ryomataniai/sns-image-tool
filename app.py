@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: finishlock-v29 (水回り演出：既存設備の色・仕上げを固定・プロンプトhotfix)")
+    st.caption("build: regennote-v30 (個別再生成メモ＋家具ステージングの開口部・扉保持hotfix)")
 
 
 # ======================================================================
@@ -1221,6 +1221,10 @@ def _pl_stage_review():
                 key=f"pl_rv_room_{i}")
             it["caption"] = o3.text_input("字幕（動画・空で無し）",
                                           value=it.get("caption", ""), key=f"pl_rvcap_{i}")
+            it["regen_note"] = st.text_input(
+                "追加指示（この画像だけ・任意）", value=it.get("regen_note", ""),
+                key=f"pl_note_{i}",
+                placeholder="例：家族で暮らす感じで玄関に靴を足して／奥の開口と右手前の扉はそのまま残して")
             rc1, rc2 = st.columns([1, 1])
             it["treatment"] = rc1.selectbox(
                 "処理（再生成用）", PL_TREATMENTS[:-1],
@@ -1233,12 +1237,16 @@ def _pl_stage_review():
                 else:
                     style_desc = core.INTERIOR_STYLES[
                         st.session_state.get("pl_style", list(core.INTERIOR_STYLES)[0])]
+                    # 全体要望＋この画像の追加指示を併結（個別メモを後置＝優先的に効く）
+                    _req = "\n".join(x for x in [
+                        st.session_state.get("pl_request", ""),
+                        it.get("regen_note", "")] if x)
                     with st.spinner(f"#{i+1} を再生成中…"):
                         data, err = _pl_generate_one(
                             client, it, style_desc,
                             st.session_state.get("pl_model", core.MODELS[0]),
                             st.session_state.get("pl_aspect", "4:5"),
-                            st.session_state.get("pl_request", ""))
+                            _req)
                     if err:
                         st.error(f"再生成失敗: {err}")
                     else:
@@ -1402,5 +1410,5 @@ nav = st.navigation({
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: finishlock-v29 (水回り演出：既存設備の色・仕上げを固定・プロンプトhotfix)")
+    st.caption("build: regennote-v30 (個別再生成メモ＋家具ステージングの開口部・扉保持hotfix)")
 nav.run()
