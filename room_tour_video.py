@@ -626,6 +626,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                with_bgm: bool = True, also_silent: bool = True,
                model_key: str = "kling2.6_pro", duration: int = 5,
                room_types: Optional[list] = None, image_note: str = "",
+               notes: Optional[list] = None,
                taste: str = "clean", tastes: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
                negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
@@ -634,6 +635,9 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
     images: [(name, image_bytes), ...] 再生順
     captions: 各クリップ下部の文言（None かつ with_captions=True なら name を使用）
     room_types: 各画像の部屋種別キー（ROOM_PROMPTS のキー）。None は 'generic'
+    image_note: 全クリップ共通の右下注記（優先）。空なら notes[i] を使う。
+    notes: クリップ個別の右下注記（image_note が空のときに使用。例：ステージング/リノベで文言を分ける）
+        ※ image_note も notes[i] も空なら注記なし（旧render_videoの挙動を維持）。
     aspect: 動画の向き "9:16"（既定）/ "1:1" / "16:9"
     fit_mode: 余白の扱い "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・余白あり）
     progress: callable(step:int, total:int, msg:str) 進捗コールバック（任意）
@@ -671,9 +675,11 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
             flash = flash_text if (i == 0 and flash_text) else ""   # 冒頭は先頭クリップのみ
             tst = tastes[i] if (tastes and i < len(tastes)) else taste
             pos = positions[i] if (positions and i < len(positions)) else "下中央"
+            # 注記：image_note（全体）優先 → クリップ個別 notes[i]。両方空なら注記なし
+            _note = image_note or (notes[i] if (notes and i < len(notes) and notes[i]) else "")
             _normalize_clip(raw, seg, caption=cap, sub_lines=subs,
                             top_tag=top_tag if with_captions else "",
-                            note=image_note, taste=tst, pos=pos, flash=flash,
+                            note=_note, taste=tst, pos=pos, flash=flash,
                             out_w=out_w, out_h=out_h, fit_mode=fit_mode)
             seg_paths.append(seg)
 

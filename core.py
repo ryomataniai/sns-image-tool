@@ -840,6 +840,24 @@ def _pr_has_banned_transport(s: str) -> bool:
     return bool(re.search(_PR_TRANSPORT_BAN, s or ""))
 
 
+# 重複排除（C）：表紙の下部特大＝間取り/面積、band＝駅徒歩に出るため、コピー本文に重複させない
+_PR_MADORI_RE = r"[1-9]\d?\s*[SLDKR]{1,4}|ワンルーム"
+_PR_AREA_RE = r"\d+(?:\.\d+)?\s*(?:㎡|平米|平方メートル|m2)"
+
+
+def _pr_has_spec(s: str) -> bool:
+    """title/subtitle 用：間取り(2LDK等)・面積(㎡)・徒歩◯分 を含むか（下部特大/bandと重複）。"""
+    s = s or ""
+    return bool(re.search(_PR_MADORI_RE, s) or re.search(_PR_AREA_RE, s)
+                or re.search(r"徒歩\s*\d+\s*分", s))
+
+
+def _pr_has_any_transport(s: str) -> bool:
+    """highlights 用：交通表現(徒歩/バス便/バス停/バス◯分/◯分)を含むか（bandと重複）。
+    設備語『バス・トイレ別』は誤検出しない（バス単独は交通扱いしない）。"""
+    return bool(re.search(r"徒歩|バス便|バス停|バス\s*\d+\s*分|\d+\s*分", s or ""))
+
+
 def _pr_walk_mismatch(s: str, access) -> bool:
     """s 内の『徒歩◯分』の◯が、facts.access の直接徒歩(バス便除く)のどれとも一致しなければ True。
     ＝実在しない徒歩分の誇張を落とす（band は facts verbatim なので影響しない）。"""
@@ -944,8 +962,10 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         "・【確定事実】以外の数値（徒歩分・面積・賃料・築年・帖数）や設備を創作しない。事実と一致させる。\n"
         "・角部屋/採光良好/通風良好/南向き/日当たり/最上階/新築/築浅/オートロック 等の属性は、"
         "【確定事実】か【マイソク全文】に明記がある場合のみ書く。無ければ書かない。\n"
+        "・役割分担（重複排除）：title・subtitle には 間取り(2LDK等)・面積(◯㎡)・徒歩◯分 を書かない"
+        "（下部に大きく／別枠で表示するため）。訴求の言葉・魅力に専念する。\n"
+        "・highlights(◎) には交通表現（徒歩・バス・◯分）を書かない（別枠で表示）。設備・条件に専念する。\n"
         "・バス便・バス停・バス◯分 は title・subtitle・highlights に書かない（別枠で表示）。\n"
-        "・駅への徒歩を書く場合は【確定事実】の徒歩分と正確に一致させる（違う分数や誇張は不可）。\n"
         "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
         "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
         "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
@@ -955,8 +975,8 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         '"room_subs":{"部屋種別":"情感1行目\\n情感2行目"}}\n'
         f"【部屋種別リスト】{rooms_json}\n【確定事実】{facts_json}\n【マイソク全文】\n"
     )
-    stricter = ("\n※前回は文字数超過・バス交通表現・事実未確認の属性が混入しました。"
-                "上限を必ず守り、バス交通は書かず、徒歩分は確定事実と一致させてください。\n")
+    stricter = ("\n※前回は文字数超過・間取り/面積/徒歩分の重複・交通表現・事実未確認の属性が混入しました。"
+                "上限を守り、title/subに間取り・面積・徒歩分を書かず、◎に交通を書かないでください。\n")
 
     def _call(instr):
         try:
@@ -983,15 +1003,18 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
             if not _pr_is_clean(title, hay, loc_ban, max_len=_PR_MAX_TITLE,
                                 hay_raw=hay_raw, ban_transport=True, access=_access):
                 continue                                # 超過/誇大/facts外/未確認属性/バス交通/徒歩不一致は落とす
-            if sub and not _pr_is_clean(sub, hay, loc_ban, max_len=_PR_MAX_SUBTITLE,
-                                        hay_raw=hay_raw, ban_transport=True, access=_access):
+            if _pr_has_spec(title):                     # C: 間取り/面積/徒歩分は下部特大・bandと重複→載せない
+                continue
+            if sub and (not _pr_is_clean(sub, hay, loc_ban, max_len=_PR_MAX_SUBTITLE,
+                                         hay_raw=hay_raw, ban_transport=True, access=_access)
+                        or _pr_has_spec(sub)):
                 sub = ""                                # サブだけNGなら空に
             titles.append({"direction": str(t.get("direction", "")).strip(),
                            "title": title, "subtitle": sub})
         highlights = [h for h in (data.get("highlights", []) or [])
                       if _pr_is_clean(h, hay, loc_ban, max_len=_PR_MAX_HIGHLIGHT,
-                                      hay_raw=hay_raw, ban_transport=True,
-                                      access=facts.get("access"))][:5]
+                                      hay_raw=hay_raw)
+                      and not _pr_has_any_transport(h)][:5]   # C: ◎に交通表現を載せない（band重複）
         room_subs = {}
         for k, v in (data.get("room_subs", {}) or {}).items():
             s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)

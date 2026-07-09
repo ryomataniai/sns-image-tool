@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cover-v45 (PRコピー字数上限＋属性/交通バリデータ・表紙の切詰め…/グラデ暗幕/注記修正)")
+    st.caption("build: titlesync-v46 (タイトル案切替を on_change コールバックで編集欄/表紙に即同期)")
 
 
 # ======================================================================
@@ -1035,6 +1035,31 @@ def _pl_set_flash_title(title):
     st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
 
 
+def _pl_apply_title_choice():
+    """タイトル案ラジオの on_change：選択案から編集欄・表紙タイトルを直接同期する。
+    ※コールバックはウィジェット生成前に走るため、キーへの代入がフロント値より優先され確実に反映される
+      （script本体での del/pop はフロントが旧値を再送するため効かない＝この方式が必須）。"""
+    _draft = st.session_state.get("pl_prcopy") or {}
+    _titles = _draft.get("titles", [])
+    idx = st.session_state.get("pl_title_idx", 0)
+    if not (isinstance(idx, int) and 0 <= idx < len(_titles)):
+        return
+    sel = _titles[idx]
+    st.session_state["pl_title_edit"] = sel.get("title", "")
+    st.session_state["pl_sub_edit"] = sel.get("subtitle", "")
+    st.session_state["pl_cover_title"] = sel.get("title", "")
+    st.session_state["pl_cover_sub"] = sel.get("subtitle", "")
+
+
+def _pl_reset_title_choice():
+    """『PRコピーを下書き』の on_click：新しい候補に備え選択・編集欄をリセット。
+    ※コールバック内の pop はウィジェット再初期化として有効（script本体の pop は効かない）。
+      下書き生成後に生成前seedが新案 titles[0] を入れ直す。"""
+    for k in ("pl_title_idx", "pl_title_edit", "pl_sub_edit",
+              "pl_cover_title", "pl_cover_sub"):
+        st.session_state.pop(k, None)
+
+
 def _pl_room_use(room):
     """build_staging_prompt の room_use（room指定を生成に効かせる＝痛み#3対策）。"""
     if room == "LDK":
@@ -1391,7 +1416,9 @@ PL_RESIDENTIAL = ("LDK", "洋室", "寝室")
 
 
 def _pl_generate_one(client, it, style_desc, model, aspect, req):
-    """1itemを treatment/room に従い生成。(bytes|None, err|None) を返す。"""
+    """1itemを treatment/room に従い生成。(bytes|None, err|None, disc|None) を返す。
+    ※注記(disc)は gen_bytes に焼き込まない（増加+cropで頭が切れ二重注記になるため）。
+      文言だけ返し、画像ZIP/DL出力時に add_disclaimer で1回だけ焼く。動画/表紙は各レンダラが描く。"""
     t = it["treatment"]
     room = it.get("room", "")
     # 帖数ヒントを先頭に付加（帖数→全体要望→個別メモ の順で効かせる。core署名は変えない）
@@ -1424,12 +1451,8 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
     data, err = core.generate_from_images(
         client, [(it["src_bytes"], "image/png")], pr,
         model=model, aspect=aspect, size="2K", add_safety=False)
-    if not err and disc:
-        try:
-            data = core.add_disclaimer(data, disc)
-        except Exception:  # noqa: BLE001
-            pass
-    return data, err
+    # 注記は焼き込まず disc として返す（gen_bytesは注記なしのクリーンな画像のまま保持）。
+    return data, err, disc
 
 
 def _pl_run_generation(jobs, style_name, model, aspect, req):
@@ -1447,9 +1470,9 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
         for fut in _cf.as_completed(futs):
             iid = futs[fut]
             try:
-                data, err = fut.result()
+                data, err, disc = fut.result()
             except Exception as e:  # noqa: BLE001
-                data, err = None, str(e)
+                data, err, disc = None, str(e), None
             done += 1
             if err:
                 st.warning(f"#{iid+1} 生成失敗: {err}")
@@ -1457,6 +1480,7 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
                 for it in st.session_state.get("pl_items", []):
                     if it["id"] == iid:
                         it["gen_bytes"] = data
+                        it["disc"] = disc      # 注記文言（ZIP/DL出力時に焼く）
             prog.progress(done / len(jobs), text=f"画像化中… {done}/{len(jobs)}")
     prog.empty()
     if any(it.get("gen_bytes") for it in st.session_state.get("pl_items", [])):
@@ -1673,6 +1697,8 @@ def _pl_stage_review():
             bc.image(it["src_bytes"], use_container_width=True)
             ac.caption("After（生成）")
             ac.image(it["gen_bytes"], use_container_width=True)
+            if it.get("disc"):   # gen_bytesは注記なし。文言を明示（保存/動画/表紙の出力時に付与）
+                ac.caption(f"{it['disc']}（保存・動画・表紙の出力時に付与されます）")
             o1, o2, o3 = st.columns([1, 1, 2])
             it["_adopt"] = o1.checkbox("採用", value=it.get("_adopt", True),
                                        key=f"pl_adopt_{i}")
@@ -1703,7 +1729,7 @@ def _pl_stage_review():
                         st.session_state.get("pl_request", ""),
                         it.get("regen_note", "")] if x)
                     with st.spinner(f"#{i+1} を再生成中…"):
-                        data, err = _pl_generate_one(
+                        data, err, disc = _pl_generate_one(
                             client, it, style_desc,
                             st.session_state.get("pl_model", core.MODELS[0]),
                             st.session_state.get("pl_aspect", "4:5"),
@@ -1712,6 +1738,7 @@ def _pl_stage_review():
                         st.error(f"再生成失敗: {err}")
                     else:
                         it["gen_bytes"] = data
+                        it["disc"] = disc
                         st.rerun()
 
     adopted = [it for it in ordered if it.get("_adopt", True)]   # 動線順で採用
@@ -1724,7 +1751,13 @@ def _pl_stage_review():
         zbuf = io.BytesIO()
         with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
             for k, it in enumerate(adopted, 1):
-                zf.writestr(f"{k:02d}_{it['room']}.png", it["gen_bytes"])
+                _b = it["gen_bytes"]
+                if it.get("disc"):   # 画像ZIPには注記を焼く（法令要件の維持）
+                    try:
+                        _b = core.add_disclaimer(_b, it["disc"])
+                    except Exception:  # noqa: BLE001
+                        pass
+                zf.writestr(f"{k:02d}_{it['room']}.png", _b)
         e2.download_button("画像だけ保存（ZIP）", zbuf.getvalue(), "naikan_set.zip",
                            "application/zip", key="pl_zip", use_container_width=True)
     if e3.button(f"→ 採用{len(adopted)}枚で動画化へ", type="primary",
@@ -1832,7 +1865,8 @@ def _pl_stage_video():
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
         st.caption("マイソクの事実だけを根拠に下書きします。誇大語・事実外の数値は自動除去。"
                    "Gemini未設定/失敗でも簡易テンプレで続行します。")
-        if st.button("PRコピーを下書き（AI・1回）", key="pl_prcopy_btn"):
+        if st.button("PRコピーを下書き（AI・1回）", key="pl_prcopy_btn",
+                     on_click=_pl_reset_title_choice):
             _facts = st.session_state.get("pl_facts", {})
             try:
                 _client = make_client()
@@ -1874,20 +1908,18 @@ def _pl_stage_video():
                            for t in _titles]
                 _idx = st.radio("タイトル案（方向性つき・クリック前に中身が見えます）",
                                 list(range(len(_titles))),
-                                format_func=lambda i: _labels[i], key="pl_title_idx")
-                if st.session_state.get("_pl_title_sig") != _idx:   # 案切替で編集欄＋表紙を追従
-                    # 表紙(pl_cover_*)も落として下の表紙セクションで新案から再seed
-                    # ＝表紙とフラッシュのタイトル同期ずれ防止。全て生成前(=widget作成前)なので安全
-                    for _k in ("pl_title_edit", "pl_sub_edit",
-                               "pl_cover_title", "pl_cover_sub"):
-                        st.session_state.pop(_k, None)
-                    st.session_state["_pl_title_sig"] = _idx
+                                format_func=lambda i: _labels[i], key="pl_title_idx",
+                                on_change=_pl_apply_title_choice)   # 案切替→編集欄/表紙を即同期
                 _sel = _titles[_idx]
+                # 生成前seed（未設定時のみ＝初回render用。案切替時は on_change が上書きする）。
+                # value= は key= と併用すると session_state 存在時に衝突するため使わない。
+                if "pl_title_edit" not in st.session_state:
+                    st.session_state["pl_title_edit"] = _sel.get("title", "")
+                if "pl_sub_edit" not in st.session_state:
+                    st.session_state["pl_sub_edit"] = _sel.get("subtitle", "")
                 tc1, tc2 = st.columns(2)
-                _t_title = tc1.text_input("タイトル（編集可）", value=_sel["title"],
-                                          key="pl_title_edit")
-                tc2.text_input("サブタイトル（編集可）", value=_sel.get("subtitle", ""),
-                               key="pl_sub_edit")
+                _t_title = tc1.text_input("タイトル（編集可）", key="pl_title_edit")
+                tc2.text_input("サブタイトル（編集可）", key="pl_sub_edit")
                 st.button("このタイトルを冒頭フラッシュに設定", key="pl_title_to_flash",
                           on_click=_pl_set_flash_title, args=(_t_title,))
                 st.caption("表紙特大（P1b-2）＝タイトル大見出し＋サブ補足。冒頭フラッシュ＝短いタイトルのみ"
@@ -2030,6 +2062,9 @@ def _pl_stage_video():
         # スタイル/配置：画像ごと上書き→部屋種別自動→全体既定 の順で解決
         tastes = [_pl_resolve_taste(it, v_taste) for it in adopted]
         positions = [_pl_resolve_pos(it, v_pos) for it in adopted]
+        # 注記：画面注記(v_note)が空でも必ず注記を焼く（法令）。個別は it["disc"]（リノベ/
+        # ステージングで文言が異なる）→ 無ければ既定。build_tourで v_note があれば全体優先。
+        notes = [it.get("disc") or "※AI加工のイメージ" for it in adopted]
         bar = st.progress(0.0)
         status = st.empty()
 
@@ -2046,7 +2081,7 @@ def _pl_stage_video():
                 sub_captions=sub_captions if v_caps else None,
                 top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
                 also_silent=True, model_key=v_model, duration=v_dur,
-                room_types=room_types, image_note=v_note,
+                room_types=room_types, image_note=v_note, notes=notes,
                 taste=v_taste, tastes=tastes if v_caps else None,
                 positions=positions if v_caps else None,
                 flash_text=v_flash, aspect=v_aspect,
@@ -2124,4 +2159,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cover-v45 (PRコピー字数上限＋属性/交通バリデータ・表紙の切詰め…/グラデ暗幕/注記修正)")
+    st.caption("build: titlesync-v46 (タイトル案切替を on_change コールバックで編集欄/表紙に即同期)")
