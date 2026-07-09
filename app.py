@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42b (冒頭フラッシュ設定をon_clickコールバック化・flash seed生成前)")
+    st.caption("build: prcopy-v42b (フラッシュon_click化＋取り込み時stale state一掃)")
 
 
 # ======================================================================
@@ -1267,6 +1267,10 @@ _PL_SYM_TO_TYPE = {"洋": "洋室", "洋室": "洋室", "LDK": "LDK", "DK": "LDK
 # 全物件に存在するため、写真の有無に関わらず常に部屋リストへ入れる標準部屋
 _PL_STANDARD_TYPES = ["外観", "玄関", "キッチン", "浴室", "洗面", "トイレ", "バルコニー", "クローゼット"]
 
+# 新規取り込み時に残す＝ユーザー設定（物件非依存）。接頭辞削除の巻き込み防止に使う
+_PL_KEEP_ON_IMPORT = {"pl_telop_taste", "pl_telop_pos", "pl_room_lang",
+                      "pl_open_title", "pl_v_note", "pl_mode"}
+
 
 def _pl_build_rooms(madori_rooms, items, vision_rooms=None):
     """物件固有の名前付き部屋リスト。→ [{id, name, type, jo}]。
@@ -1535,9 +1539,17 @@ def _pl_stage_input():
         # 事実抽出（PRコピー下書き用・Geminiは呼ばない）。取り込み時1回
         st.session_state["pl_facts"] = (
             core.parse_maisoku_facts(pdf.getvalue()) if pdf is not None else {})
-        st.session_state.pop("pl_prcopy", None)   # 新規取り込みで下書きはリセット
+        # 新規取り込みで物件固有の値を一掃（別物件の建物名・帖数・コピーの焼き込み防止）
+        # 完全一致（物件固有）：下書き・フラッシュ文言・上部タグ・タイトル/サブ編集・選択
+        for k in ("pl_prcopy", "pl_flash_text", "pl_v_tag",
+                  "pl_title_edit", "pl_sub_edit", "pl_title_idx"):
+            st.session_state.pop(k, None)
+        # 接頭辞（物件固有・写真ごと）：部屋/処理/間取り図選択＋テロップ本文・個別スタイル
+        # ※ pl_room_ は pl_room_lang（ユーザー設定）と前方一致するため残すキーは除外
         for k in [k for k in list(st.session_state)
-                  if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick"))]:
+                  if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
+                                   "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_"))
+                  and k not in _PL_KEEP_ON_IMPORT]:
             del st.session_state[k]
         # ウィジェットの値は session_state で管理（変更コールバックが上書きするため）
         for it in items:
@@ -1980,4 +1992,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42b (冒頭フラッシュ設定をon_clickコールバック化・flash seed生成前)")
+    st.caption("build: prcopy-v42b (フラッシュon_click化＋取り込み時stale state一掃)")
