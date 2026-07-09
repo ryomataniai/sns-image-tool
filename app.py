@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: absorb-v47 (写真の無い部屋の補完生成・間取り図/3Dパースの静止カット吸収)")
+    st.caption("build: gapui-v48 (補完生成/3Dパースを画像化ボタンに統合・3Dパース再生成対応)")
 
 
 # ======================================================================
@@ -1443,6 +1443,14 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
         data, err = core.generate_from_images(
             client, imgs, pr, model=model, aspect=aspect, size="2K", add_safety=False)
         return data, err, _PL_GAP_DISC
+    if t == "3Dパース（試験）":
+        # 間取り図（src_bytes）を土台に俯瞰パースを生成。関所の再生成＋メモもここを通る
+        base = it.get("src_bytes")
+        pr = core.build_3d_perspective_prompt(style_desc, user_request=req)
+        data, err = core.generate_from_images(
+            client, [(base, "image/png")], pr, model=model, aspect=aspect,
+            size="2K", add_safety=False)
+        return data, err, _PL_PERSP_DISC
     if t == "リノベ後イメージ":
         # room-aware（部屋の機能を保ったまま刷新）
         pr = core.build_renovation_prompt(style_desc, user_request=req, room=room)
@@ -1547,66 +1555,6 @@ def _pl_pick_anchor(items):
             if it.get("room") == want:
                 return _b(it)
     return _b(photos[0]) if photos else None
-
-
-def _pl_generate_gap_rooms(client, room_ids, style_name, model, aspect, req):
-    """選択部屋を補完生成し pl_items に追加（間取り図土台＋実写真アンカーでトーン統一）。"""
-    items = st.session_state.get("pl_items", [])
-    byid = {r["id"]: r for r in st.session_state.get("pl_rooms", [])}
-    base = st.session_state.get("pl_floorplan") or next(
-        (it.get("gen_bytes") or it.get("src_bytes") for it in items
-         if it.get("_origin", "photo") == "photo" and it.get("treatment") != "使わない"), None)
-    if base is None:
-        st.error("土台にできる画像（間取り図/実写真）がありません。"); return
-    anchor = _pl_pick_anchor(items)
-    style_desc = core.INTERIOR_STYLES[style_name]
-    prog = st.progress(0.0, text="写真の無い部屋を生成中…")
-    made = 0
-    for k, rid in enumerate(room_ids):
-        r = byid.get(rid)
-        if not r:
-            continue
-        nid = _pl_next_item_id(items)
-        it = {"id": nid, "order": 10000 + nid, "src_bytes": base, "room": r["type"],
-              "treatment": "補完生成", "gen_bytes": None, "caption": "", "jo": r.get("jo"),
-              "room_id": rid, "disc": _PL_GAP_DISC, "_origin": "gap",
-              "_gap_base": base, "_gap_anchor": anchor}
-        data, err, disc = _pl_generate_one(client, it, style_desc, model, aspect, req)
-        if err:
-            st.warning(f"{r['name']}（補完生成）失敗: {err}")
-        else:
-            it["gen_bytes"] = data
-            it["disc"] = disc
-            items.append(it)
-            made += 1
-        prog.progress((k + 1) / max(len(room_ids), 1), text=f"補完生成中… {k+1}/{len(room_ids)}")
-    prog.empty()
-    st.session_state["pl_items"] = items
-    if made:
-        st.success(f"写真の無い部屋を {made}件 補完生成しました。確認（Before/After）に出ます。")
-    st.rerun()
-
-
-def _pl_make_persp(client, style_name, model, aspect, req):
-    """間取り図から3Dパース（試験）を生成し pl_items に追加（fal非通過の静止カット扱い）。"""
-    items = st.session_state.get("pl_items", [])
-    floorplan = st.session_state.get("pl_floorplan")
-    if floorplan is None:
-        st.error("3Dパースには間取り図が必要です。"); return
-    pr = core.build_3d_perspective_prompt(core.INTERIOR_STYLES[style_name], user_request=req)
-    with st.spinner("3Dパース（試験）を生成中…"):
-        data, err = core.generate_from_images(
-            client, [(floorplan, "image/png")], pr, model=model, aspect=aspect,
-            size="2K", add_safety=False)
-    if err:
-        st.error(f"3Dパース生成失敗: {err}"); return
-    nid = _pl_next_item_id(items)
-    items.append({"id": nid, "order": 20000 + nid, "src_bytes": floorplan, "room": "その他",
-                  "treatment": "3Dパース（試験）", "gen_bytes": data, "caption": "", "jo": None,
-                  "room_id": None, "disc": _PL_PERSP_DISC, "_origin": "persp"})
-    st.session_state["pl_items"] = items
-    st.success("3Dパース（試験）を生成しました。確認に出ます（品質は不安定＝試験）。")
-    st.rerun()
 
 
 def _pl_stage_input():
@@ -1767,21 +1715,78 @@ def _pl_stage_input():
         it["treatment"] = rc3.selectbox(
             "処理", PL_TREATMENTS, key=f"pl_treat_{i}", label_visibility="collapsed")
 
-    jobs = [it for it in _photo_items if it["treatment"] != "使わない"]
+    _photo_jobs = [it for it in _photo_items if it["treatment"] != "使わない"]
     st.divider()
+
+    # カットを増やす（選択のみ・生成は下の「画像化する」で写真とまとめて実行）
+    _pl_render_absorb_select(pl_rooms, items)
+
+    # 生成内訳：写真＋補完＋3Dパース（間取り図stillは生成対象外なので含めない）
+    _n_photo = len(_photo_jobs)
+    _n_gap = len(st.session_state.get("pl_gap_targets") or [])
+    _n_persp = 1 if (st.session_state.get("pl_make_persp")
+                     and st.session_state.get("pl_floorplan") is not None) else 0
+    _n_gen = _n_photo + _n_gap + _n_persp
+    _cost = _n_gen * _PL_GEN_UNIT_USD
+    _parts = [f"写真{_n_photo}枚"]
+    if _n_gap:
+        _parts.append(f"補完{_n_gap}枚")
+    if _n_persp:
+        _parts.append("3Dパース1枚")
     st.warning("⚠️ 次の「画像化」で Gemini の生成コストが発生します。")
-    if st.button(f"② 選択した {len(jobs)}枚 を画像化する（並行生成）", type="primary",
-                 disabled=(len(jobs) == 0), key="pl_gen_btn", use_container_width=True):
-        _pl_run_generation(jobs, style_name, model, aspect, req)
+    if st.button(f"② {'＋'.join(_parts)} を画像化する（約${_cost:.2f}・並行生成）",
+                 type="primary", disabled=(_n_gen == 0), key="pl_gen_btn",
+                 use_container_width=True):
+        _pl_run_all_generation(style_name, model, aspect, req)
 
-    _pl_render_absorb_section(pl_rooms, items, style_name, model, aspect, req)
+
+def _pl_pending_absorb_items(items, pl_rooms):
+    """選択に基づく補完/3Dパースの pending item（gen_bytes=None）を作る。生成はしない。"""
+    pending = []
+    floorplan = st.session_state.get("pl_floorplan")
+    base = floorplan or next(
+        (it.get("src_bytes") for it in items if it.get("_origin", "photo") == "photo"), None)
+    if base is not None:                      # 補完生成（間取り図/実写真を土台）
+        anchor = _pl_pick_anchor(items)
+        byid = {r["id"]: r for r in (pl_rooms or [])}
+        for rid in (st.session_state.get("pl_gap_targets") or []):
+            r = byid.get(rid)
+            if not r:
+                continue
+            nid = _pl_next_item_id(items + pending)
+            pending.append({"id": nid, "order": 10000 + nid, "src_bytes": base,
+                            "room": r["type"], "treatment": "補完生成", "gen_bytes": None,
+                            "caption": "", "jo": r.get("jo"), "room_id": rid,
+                            "disc": _PL_GAP_DISC, "_origin": "gap",
+                            "_gap_base": base, "_gap_anchor": anchor})
+    if st.session_state.get("pl_make_persp") and floorplan is not None:  # 3Dパース
+        nid = _pl_next_item_id(items + pending)
+        pending.append({"id": nid, "order": 20000 + nid, "src_bytes": floorplan,
+                        "room": "その他", "treatment": "3Dパース（試験）", "gen_bytes": None,
+                        "caption": "", "jo": None, "room_id": None,
+                        "disc": _PL_PERSP_DISC, "_origin": "persp"})
+    return pending
 
 
-def _pl_render_absorb_section(pl_rooms, items, style_name, model, aspect, req):
-    """B2b-3a：写真の無い部屋の補完生成 / 間取り図カット / 3Dパース（試験）。"""
+def _pl_run_all_generation(style_name, model, aspect, req):
+    """写真item＋補完生成＋3Dパースを1回の並行生成でまとめて実行→関所へ。"""
+    photos = [it for it in st.session_state.get("pl_items", [])
+              if it.get("_origin", "photo") == "photo"]   # 既存gap/perspは作り直す
+    pending = _pl_pending_absorb_items(photos, st.session_state.get("pl_rooms", []))
+    items = photos + pending
+    st.session_state["pl_items"] = items
+    jobs = [it for it in items
+            if (it.get("_origin", "photo") == "photo" and it["treatment"] != "使わない")
+            or it.get("_origin") in ("gap", "persp")]
+    _pl_run_generation(jobs, style_name, model, aspect, req)
+
+
+def _pl_render_absorb_select(pl_rooms, items):
+    """カットを増やす＝選択のみ（補完対象部屋・3D ON/OFF・間取り図 ON/OFF）。生成は「画像化」で。"""
     floorplan = st.session_state.get("pl_floorplan")
     with st.expander("🧩 カットを増やす（写真の無い部屋・間取り図・3Dパース）", expanded=False):
-        # B: 間取り図をカットに含める（ユーザー設定・保持）
+        st.caption("ここでは選ぶだけ。下の「画像化する」で写真とまとめて生成されます。")
+        # B: 間取り図（生成しない静止カット）
         if "pl_include_fp" not in st.session_state:
             st.session_state["pl_include_fp"] = True
         st.checkbox("間取り図を1カットとして含める（動画は末尾／画像ZIPにも追加）",
@@ -1790,8 +1795,7 @@ def _pl_render_absorb_section(pl_rooms, items, style_name, model, aspect, req):
         if floorplan is None:
             st.caption("※間取り図が未検出のため無効（サイドバーで手動指定できます）。")
         st.divider()
-
-        # A: 写真の無い部屋の補完生成
+        # A: 補完生成の選択（生成は「画像化」でまとめて）
         _unc = _pl_uncovered_rooms(pl_rooms, items)
         st.markdown("**写真の無い部屋を生成して補う**")
         st.caption("居室（LDK・洋室・寝室）は実写真が必要です（補完生成の対象外）。"
@@ -1805,46 +1809,19 @@ def _pl_render_absorb_section(pl_rooms, items, style_name, model, aspect, req):
                     r["id"] for r in _unc if r["type"] in _PL_GAP_DEFAULT_TYPES]
             else:             # stale id（既にカバー済み等）を除外して例外回避
                 st.session_state["pl_gap_targets"] = [i for i in cur if i in _optids]
-            _sel = st.multiselect("補う部屋（自動検出・増減できます）", _optids,
-                                  format_func=lambda i: _lbl.get(i, str(i)),
-                                  key="pl_gap_targets")
-            _cost = len(_sel) * _PL_GEN_UNIT_USD
-            st.caption(f"推定：{len(_sel)}枚 × 約${_PL_GEN_UNIT_USD} ＝ 約${_cost:.2f}"
-                       f"（≈¥{_cost*150:.0f}）。間取り図を土台に実写真のトーンで生成します。")
-            if st.button(f"写真の無い部屋 {len(_sel)}件 を補完生成", key="pl_gap_gen",
-                         disabled=(len(_sel) == 0)):
-                try:
-                    _client = make_client()
-                except RuntimeError:
-                    _client = None
-                if _client is None:
-                    st.error("Gemini APIキーが未設定です（設定ページで確認）。")
-                else:
-                    _pl_generate_gap_rooms(_client, list(_sel), style_name, model, aspect, req)
+            st.multiselect("補う部屋（自動検出・増減できます）", _optids,
+                           format_func=lambda i: _lbl.get(i, str(i)), key="pl_gap_targets")
         elif pl_rooms:
             st.caption("写真の無い部屋はありません（全部屋に写真が紐づいています）。")
         else:
             st.caption("※マイソク（間取り）が無いため自動検出できません（手持ち写真のみ）。")
         st.divider()
-
         # C: 3Dパース（試験）
         st.markdown("**3Dパース（間取り俯瞰イメージ・試験）**")
         if "pl_make_persp" not in st.session_state:
             st.session_state["pl_make_persp"] = False
         st.checkbox("3Dパース（試験）を作る", key="pl_make_persp", disabled=(floorplan is None),
                     help="間取り図から俯瞰イメージを生成（品質は不安定＝試験）。動画では静止クリップ。")
-        if st.session_state.get("pl_make_persp") and floorplan is not None:
-            st.caption(f"推定：1枚 × 約${_PL_GEN_UNIT_USD} ＝ 約${_PL_GEN_UNIT_USD:.2f}。"
-                       "生成物は「試験」ラベルで確認に出ます。")
-            if st.button("3Dパースを生成（試験）", key="pl_persp_gen"):
-                try:
-                    _client = make_client()
-                except RuntimeError:
-                    _client = None
-                if _client is None:
-                    st.error("Gemini APIキーが未設定です（設定ページで確認）。")
-                else:
-                    _pl_make_persp(_client, style_name, model, aspect, req)
 
 
 def _pl_stage_review():
@@ -1918,9 +1895,10 @@ def _pl_stage_review():
                 st.caption("補完生成（写真の無い部屋）。処理は固定。部屋・追加指示を変えて再生成できます。")
                 _do_regen = st.button("この画像だけ再生成", key=f"pl_regen_{i}",
                                       use_container_width=True)
-            else:  # persp（3Dパース・試験）＝再生成非対応
-                st.caption("3Dパース（試験）。再生成は非対応（不要なら採用を外してください）。")
-                _do_regen = False
+            else:  # persp（3Dパース・試験）＝間取り図から再生成できる
+                st.caption("3Dパース（試験）。間取り図を土台に、追加指示を変えて再生成できます。")
+                _do_regen = st.button("この画像だけ再生成", key=f"pl_regen_{i}",
+                                      use_container_width=True)
             if _do_regen:
                 if client is None:
                     st.error("APIキーが未設定です（設定ページで確認）。")
@@ -2391,4 +2369,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: absorb-v47 (写真の無い部屋の補完生成・間取り図/3Dパースの静止カット吸収)")
+    st.caption("build: gapui-v48 (補完生成/3Dパースを画像化ボタンに統合・3Dパース再生成対応)")
