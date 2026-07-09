@@ -474,6 +474,40 @@ def _fit_size(font_path: str, lines: list, max_w: int, base: int, min_size: int 
     return size
 
 
+def _ellipsize(font_path: str, text: str, size: int, max_w: int) -> str:
+    """幅 max_w に収まらなければ末尾を削り … を必ず付ける（無言で切らない＝最後の手段）。"""
+    text = (text or "").strip()
+    if not text or _text_width(font_path, text, size) <= max_w * _FIT_SAFETY:
+        return text
+    ell = "…"
+    while text and _text_width(font_path, text + ell, size) > max_w * _FIT_SAFETY:
+        text = text[:-1]
+    return (text + ell) if text else ell
+
+
+def _cover_scrim_png(W: int, H: int, header_bottom: int, footer_top: int,
+                     top_a: float = 0.55, bot_a: float = 0.62, fade: int = 140) -> str:
+    """上下だけを暗くする縦グラデ暗幕(RGBA黒)のPNGを生成しパスを返す。中央は透明＝写真素のまま。
+    ハードな帯を避けるため、テキスト帯の外側へ fade でなだらかに落とす。"""
+    from PIL import Image
+    y = np.arange(H)
+    top = np.zeros(H)
+    if header_bottom > 0:
+        hb = min(header_bottom, H)
+        top = np.where(y <= hb, top_a, top_a * np.clip(1 - (y - hb) / fade, 0, 1))
+    bot = np.zeros(H)
+    if footer_top < H:
+        ft = max(footer_top, 0)
+        bot = np.where(y >= ft, bot_a, bot_a * np.clip(1 - (ft - y) / fade, 0, 1))
+    alpha = np.maximum(top, bot)
+    arr = np.zeros((H, W, 4), dtype=np.uint8)
+    arr[..., 3] = (alpha[:, None] * 255).astype(np.uint8)     # 黒(RGB=0)・alphaは行ごと
+    fd, path = tempfile.mkstemp(suffix="_scrim.png")
+    os.close(fd)
+    Image.fromarray(arr, "RGBA").save(path)
+    return path
+
+
 def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
                 style: str = "default") -> bytes:
     """素材画像＋fields から『表紙特大』の静止画 PNG を生成して返す（動画には挿入しない）。
@@ -502,33 +536,33 @@ def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
     note = (fields.get("note") or "").strip()
 
     # フォントサイズ（1080幅基準）／余白（safe-zone）
-    S_SUB, S_HL, S_BAND = 40, 36, 40
+    S_SUB, S_HL, S_BAND, S_NOTE = 40, 36, 40, 26
     S_TITLE_BASE, S_MADORI_BASE = 92, 88
     LH = 1.22
     M_TOP, M_BOTTOM, M_SIDE = 160, 150, 90
     MAX_W = W - 2 * M_SIDE                 # テキスト最大幅（safe-zone・文字切れ防止）
-    MAX_TITLE_CHARS, MAX_LINE_CHARS = 10, 20
+    MAX_TITLE_CHARS = 10
 
     # 特大2種は幅に収まるサイズへ自動フィット（PIL計測・不能時は保守推定）
     title_lines = _wrap_jp(title, MAX_TITLE_CHARS, max_lines=2)
     s_title = _fit_size(font, title_lines, MAX_W, S_TITLE_BASE) if title_lines else S_TITLE_BASE
-    s_madori = _fit_size(font, [madori_area[:MAX_LINE_CHARS]], MAX_W, S_MADORI_BASE)
+    s_madori = _fit_size(font, [madori_area], MAX_W, S_MADORI_BASE) if madori_area else S_MADORI_BASE
 
     # ヘッダー（上詰め）：subtitle小 → title特大（最大2行）
     header = []
     if subtitle:
-        header.append((subtitle[:MAX_LINE_CHARS], S_SUB))
+        header.append((subtitle, S_SUB))
     for ln in title_lines:
         header.append((ln, s_title))
 
     # フッター（下詰め・上から highlights → band → madori特大）
     footer = []
     for h in highlights:
-        footer.append((h[:MAX_LINE_CHARS], S_HL))
+        footer.append((h, S_HL))
     if band:
-        footer.append((band[:MAX_LINE_CHARS], S_BAND))
+        footer.append((band, S_BAND))
     if madori_area:
-        footer.append((madori_area[:MAX_LINE_CHARS], s_madori))
+        footer.append((madori_area, s_madori))
 
     # y座標（ヘッダーは上から、フッターは下から積む）
     y = M_TOP
@@ -545,38 +579,41 @@ def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
         footer_pos.append((txt, size, y))
     footer_top = min([p[2] for p in footer_pos], default=H)
 
-    # フィルタチェーン：覆う → 暗幕 → テキスト
-    vf = [f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}",
-          f"drawbox=x=0:y=0:w={W}:h={H}:color=black@0.16:t=fill"]
-    if header_pos:
-        hb = min(header_bottom + 30, H)
-        vf.append(f"drawbox=x=0:y=0:w={W}:h={hb}:color=black@0.32:t=fill")
-    if footer_pos:
-        ft = max(footer_top - 30, 0)
-        vf.append(f"drawbox=x=0:y={ft}:w={W}:h={H - ft}:color=black@0.38:t=fill")
+    # 可読性の暗幕：ハードな帯ではなく、写真に重なる縦グラデ（上/下だけ暗く・中央は素の写真）
+    grad_png = _cover_scrim_png(W, H, header_bottom if header_pos else 0,
+                                footer_top if footer_pos else H)
 
+    # テキスト（最後の手段として幅に収まらなければ … で切る＝無言で切らない）
     def _dt(txt, size, yy):
-        return (f"drawtext={fontref}:text='{_esc(txt)}':fontcolor=white@0.92:fontsize={size}:"
+        t = _ellipsize(font, txt, size, MAX_W)
+        return (f"drawtext={fontref}:text='{_esc(t)}':fontcolor=white@0.94:fontsize={size}:"
                 f"shadowcolor=black@0.55:shadowx=2:shadowy=3:x=(w-text_w)/2:y={yy}")
 
-    for txt, size, yy in header_pos + footer_pos:
-        vf.append(_dt(txt, size, yy))
-    if note:
-        vf.append(f"drawtext={fontref}:text='{_esc(note)}':fontcolor=white@0.85:fontsize=26:"
-                  f"box=1:boxcolor=black@0.35:boxborderw=10:x=w-text_w-36:y=h-64")
+    draws = [_dt(txt, size, yy) for txt, size, yy in header_pos + footer_pos]
+    if note:                                    # 注記：幅内に収め右下に1回だけ（見切れ防止）
+        note_fit = _ellipsize(font, note, S_NOTE, MAX_W)
+        draws.append(
+            f"drawtext={fontref}:text='{_esc(note_fit)}':fontcolor=white@0.88:fontsize={S_NOTE}:"
+            f"box=1:boxcolor=black@0.40:boxborderw=10:x=w-text_w-36:y=h-64")
+    chain = "[base]" + (",".join(draws) if draws else "null") + "[v]"
 
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         f.write(image_bytes)
         src = f.name
     out = src[:-4] + "_cover.png"
     try:
-        subprocess.run([ff, "-y", "-loglevel", "error", "-i", src,
-                        "-vf", ",".join(vf), "-frames:v", "1", out],
-                       check=True, timeout=120)
+        # 素材を fill で完全被覆（increase+crop）→ グラデ暗幕を overlay → テキスト
+        subprocess.run(
+            [ff, "-y", "-loglevel", "error", "-i", src, "-i", grad_png,
+             "-filter_complex",
+             (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+              f"crop={W}:{H}[bg];[bg][1:v]overlay=0:0[base];{chain}"),
+             "-map", "[v]", "-frames:v", "1", out],
+            check=True, timeout=120)
         with open(out, "rb") as fh:
             return fh.read()
     finally:
-        for p in (src, out):
+        for p in (src, out, grad_png):
             try:
                 os.unlink(p)
             except Exception:  # noqa: BLE001

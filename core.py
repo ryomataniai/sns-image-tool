@@ -810,6 +810,59 @@ _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "�
 _PR_LOCATION_WORDS = ["駅近", "駅チカ", "駅すぐ", "駅から近い", "好立地", "アクセス良好", "アクセス抜群"]
 _PR_STATION_WALK_THRESHOLD = 10   # 駅への直接徒歩がこの分数を超える／バス便のみ→立地訴求語を禁止
 
+# 表紙/PRコピーの文字数上限（実測ベースの暫定値・表紙レンダリングを見て調整可）
+_PR_MAX_TITLE = 16       # タイトル
+_PR_MAX_SUBTITLE = 24    # サブタイトル
+_PR_MAX_HIGHLIGHT = 14   # ◎魅力ポイント 各1つ
+
+# 事実照合が必要な非数値の属性（同義グループ）：グループ内のどれかが facts/全文に
+# あれば裏付けありとみなす（表記ゆれで枯れないように）。無ければ その案・その◎ を落とす。
+_PR_ATTRIBUTE_GROUPS = [
+    ["日当たり", "日当り", "陽当たり", "陽当り"],
+    ["採光良好", "採光", "明るい"],
+    ["通風良好", "通風", "風通し"],
+    ["南向き", "南面", "全室南向き"],
+    ["東南向き", "南東向き"], ["東向き"], ["西向き"], ["北向き"],
+    ["角部屋", "角住戸"], ["角地"],
+    ["最上階"], ["新築"], ["築浅"],
+    ["オートロック"], ["宅配ボックス", "宅配BOX"],
+    ["ペット可", "ペット相談"], ["楽器可", "楽器相談"], ["二人入居可", "2人入居可"],
+]
+
+# 交通のうち title/sub/◎ で禁止するのは「バス関連」のみ（band に一本化）。
+# 駅への直接徒歩（◯◯駅 徒歩◯分）は禁止しない＝下の数値バリデータで facts と照合する。
+# ※「バス・トイレ別」等の設備語を誤検出しないよう、バスは 便/停/◯分 の文脈のみ交通扱い。
+_PR_TRANSPORT_BAN = r"バス便|バス停|バス\s*\d+\s*分"
+
+
+def _pr_has_banned_transport(s: str) -> bool:
+    """禁止交通表現（バス便/バス停/バス◯分）を含むか。設備語『バス・トイレ別』は誤検出しない。"""
+    return bool(re.search(_PR_TRANSPORT_BAN, s or ""))
+
+
+def _pr_walk_mismatch(s: str, access) -> bool:
+    """s 内の『徒歩◯分』の◯が、facts.access の直接徒歩(バス便除く)のどれとも一致しなければ True。
+    ＝実在しない徒歩分の誇張を落とす（band は facts verbatim なので影響しない）。"""
+    mins = [int(x) for x in re.findall(r"徒歩\s*(\d+)\s*分", s or "")]
+    if not mins:
+        return False
+    valid = set()
+    for a in (access or []):
+        if "バス" in a:                      # バス便内の徒歩は駅への直接徒歩ではない
+            continue
+        valid.update(int(x) for x in re.findall(r"徒歩\s*(\d+)\s*分", a))
+    return any(m not in valid for m in mins)
+
+
+def _pr_attr_unsupported(s: str, hay_raw: str) -> list:
+    """s 内で使われた属性(同義グループ)のうち、hay_raw に同義語すら無いものの代表語を返す。"""
+    hay = hay_raw or ""
+    bad = []
+    for grp in _PR_ATTRIBUTE_GROUPS:
+        if any(w in s for w in grp) and not any(w in hay for w in grp):
+            bad.append(grp[0])
+    return bad
+
 
 def _pr_shortest_direct_walk(access):
     """access から『駅への直接徒歩』の最短分を返す。バス便内の徒歩は除外。無ければ None。"""
@@ -844,76 +897,122 @@ def _pr_bad_numbers(out_text: str, haystack_norm: str) -> list:
     return bad
 
 
-def _pr_is_clean(s: str, haystack_norm: str, extra_banned=()) -> bool:
-    """誇大語（＋弱立地時の立地訴求語）なし かつ facts外の数値なし なら True。"""
+def _pr_is_clean(s: str, haystack_norm: str, extra_banned=(), *,
+                 max_len=None, hay_raw="", ban_transport=False, access=None) -> bool:
+    """次を全て満たすと True：誇大語なし／弱立地の立地訴求語なし／facts外の数値なし。
+    追加（任意）：max_len 以内／バス交通表現なし（ban_transport）／徒歩分が facts と一致
+    （access）／属性語が hay_raw に裏付けあり。"""
     if not isinstance(s, str) or not s.strip():
         return False
     if any(b in s for b in _PR_BANNED):
         return False
     if any(b in s for b in extra_banned):
         return False
-    return not _pr_bad_numbers(s, haystack_norm)
+    if max_len is not None and len(s.strip()) > max_len:   # 文字数上限（超過は落とす）
+        return False
+    if ban_transport and _pr_has_banned_transport(s):      # バス交通は band 一本化
+        return False
+    if access is not None and _pr_walk_mismatch(s, access):  # 徒歩分が facts と不一致
+        return False
+    if _pr_bad_numbers(s, haystack_norm):                  # facts外の数値
+        return False
+    if hay_raw and _pr_attr_unsupported(s, hay_raw):       # facts未確認の属性
+        return False
+    return True
 
 
 def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
                   model="gemini-2.5-flash") -> dict:
     """マイソク全文＋事実＋部屋種別 → PRコピー下書き。
-    返り値: {titles:[{direction,title,subtitle}x3], highlights:[..], room_subs:{room:2行}}。
-    誇大語＋facts外数値を機械バリデータで除去。失敗/空は None（呼び出し側でテンプレ・フォールバック）。"""
+    返り値: {titles:[{direction,title,subtitle}x3], highlights:[..], room_subs:{room:2行},
+    fallback:bool}。誇大語/facts外数値/超過/未確認属性/バス交通/徒歩不一致 を機械バリデータで除去。
+    有効タイトルが0件なら簡易テンプレ（物件名｜間取り）に退避し fallback=True。事実皆無のみ None。"""
     import json as _json
     if not full_text and not facts:
         return None
-    try:
-        facts_json = _json.dumps(facts, ensure_ascii=False)
-        rooms_json = _json.dumps(rooms, ensure_ascii=False)
-        instruction = (
-            "あなたは賃貸物件のSNS広告コピーライターです。以下の【確定事実】と【マイソク全文】だけを根拠に、"
-            "日本語のPRコピー下書きをJSONで出力してください。\n"
-            "厳守事項：\n"
-            "・【確定事実】以外の数値（徒歩分・面積・賃料・築年・帖数）や設備を創作しない。事実と一致させる。\n"
-            "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
-            "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
-            "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
-            "出力JSON（これのみ・説明文なし）：\n"
-            '{"titles":[{"direction":"立地|間取り|設備","title":"...","subtitle":"..."}(3案・方向を必ず分ける)],'
-            '"highlights":["◎...(設備/条件から3〜5個)"],'
-            '"room_subs":{"部屋種別":"情感1行目\\n情感2行目"}}\n'
-            f"【部屋種別リスト】{rooms_json}\n【確定事実】{facts_json}\n【マイソク全文】\n"
-        )
-        resp = client.models.generate_content(
-            model=model, contents=[instruction + full_text[:4000]])
-        text = (getattr(resp, "text", "") or "").strip()
-        m = re.search(r"\{.*\}", text, re.S)
-        data = _json.loads(m.group(0)) if m else None
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(data, dict):
-        return None
-    hay = _pr_norm(full_text + " " + _json.dumps(facts, ensure_ascii=False))
-    loc_ban = _pr_location_banned(facts.get("access"))   # 弱立地なら駅近等を禁止
+    facts_json = _json.dumps(facts, ensure_ascii=False)
+    rooms_json = _json.dumps(rooms, ensure_ascii=False)
+    hay = _pr_norm(full_text + " " + facts_json)       # 数値照合用（正規化）
+    hay_raw = full_text + " " + facts_json             # 属性語照合用（生テキスト）
+    loc_ban = _pr_location_banned(facts.get("access"))  # 弱立地なら駅近等を禁止
+    base_instruction = (
+        "あなたは賃貸物件のSNS広告コピーライターです。以下の【確定事実】と【マイソク全文】だけを根拠に、"
+        "日本語のPRコピー下書きをJSONで出力してください。\n"
+        "厳守事項：\n"
+        f"・文字数厳守：title は{_PR_MAX_TITLE}文字以内、subtitle は{_PR_MAX_SUBTITLE}文字以内、"
+        f"highlights は各{_PR_MAX_HIGHLIGHT}文字以内。表紙に大きく載るため簡潔に。超過は不可。\n"
+        "・【確定事実】以外の数値（徒歩分・面積・賃料・築年・帖数）や設備を創作しない。事実と一致させる。\n"
+        "・角部屋/採光良好/通風良好/南向き/日当たり/最上階/新築/築浅/オートロック 等の属性は、"
+        "【確定事実】か【マイソク全文】に明記がある場合のみ書く。無ければ書かない。\n"
+        "・バス便・バス停・バス◯分 は title・subtitle・highlights に書かない（別枠で表示）。\n"
+        "・駅への徒歩を書く場合は【確定事実】の徒歩分と正確に一致させる（違う分数や誇張は不可）。\n"
+        "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
+        "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
+        "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
+        "出力JSON（これのみ・説明文なし）：\n"
+        '{"titles":[{"direction":"立地|間取り|設備","title":"...","subtitle":"..."}(3案・方向を必ず分ける)],'
+        '"highlights":["◎...(設備/条件から3〜5個)"],'
+        '"room_subs":{"部屋種別":"情感1行目\\n情感2行目"}}\n'
+        f"【部屋種別リスト】{rooms_json}\n【確定事実】{facts_json}\n【マイソク全文】\n"
+    )
+    stricter = ("\n※前回は文字数超過・バス交通表現・事実未確認の属性が混入しました。"
+                "上限を必ず守り、バス交通は書かず、徒歩分は確定事実と一致させてください。\n")
 
-    titles = []
-    for t in data.get("titles", []) or []:
-        if not isinstance(t, dict):
+    def _call(instr):
+        try:
+            resp = client.models.generate_content(
+                model=model, contents=[instr + full_text[:4000]])
+            text = (getattr(resp, "text", "") or "").strip()
+            m = re.search(r"\{.*\}", text, re.S)
+            return _json.loads(m.group(0)) if m else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    titles, highlights, room_subs = [], [], {}
+    for attempt in range(2):                            # 有効タイトル0なら1回だけ再生成
+        data = _call(base_instruction + (stricter if attempt else ""))
+        if not isinstance(data, dict):
             continue
-        title = str(t.get("title", "")).strip()
-        sub = str(t.get("subtitle", "")).strip()
-        if not _pr_is_clean(title, hay, loc_ban):
-            continue                              # 誇大/facts外数値/弱立地の駅近 は落とす
-        if sub and not _pr_is_clean(sub, hay, loc_ban):
-            sub = ""                              # サブだけNGなら空に
-        titles.append({"direction": str(t.get("direction", "")).strip(),
-                       "title": title, "subtitle": sub})
-    highlights = [h for h in (data.get("highlights", []) or [])
-                  if _pr_is_clean(h, hay, loc_ban)][:5]
-    room_subs = {}
-    for k, v in (data.get("room_subs", {}) or {}).items():
-        s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
-        if _pr_is_clean(s.replace("\n", " "), hay, loc_ban):
-            room_subs[str(k)] = s
+        titles = []
+        for t in data.get("titles", []) or []:
+            if not isinstance(t, dict):
+                continue
+            title = str(t.get("title", "")).strip()
+            sub = str(t.get("subtitle", "")).strip()
+            _access = facts.get("access")
+            if not _pr_is_clean(title, hay, loc_ban, max_len=_PR_MAX_TITLE,
+                                hay_raw=hay_raw, ban_transport=True, access=_access):
+                continue                                # 超過/誇大/facts外/未確認属性/バス交通/徒歩不一致は落とす
+            if sub and not _pr_is_clean(sub, hay, loc_ban, max_len=_PR_MAX_SUBTITLE,
+                                        hay_raw=hay_raw, ban_transport=True, access=_access):
+                sub = ""                                # サブだけNGなら空に
+            titles.append({"direction": str(t.get("direction", "")).strip(),
+                           "title": title, "subtitle": sub})
+        highlights = [h for h in (data.get("highlights", []) or [])
+                      if _pr_is_clean(h, hay, loc_ban, max_len=_PR_MAX_HIGHLIGHT,
+                                      hay_raw=hay_raw, ban_transport=True,
+                                      access=facts.get("access"))][:5]
+        room_subs = {}
+        for k, v in (data.get("room_subs", {}) or {}).items():
+            s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
+            if _pr_is_clean(s.replace("\n", " "), hay, loc_ban, hay_raw=hay_raw):
+                room_subs[str(k)] = s
+        if titles:                                      # 有効タイトルが出たら確定
+            break
+    # 退避：有効タイトルが1件も無ければ P1b-1 の簡易テンプレ（物件名 ｜ 間取り）にフォールバック
+    is_fallback = False
+    if not titles:
+        _name = (facts.get("name") or "").strip()
+        _madori = (facts.get("madori") or "").split("[")[0].strip()
+        _area = (facts.get("area") or "").strip()
+        fb = " ｜ ".join(x for x in (_name, _madori) if x) or _area
+        if fb:
+            titles = [{"direction": "", "title": fb, "subtitle": ""}]
+            is_fallback = True
     if not titles and not highlights and not room_subs:
         return None
-    return {"titles": titles[:3], "highlights": highlights, "room_subs": room_subs}
+    return {"titles": titles[:3], "highlights": highlights, "room_subs": room_subs,
+            "fallback": is_fallback}
 
 
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):

@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cover-v44 (表紙特大の静止画生成 build_cover・動画本編には非挿入)")
+    st.caption("build: cover-v45 (PRコピー字数上限＋属性/交通バリデータ・表紙の切詰め…/グラデ暗幕/注記修正)")
 
 
 # ======================================================================
@@ -1861,6 +1861,10 @@ def _pl_stage_video():
                     st.rerun()
         _draft = st.session_state.get("pl_prcopy")
         if _draft:
+            if _draft.get("fallback"):
+                st.warning("AI候補が作れませんでした（事実に合う短い案が無し）。"
+                           "簡易テンプレ（物件名 ｜ 間取り）を入れています。"
+                           "手入力するか、もう一度お試しください。")
             if _draft.get("highlights"):
                 st.markdown("**魅力ポイント**：" + "　".join(_draft["highlights"]))
             _titles = _draft.get("titles", [])
@@ -1922,9 +1926,22 @@ def _pl_stage_video():
         if _chl:
             st.caption("◎ " + "　".join(_chl))
         st.caption(f"駅徒歩：{_cband or '（直接徒歩が取れず・省略）'}　／　間取り・面積：{_cma or '（取れず）'}")
+        # 文字数チェック（超過は表紙で … 切り詰めになるため、短縮を促す。生成は止めない）
+        _ctitle = st.session_state.get("pl_cover_title", "").strip()
+        _csub = st.session_state.get("pl_cover_sub", "").strip()
+        _clen = []
+        if len(_ctitle) > core._PR_MAX_TITLE:
+            _clen.append(f"タイトル {len(_ctitle)}字/上限{core._PR_MAX_TITLE}字")
+        if len(_csub) > core._PR_MAX_SUBTITLE:
+            _clen.append(f"サブ {len(_csub)}字/上限{core._PR_MAX_SUBTITLE}字")
+        for _h in _chl:
+            if len(str(_h).strip()) > core._PR_MAX_HIGHLIGHT:
+                _clen.append(f"◎「{str(_h).strip()}」{len(str(_h).strip())}字/上限{core._PR_MAX_HIGHLIGHT}字")
+        if _clen:
+            st.warning("⚠️ 長すぎます（このままだと表紙で … に切り詰められます）："
+                       + "／".join(_clen) + "。短くすると文意が保てます。")
         # 誇大・断定語の簡易チェック（編集後テキストにも念のため・警告のみで生成は止めない）
-        _ctext = (st.session_state.get("pl_cover_title", "") + " "
-                  + st.session_state.get("pl_cover_sub", ""))
+        _ctext = _ctitle + " " + _csub
         _cbad = [w for w in core._PR_BANNED if w in _ctext]
         if _cbad:
             st.warning(f"⚠️ 誇大・断定の可能性がある語：{'、'.join(_cbad)}"
@@ -2107,4 +2124,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cover-v44 (表紙特大の静止画生成 build_cover・動画本編には非挿入)")
+    st.caption("build: cover-v45 (PRコピー字数上限＋属性/交通バリデータ・表紙の切詰め…/グラデ暗幕/注記修正)")
