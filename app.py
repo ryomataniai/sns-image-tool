@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fpsidebar-v43 (間取り図サイドバーを取り込み直後に即表示＝描画順修正)")
+    st.caption("build: cover-v44 (表紙特大の静止画生成 build_cover・動画本編には非挿入)")
 
 
 # ======================================================================
@@ -1027,9 +1027,12 @@ def _pl_resolve_pos(it, global_pos):
 
 
 def _pl_set_flash_title(title):
-    """『冒頭フラッシュに設定』の on_click（ウィジェット生成前に実行されるため代入が安全）。"""
+    """『冒頭フラッシュに設定』の on_click（ウィジェット生成前に実行されるため代入が安全）。
+    表紙(pl_cover_title/sub)も同じ値へ同期し、表紙とフラッシュのタイトルずれを防ぐ。"""
     st.session_state["pl_open_title"] = "flash"
     st.session_state["pl_flash_text"] = title
+    st.session_state["pl_cover_title"] = title
+    st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
 
 
 def _pl_room_use(room):
@@ -1269,7 +1272,7 @@ _PL_STANDARD_TYPES = ["外観", "玄関", "キッチン", "浴室", "洗面", "�
 
 # 新規取り込み時に残す＝ユーザー設定（物件非依存）。接頭辞削除の巻き込み防止に使う
 _PL_KEEP_ON_IMPORT = {"pl_telop_taste", "pl_telop_pos", "pl_room_lang",
-                      "pl_open_title", "pl_v_note", "pl_mode"}
+                      "pl_open_title", "pl_v_note", "pl_mode", "pl_cover_aspect"}
 
 
 def _pl_build_rooms(madori_rooms, items, vision_rooms=None):
@@ -1540,9 +1543,10 @@ def _pl_stage_input():
         st.session_state["pl_facts"] = (
             core.parse_maisoku_facts(pdf.getvalue()) if pdf is not None else {})
         # 新規取り込みで物件固有の値を一掃（別物件の建物名・帖数・コピーの焼き込み防止）
-        # 完全一致（物件固有）：下書き・フラッシュ文言・上部タグ・タイトル/サブ編集・選択
+        # 完全一致（物件固有）：下書き・フラッシュ文言・上部タグ・タイトル/サブ編集・選択・表紙
         for k in ("pl_prcopy", "pl_flash_text", "pl_v_tag",
-                  "pl_title_edit", "pl_sub_edit", "pl_title_idx"):
+                  "pl_title_edit", "pl_sub_edit", "pl_title_idx",
+                  "pl_cover_title", "pl_cover_sub", "pl_cover_src", "pl_cover_png"):
             st.session_state.pop(k, None)
         # 接頭辞（物件固有・写真ごと）：部屋/処理/間取り図選択＋テロップ本文・個別スタイル
         # ※ pl_room_ は pl_room_lang（ユーザー設定）と前方一致するため残すキーは除外
@@ -1729,6 +1733,38 @@ def _pl_stage_review():
         st.session_state["pl_stage"] = "video"; st.rerun()
 
 
+# ── 表紙特大（P1b-2）用ヘルパー：数値は必ず facts 由来（LLM出力から持ち込まない）──
+def _pl_cover_access_band(access):
+    """access から『駅への直接徒歩』が最短のエントリを1つ返す（バス便は除外・事実そのまま）。無ければ ""。"""
+    import re
+    best, best_min = "", None
+    for a in (access or []):
+        if "バス" in a:                       # バス便の徒歩は駅からの直接徒歩ではない
+            continue
+        ms = [int(x) for x in re.findall(r"徒歩\s*(\d+)\s*分", a)]
+        if ms and (best_min is None or min(ms) < best_min):
+            best_min, best = min(ms), a.strip()
+    return best
+
+
+def _pl_cover_madori_area(facts):
+    """間取り／面積の特大行（例 '2LDK 57.64㎡'）。間取タイプは [ ] の前まで。facts由来のみ。"""
+    madori = (facts.get("madori", "") or "").split("[")[0].strip()
+    area = (facts.get("area", "") or "").strip()
+    return " ".join(x for x in (madori, area) if x)
+
+
+def _pl_cover_default_src(adopted):
+    """表紙素材の既定：最初のLDK→無ければ先頭の居室→無ければ先頭。"""
+    for it in adopted:
+        if it.get("room") == "LDK":
+            return it["id"]
+    for it in adopted:
+        if it.get("room") in ("洋室", "寝室"):
+            return it["id"]
+    return adopted[0]["id"] if adopted else None
+
+
 def _pl_stage_video():
     import os as _os
     import room_tour_video as rtv
@@ -1835,9 +1871,12 @@ def _pl_stage_video():
                 _idx = st.radio("タイトル案（方向性つき・クリック前に中身が見えます）",
                                 list(range(len(_titles))),
                                 format_func=lambda i: _labels[i], key="pl_title_idx")
-                if st.session_state.get("_pl_title_sig") != _idx:   # 案切替で編集欄を追従
-                    st.session_state.pop("pl_title_edit", None)
-                    st.session_state.pop("pl_sub_edit", None)
+                if st.session_state.get("_pl_title_sig") != _idx:   # 案切替で編集欄＋表紙を追従
+                    # 表紙(pl_cover_*)も落として下の表紙セクションで新案から再seed
+                    # ＝表紙とフラッシュのタイトル同期ずれ防止。全て生成前(=widget作成前)なので安全
+                    for _k in ("pl_title_edit", "pl_sub_edit",
+                               "pl_cover_title", "pl_cover_sub"):
+                        st.session_state.pop(_k, None)
                     st.session_state["_pl_title_sig"] = _idx
                 _sel = _titles[_idx]
                 tc1, tc2 = st.columns(2)
@@ -1849,6 +1888,78 @@ def _pl_stage_video():
                           on_click=_pl_set_flash_title, args=(_t_title,))
                 st.caption("表紙特大（P1b-2）＝タイトル大見出し＋サブ補足。冒頭フラッシュ＝短いタイトルのみ"
                            "（0.5秒では読めないためサブは載せません）。情感2行は各シーンに反映済み。")
+
+    # ── 表紙特大（P1b-2）：リールカバー/カルーセル1枚目のPNG（動画本編には挿入しない）──
+    with st.expander("🖼️ 表紙特大（リールカバー / カルーセル1枚目）を生成", expanded=False):
+        st.caption("タイトル大見出し＋サブ＋◎魅力ポイント＋駅徒歩＋間取り/面積の1枚。"
+                   "数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
+                   "ffmpegのみ・fal課金なし・Gemini不要。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
+        _cfacts = st.session_state.get("pl_facts", {})
+        # タイトル/サブ：PRコピーで選んだ値を既定に（生成前seed・未設定時のみ＝地雷1回避）
+        if "pl_cover_title" not in st.session_state:
+            st.session_state["pl_cover_title"] = st.session_state.get("pl_title_edit", "")
+        if "pl_cover_sub" not in st.session_state:
+            st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
+        cc1, cc2 = st.columns(2)
+        cc1.text_input("タイトル（特大）", key="pl_cover_title",
+                       placeholder="PRコピー下書きで選ぶと自動で入ります")
+        cc2.text_input("サブタイトル（小）", key="pl_cover_sub")
+        # 素材画像：既定=最初のLDK→居室→先頭（生成前seed＋stale idガード）
+        _copts = [it["id"] for it in adopted]
+        if st.session_state.get("pl_cover_src") not in _copts:
+            st.session_state["pl_cover_src"] = _pl_cover_default_src(adopted)
+        _clbl = {it["id"]: f"{p + 1}. {_PL_ROOM_JP.get(it['room'], it['room'])}"
+                 for p, it in enumerate(adopted)}
+        cs1, cs2 = st.columns([2, 1])
+        cs1.selectbox("表紙の素材画像", _copts, key="pl_cover_src",
+                      format_func=lambda i: _clbl.get(i, str(i)))
+        cs2.radio("比率", ["9:16", "4:5"], key="pl_cover_aspect", horizontal=True,
+                  format_func=lambda a: {"9:16": "9:16（カバー）",
+                                         "4:5": "4:5（1枚目）"}.get(a, a))
+        _chl = ((st.session_state.get("pl_prcopy") or {}).get("highlights") or [])[:3]
+        _cband = _pl_cover_access_band(_cfacts.get("access"))
+        _cma = _pl_cover_madori_area(_cfacts)
+        if _chl:
+            st.caption("◎ " + "　".join(_chl))
+        st.caption(f"駅徒歩：{_cband or '（直接徒歩が取れず・省略）'}　／　間取り・面積：{_cma or '（取れず）'}")
+        # 誇大・断定語の簡易チェック（編集後テキストにも念のため・警告のみで生成は止めない）
+        _ctext = (st.session_state.get("pl_cover_title", "") + " "
+                  + st.session_state.get("pl_cover_sub", ""))
+        _cbad = [w for w in core._PR_BANNED if w in _ctext]
+        if _cbad:
+            st.warning(f"⚠️ 誇大・断定の可能性がある語：{'、'.join(_cbad)}"
+                       "（景表法・掲載前に見直しを）")
+        if st.button("表紙を生成（ffmpegのみ・課金なし）", key="pl_cover_gen"):
+            _csrc = next((it for it in adopted
+                          if it["id"] == st.session_state.get("pl_cover_src")), None)
+            if not _csrc or not _csrc.get("gen_bytes"):
+                st.error("素材画像が見つかりません。確認ステージで採用画像を用意してください。")
+            else:
+                _cfields = {
+                    "title": st.session_state.get("pl_cover_title", ""),
+                    "subtitle": st.session_state.get("pl_cover_sub", ""),
+                    "highlights": _chl,
+                    "access_band": _cband,
+                    "madori_area": _cma,
+                    "note": st.session_state.get("pl_v_note", "") or "※AI加工のイメージ",
+                }
+                _casp = st.session_state.get("pl_cover_aspect", "9:16")
+                try:
+                    with st.spinner("表紙を生成中…（ffmpeg）"):
+                        _cpng = rtv.build_cover(_csrc["gen_bytes"], _cfields, aspect=_casp)
+                    # 生成結果は非ウィジェットキーへ（地雷1回避）。取り込み時に削除される物件固有キー
+                    st.session_state["pl_cover_png"] = {"aspect": _casp, "bytes": _cpng}
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"表紙の生成に失敗しました: {e}")
+        _cov = st.session_state.get("pl_cover_png")
+        if _cov and _cov.get("bytes"):
+            st.image(_cov["bytes"], caption=f"表紙プレビュー（{_cov.get('aspect', '')}）",
+                     use_container_width=True)
+            st.download_button(
+                "⬇️ 表紙PNGをダウンロード", _cov["bytes"],
+                file_name=f"cover_{_cov.get('aspect', '9:16').replace(':', 'x')}.png",
+                mime="image/png", key="pl_cover_dl")
+            st.caption("※タイトル/素材/比率を変えたら、再度「表紙を生成」を押すと更新されます。")
 
     # 部屋名表記を切り替えたら、各シーンのメイン文の自動下書きをリセットして追従させる
     if st.session_state.get("_pl_lang_sig") != v_lang:
@@ -1996,4 +2107,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: fpsidebar-v43 (間取り図サイドバーを取り込み直後に即表示＝描画順修正)")
+    st.caption("build: cover-v44 (表紙特大の静止画生成 build_cover・動画本編には非挿入)")

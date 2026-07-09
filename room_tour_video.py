@@ -68,6 +68,8 @@ _FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
     str(Path(__file__).parent / "fonts" / "NotoSansJP-Bold.otf"),
     str(Path(__file__).parent / "fonts" / "NotoSansJP-Regular.otf"),
+    # 同梱フォント（本番aptが無い環境・ローカル検証のフォールバック。prodは上のBoldが優先）
+    str(Path(__file__).parent / "fonts" / "NotoSansCJK-Regular.ttc"),
 ]
 
 
@@ -413,6 +415,172 @@ def parse_maisoku_specs(pdf_bytes: bytes) -> dict:
 # ======================================================================
 # 動画の向き → 出力寸法（_normalize_clip の out_w/out_h に渡す）
 ASPECT_DIMS = {"9:16": (1080, 1920), "1:1": (1080, 1080), "16:9": (1920, 1080)}
+
+
+# ======================================================================
+# 表紙特大（P1b-2）：タイトル大見出しの静止画（PNG）。動画には一切挿入しない。
+#   ・リールのカバー画像／カルーセル1枚目に使う面。冒頭離脱を避けるため本編には入れない。
+#   ・数値（徒歩分・㎡・間取り）は必ず facts 由来を渡すこと（LLM出力から数値を持ち込まない）。
+# ======================================================================
+COVER_DIMS = {"9:16": (1080, 1920), "4:5": (1080, 1350)}  # リールカバー / カルーセル1枚目
+
+
+def _wrap_jp(text: str, max_chars: int, max_lines: int = 2) -> list:
+    """日本語向けの素朴な折返し（max_chars文字ごとに改行）。空白があればそこで優先的に折る。
+    max_lines を超えた分は最終行に … を付けて切り詰め（safe-zone内に収めるため）。"""
+    text = (text or "").strip()
+    if not text:
+        return []
+    lines, cur = [], ""
+    for ch in text:
+        if len(cur) >= max_chars and (ch == " " or len(cur) >= max_chars + 4):
+            lines.append(cur.strip())
+            cur = "" if ch == " " else ch
+        else:
+            cur += ch
+    if cur.strip():
+        lines.append(cur.strip())
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][: max_chars - 1].rstrip() + "…"
+    return lines
+
+
+# PIL計測は build_cover が _font() から得た「ffmpeg描画と同一ファイル」を渡す前提。
+# PIL・ffmpeg(libfreetype) はともに .ttc の face index 0 を使うため同一face。
+# 実測：ffmpeg実描画幅 ≈ PIL getlength（誤差<0.5%・PIL側がわずかに大きい＝安全側）。
+# 本番Boldでも同経路なので、_font()がBoldを返せばBold幅で計測される（同一ファイル保証）。
+_FIT_SAFETY = 0.97   # 影(shadowx)・ヒンティング差を吸収する安全マージン
+
+
+def _text_width(font_path: str, text: str, size: int) -> float:
+    """指定フォント(=_font()結果)・サイズでの描画幅(px)。face index 0 で計測（ffmpegと一致）。
+    フォント読込失敗時は 全角1em 想定の保守的上界（縮小方向＝文字切れしない側）にフォールバック。"""
+    if font_path:
+        try:
+            from PIL import ImageFont
+            return ImageFont.truetype(font_path, size, index=0).getlength(text)
+        except Exception:  # noqa: BLE001
+            pass
+    return len(text) * size  # フォント解決不能時：全角1em想定で安全側（上界）
+
+
+def _fit_size(font_path: str, lines: list, max_w: int, base: int, min_size: int = 48) -> int:
+    """全行が max_w(px)×安全率 内に収まる最大サイズを base から段階縮小で求める（文字切れ防止）。"""
+    limit = max_w * _FIT_SAFETY
+    size = base
+    while size > min_size and any(_text_width(font_path, ln, size) > limit for ln in lines if ln):
+        size -= 4
+    return size
+
+
+def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
+                style: str = "default") -> bytes:
+    """素材画像＋fields から『表紙特大』の静止画 PNG を生成して返す（動画には挿入しない）。
+
+    fields:
+      title        : 大見出し（特大・最大2行に自動折返し）
+      subtitle     : 補足（小・タイトルの上）
+      highlights   : ◎魅力ポイント（最大3・箇条／facts/PRコピー由来）
+      access_band  : 駅徒歩band（例 "◯◯線「◯◯駅」徒歩◯分"／取れなければ空で省略）
+      madori_area  : 間取り／面積（特大・例 "2LDK 57.64㎡"／facts由来）
+      note         : 右下の注記（例 "※AI加工のイメージ"／景表法配慮）
+    レイヤ（上→下）：subtitle小 → title特大 →（下詰め）highlights → access_band → madori特大。
+    素材は fill（force_original_aspect_ratio=increase + crop）で覆い、可読性のため上下に暗幕を敷く。
+    """
+    ff = _ffmpeg()
+    font = _font()
+    fontref = f"fontfile='{font}'" if font else "font='Noto Sans CJK JP'"
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+
+    title = (fields.get("title") or "").strip()
+    subtitle = (fields.get("subtitle") or "").strip()
+    highlights = [str(h).strip() for h in (fields.get("highlights") or [])
+                  if h and str(h).strip()][:3]
+    band = (fields.get("access_band") or "").strip()
+    madori_area = (fields.get("madori_area") or "").strip()
+    note = (fields.get("note") or "").strip()
+
+    # フォントサイズ（1080幅基準）／余白（safe-zone）
+    S_SUB, S_HL, S_BAND = 40, 36, 40
+    S_TITLE_BASE, S_MADORI_BASE = 92, 88
+    LH = 1.22
+    M_TOP, M_BOTTOM, M_SIDE = 160, 150, 90
+    MAX_W = W - 2 * M_SIDE                 # テキスト最大幅（safe-zone・文字切れ防止）
+    MAX_TITLE_CHARS, MAX_LINE_CHARS = 10, 20
+
+    # 特大2種は幅に収まるサイズへ自動フィット（PIL計測・不能時は保守推定）
+    title_lines = _wrap_jp(title, MAX_TITLE_CHARS, max_lines=2)
+    s_title = _fit_size(font, title_lines, MAX_W, S_TITLE_BASE) if title_lines else S_TITLE_BASE
+    s_madori = _fit_size(font, [madori_area[:MAX_LINE_CHARS]], MAX_W, S_MADORI_BASE)
+
+    # ヘッダー（上詰め）：subtitle小 → title特大（最大2行）
+    header = []
+    if subtitle:
+        header.append((subtitle[:MAX_LINE_CHARS], S_SUB))
+    for ln in title_lines:
+        header.append((ln, s_title))
+
+    # フッター（下詰め・上から highlights → band → madori特大）
+    footer = []
+    for h in highlights:
+        footer.append((h[:MAX_LINE_CHARS], S_HL))
+    if band:
+        footer.append((band[:MAX_LINE_CHARS], S_BAND))
+    if madori_area:
+        footer.append((madori_area[:MAX_LINE_CHARS], s_madori))
+
+    # y座標（ヘッダーは上から、フッターは下から積む）
+    y = M_TOP
+    header_pos = []
+    for txt, size in header:
+        header_pos.append((txt, size, y))
+        y += int(size * LH)
+    header_bottom = y
+
+    y = H - M_BOTTOM
+    footer_pos = []
+    for txt, size in reversed(footer):
+        y -= int(size * LH)
+        footer_pos.append((txt, size, y))
+    footer_top = min([p[2] for p in footer_pos], default=H)
+
+    # フィルタチェーン：覆う → 暗幕 → テキスト
+    vf = [f"scale={W}:{H}:force_original_aspect_ratio=increase", f"crop={W}:{H}",
+          f"drawbox=x=0:y=0:w={W}:h={H}:color=black@0.16:t=fill"]
+    if header_pos:
+        hb = min(header_bottom + 30, H)
+        vf.append(f"drawbox=x=0:y=0:w={W}:h={hb}:color=black@0.32:t=fill")
+    if footer_pos:
+        ft = max(footer_top - 30, 0)
+        vf.append(f"drawbox=x=0:y={ft}:w={W}:h={H - ft}:color=black@0.38:t=fill")
+
+    def _dt(txt, size, yy):
+        return (f"drawtext={fontref}:text='{_esc(txt)}':fontcolor=white@0.92:fontsize={size}:"
+                f"shadowcolor=black@0.55:shadowx=2:shadowy=3:x=(w-text_w)/2:y={yy}")
+
+    for txt, size, yy in header_pos + footer_pos:
+        vf.append(_dt(txt, size, yy))
+    if note:
+        vf.append(f"drawtext={fontref}:text='{_esc(note)}':fontcolor=white@0.85:fontsize=26:"
+                  f"box=1:boxcolor=black@0.35:boxborderw=10:x=w-text_w-36:y=h-64")
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(image_bytes)
+        src = f.name
+    out = src[:-4] + "_cover.png"
+    try:
+        subprocess.run([ff, "-y", "-loglevel", "error", "-i", src,
+                        "-vf", ",".join(vf), "-frames:v", "1", out],
+                       check=True, timeout=120)
+        with open(out, "rb") as fh:
+            return fh.read()
+    finally:
+        for p in (src, out):
+            try:
+                os.unlink(p)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def build_tour(images: list[tuple], *, captions: Optional[list] = None,
