@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: ext-faithful-v41 (外観morph抑制：exteriorプロンプト＋negative_prompt・AIモーション維持)")
+    st.caption("build: prcopy-v42 (PRコピー下書き：タイトル3案＋情感2行・事実アンカー＋誇大/数値バリデータ)")
 
 
 # ======================================================================
@@ -1526,6 +1526,10 @@ def _pl_stage_input():
         st.session_state["pl_src_sig"] = sig
         st.session_state["pl_floorplan"] = floor_plan
         st.session_state["pl_summary"] = parsed["summary"]
+        # 事実抽出（PRコピー下書き用・Geminiは呼ばない）。取り込み時1回
+        st.session_state["pl_facts"] = (
+            core.parse_maisoku_facts(pdf.getvalue()) if pdf is not None else {})
+        st.session_state.pop("pl_prcopy", None)   # 新規取り込みで下書きはリセット
         for k in [k for k in list(st.session_state)
                   if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick"))]:
             del st.session_state[k]
@@ -1757,12 +1761,76 @@ def _pl_stage_video():
                                              "flash": "極短フラッシュ（0.5秒）"}.get(x, x))
     v_flash = ""
     if v_open == "flash":
-        v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳）", key="pl_flash_text",
-                                placeholder="例: ニューモート204 ｜ 2LDK")
+        _f = st.session_state.get("pl_facts", {})
+        _madori = (_f.get("madori", "").split("[")[0]).strip()
+        _fdef = (f"{_f['name']} ｜ {_madori}" if _f.get("name") and _madori
+                 else f"{_madori} ｜ {_f['area']}" if _madori and _f.get("area") else "")
+        v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳・短く）", value=_fdef,
+                                key="pl_flash_text", placeholder="例: ニューモート204 ｜ 2LDK")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
     v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="pl_v_note",
                            placeholder="例: ※画像はイメージです")
+
+    # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
+    with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
+        st.caption("マイソクの事実だけを根拠に下書きします。誇大語・事実外の数値は自動除去。"
+                   "Gemini未設定/失敗でも簡易テンプレで続行します。")
+        if st.button("PRコピーを下書き（AI・1回）", key="pl_prcopy_btn"):
+            _facts = st.session_state.get("pl_facts", {})
+            try:
+                _client = make_client()
+            except RuntimeError:
+                _client = None
+            if _client is None:
+                st.warning("Gemini APIキーが未設定です。簡易テンプレのまま続行します。")
+            else:
+                _rooms = sorted({it["room"] for it in adopted})
+                with st.spinner("PRコピーを下書き中…"):
+                    _draft = core.draft_pr_copy(
+                        _client, _facts.get("full_text", ""),
+                        {k: v for k, v in _facts.items() if k != "full_text"}, _rooms)
+                if not _draft:
+                    st.warning("AI下書きに失敗しました。簡易テンプレのまま続行します。")
+                else:
+                    st.session_state["pl_prcopy"] = _draft
+                    # 情感2行を room_subs で初期化（ユーザー編集済み＝テンプレ差分は尊重）
+                    for it in adopted:
+                        sub = _draft.get("room_subs", {}).get(it["room"])
+                        if not sub:
+                            continue
+                        cur = st.session_state.get(f"pl_capsub_{it['id']}")
+                        if cur is None or not cur.strip() or cur == _pl_caption_sub(it):
+                            st.session_state[f"pl_capsub_{it['id']}"] = sub
+                    st.rerun()
+        _draft = st.session_state.get("pl_prcopy")
+        if _draft:
+            if _draft.get("highlights"):
+                st.markdown("**魅力ポイント**：" + "　".join(_draft["highlights"]))
+            _titles = _draft.get("titles", [])
+            if _titles:
+                _labels = [f"[{t.get('direction', '')}] {t['title']}"
+                           + (f" — {t['subtitle']}" if t.get("subtitle") else "")
+                           for t in _titles]
+                _idx = st.radio("タイトル案（方向性つき・クリック前に中身が見えます）",
+                                list(range(len(_titles))),
+                                format_func=lambda i: _labels[i], key="pl_title_idx")
+                if st.session_state.get("_pl_title_sig") != _idx:   # 案切替で編集欄を追従
+                    st.session_state.pop("pl_title_edit", None)
+                    st.session_state.pop("pl_sub_edit", None)
+                    st.session_state["_pl_title_sig"] = _idx
+                _sel = _titles[_idx]
+                tc1, tc2 = st.columns(2)
+                _t_title = tc1.text_input("タイトル（編集可）", value=_sel["title"],
+                                          key="pl_title_edit")
+                tc2.text_input("サブタイトル（編集可）", value=_sel.get("subtitle", ""),
+                               key="pl_sub_edit")
+                if st.button("このタイトルを冒頭フラッシュに設定", key="pl_title_to_flash"):
+                    st.session_state["pl_open_title"] = "flash"
+                    st.session_state["pl_flash_text"] = _t_title
+                    st.rerun()
+                st.caption("表紙特大（P1b-2）＝タイトル大見出し＋サブ補足。冒頭フラッシュ＝短いタイトルのみ"
+                           "（0.5秒では読めないためサブは載せません）。情感2行は各シーンに反映済み。")
 
     # 部屋名表記を切り替えたら、各シーンのメイン文の自動下書きをリセットして追従させる
     if st.session_state.get("_pl_lang_sig") != v_lang:
@@ -1906,4 +1974,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: ext-faithful-v41 (外観morph抑制：exteriorプロンプト＋negative_prompt・AIモーション維持)")
+    st.caption("build: prcopy-v42 (PRコピー下書き：タイトル3案＋情感2行・事実アンカー＋誇大/数値バリデータ)")

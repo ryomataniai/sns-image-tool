@@ -740,6 +740,158 @@ def read_floorplan_rooms(client, floorplan_bytes, model="gemini-2.5-flash"):
     return out
 
 
+# マイソクの主なラベル（ラベル行の次行が値。賃貸mikke/RealNetPro形式）
+_FACT_LABELS = ["物件種目", "物件名", "号室名", "所在地", "交通", "建築構造", "間取タイプ",
+                "専有面積", "開口部方位", "築年", "現況/入居時期", "賃料", "共益費・管理費",
+                "敷金", "礼金", "保証金", "駐車場", "備 考", "備考"]
+
+
+def parse_maisoku_facts(pdf_bytes: bytes) -> dict:
+    """賃貸マイソクPDFから事実をラベルベースで抽出。取れない項目は入れない（創作しない）。
+    返り値キー: name/address/access(list)/madori/area/built/rent/fee/equipment/full_text。"""
+    facts = {}
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = "\n".join(p.get_text() for p in doc)
+        doc.close()
+    except Exception:  # noqa: BLE001
+        return facts
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    labelset = set(_FACT_LABELS)
+
+    def val(label):
+        for i, ln in enumerate(lines):
+            if ln == label and i + 1 < len(lines) and lines[i + 1] not in labelset:
+                return lines[i + 1].strip()
+        return None
+
+    name = val("物件名")
+    if name:
+        facts["name"] = name.replace("　", " ").strip()
+    for key, label, cond in [("address", "所在地", None), ("built", "築年", None),
+                             ("madori", "間取タイプ", None), ("fee", "共益費・管理費", None)]:
+        v = val(label)
+        if v:
+            facts[key] = v
+    area = val("専有面積")
+    if area and "㎡" in area:
+        facts["area"] = area
+    rent = val("賃料")
+    if rent:
+        facts["rent"] = rent.replace(" ", "")
+    # 交通：交通ラベル直後の、路線/徒歩/バスを含む行を次ラベルまで収集
+    access = []
+    for i, ln in enumerate(lines):
+        if ln == "交通":
+            j = i + 1
+            while (j < len(lines) and lines[j] not in labelset
+                   and re.search(r"(徒歩|バス|「.+」|\d+\s*分)", lines[j])):
+                access.append(lines[j].strip())
+                j += 1
+            break
+    if access:
+        facts["access"] = access
+    # 設備：【…】ブロック or 設備キーワードを含む行（best-effort）
+    eq = [ln for ln in lines if ("【" in ln) or re.search(
+        r"(エアコン|追い焚き|バス・トイレ別|洗濯機置場|独立洗面|洗髪洗面|カウンターキッチン|"
+        r"オートロック|インターホン|ウォークインクローゼット|室内洗濯|床下収納|BS|CS)", ln)]
+    if eq:
+        facts["equipment"] = " ".join(dict.fromkeys(eq))[:600]
+    facts["full_text"] = text
+    return facts
+
+
+# PRコピーの禁止語（景表法：最上級・断定）
+_PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
+              "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]
+
+
+def _pr_norm(s: str) -> str:
+    """数値照合用の正規化（カンマ/空白/全角空白を除去）。"""
+    import re as _re
+    return _re.sub(r"[,\s　]", "", s or "")
+
+
+def _pr_bad_numbers(out_text: str, haystack_norm: str) -> list:
+    """出力中の『数値＋単位』が haystack（facts/全文）に無ければ返す＝facts外の数値。"""
+    import re as _re
+    bad = []
+    for m in _re.finditer(r"(\d[\d,]*(?:\.\d+)?)\s*(分|㎡|円|帖|畳|年|万円|万|階)", out_text):
+        if _pr_norm(m.group(0)) not in haystack_norm:
+            bad.append(m.group(0))
+    return bad
+
+
+def _pr_is_clean(s: str, haystack_norm: str) -> bool:
+    """誇大語なし かつ facts外の数値なし なら True。"""
+    if not isinstance(s, str) or not s.strip():
+        return False
+    if any(b in s for b in _PR_BANNED):
+        return False
+    return not _pr_bad_numbers(s, haystack_norm)
+
+
+def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
+                  model="gemini-2.5-flash") -> dict:
+    """マイソク全文＋事実＋部屋種別 → PRコピー下書き。
+    返り値: {titles:[{direction,title,subtitle}x3], highlights:[..], room_subs:{room:2行}}。
+    誇大語＋facts外数値を機械バリデータで除去。失敗/空は None（呼び出し側でテンプレ・フォールバック）。"""
+    import json as _json
+    if not full_text and not facts:
+        return None
+    try:
+        facts_json = _json.dumps(facts, ensure_ascii=False)
+        rooms_json = _json.dumps(rooms, ensure_ascii=False)
+        instruction = (
+            "あなたは賃貸物件のSNS広告コピーライターです。以下の【確定事実】と【マイソク全文】だけを根拠に、"
+            "日本語のPRコピー下書きをJSONで出力してください。\n"
+            "厳守事項：\n"
+            "・【確定事実】以外の数値（徒歩分・面積・賃料・築年・帖数）や設備を創作しない。事実と一致させる。\n"
+            "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
+            "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
+            "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
+            "出力JSON（これのみ・説明文なし）：\n"
+            '{"titles":[{"direction":"立地|間取り|設備","title":"...","subtitle":"..."}(3案・方向を必ず分ける)],'
+            '"highlights":["◎...(設備/条件から3〜5個)"],'
+            '"room_subs":{"部屋種別":"情感1行目\\n情感2行目"}}\n'
+            f"【部屋種別リスト】{rooms_json}\n【確定事実】{facts_json}\n【マイソク全文】\n"
+        )
+        resp = client.models.generate_content(
+            model=model, contents=[instruction + full_text[:4000]])
+        text = (getattr(resp, "text", "") or "").strip()
+        m = re.search(r"\{.*\}", text, re.S)
+        data = _json.loads(m.group(0)) if m else None
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    hay = _pr_norm(full_text + " " + _json.dumps(facts, ensure_ascii=False))
+
+    titles = []
+    for t in data.get("titles", []) or []:
+        if not isinstance(t, dict):
+            continue
+        title = str(t.get("title", "")).strip()
+        sub = str(t.get("subtitle", "")).strip()
+        if not _pr_is_clean(title, hay):
+            continue                              # 誇大/facts外数値の案は落とす
+        if sub and not _pr_is_clean(sub, hay):
+            sub = ""                              # サブだけNGなら空に
+        titles.append({"direction": str(t.get("direction", "")).strip(),
+                       "title": title, "subtitle": sub})
+    highlights = [h for h in (data.get("highlights", []) or [])
+                  if _pr_is_clean(h, hay)][:5]
+    room_subs = {}
+    for k, v in (data.get("room_subs", {}) or {}).items():
+        s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
+        if _pr_is_clean(s.replace("\n", " "), hay):
+            room_subs[str(k)] = s
+    if not titles and not highlights and not room_subs:
+        return None
+    return {"titles": titles[:3], "highlights": highlights, "room_subs": room_subs}
+
+
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
     """マイソクPDF → 実写真ベースのルームツアー計画を作る。
 
