@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42b (フラッシュon_click化＋取り込み時stale state一掃)")
+    st.caption("build: fpsidebar-v43 (間取り図サイドバーを取り込み直後に即表示＝描画順修正)")
 
 
 # ======================================================================
@@ -1951,15 +1951,19 @@ def render_pipeline():
     if st.button("最初からやり直す", key="pl_reset_btn"):
         _pl_reset(); st.rerun()
     st.divider()
-    # 間取り図をサイドバーに常時ピン留め（取り込み〜関所まで見ながら選べる）
-    if stage in ("input", "review", "video"):
-        _pl_render_floorplan_sidebar()
     if stage == "review":
         _pl_stage_review()
     elif stage == "video":
         _pl_stage_video()
     else:
         _pl_stage_input()
+    # 間取り図をサイドバーに常時ピン留め（取り込み〜関所まで見ながら選べる）。
+    # ※ ステージ処理の「後」に描く：取り込み直後の実行で _pl_stage_input() が
+    #    pl_floorplan/pl_items をセットしてから読むため、追加操作なしで即表示される。
+    #    st.sidebar はスクリプト内のどこで呼んでもサイドバーに反映されるので位置移動だけで解決。
+    #    分岐内で pl_stage が変わり得るため読み直してガードする（遷移時は st.rerun 済みで通常未到達）。
+    if st.session_state.get("pl_stage", "input") in ("input", "review", "video"):
+        _pl_render_floorplan_sidebar()
 
 
 # ======================================================================
@@ -1992,4 +1996,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42b (フラッシュon_click化＋取り込み時stale state一掃)")
+    st.caption("build: fpsidebar-v43 (間取り図サイドバーを取り込み直後に即表示＝描画順修正)")
