@@ -806,6 +806,27 @@ def parse_maisoku_facts(pdf_bytes: bytes) -> dict:
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]
 
+# 立地訴求語（弱立地の物件では条件付きで禁止＝おとり/優良誤認の防止）
+_PR_LOCATION_WORDS = ["駅近", "駅チカ", "駅すぐ", "駅から近い", "好立地", "アクセス良好", "アクセス抜群"]
+_PR_STATION_WALK_THRESHOLD = 10   # 駅への直接徒歩がこの分数を超える／バス便のみ→立地訴求語を禁止
+
+
+def _pr_shortest_direct_walk(access):
+    """access から『駅への直接徒歩』の最短分を返す。バス便内の徒歩は除外。無ければ None。"""
+    mins = []
+    for a in (access or []):
+        if "バス" in a:          # バス便の徒歩は駅からの直接徒歩ではない
+            continue
+        mins += [int(x) for x in re.findall(r"徒歩\s*(\d+)\s*分", a)]
+    return min(mins) if mins else None
+
+
+def _pr_location_banned(access):
+    """弱立地（最短直接徒歩>閾値 or バス便のみ or 交通情報なし）なら立地訴求語リストを返す。"""
+    w = _pr_shortest_direct_walk(access)
+    weak = (w is None) or (w > _PR_STATION_WALK_THRESHOLD)
+    return _PR_LOCATION_WORDS if weak else []
+
 
 def _pr_norm(s: str) -> str:
     """数値照合用の正規化（カンマ/空白/全角空白を除去）。"""
@@ -823,11 +844,13 @@ def _pr_bad_numbers(out_text: str, haystack_norm: str) -> list:
     return bad
 
 
-def _pr_is_clean(s: str, haystack_norm: str) -> bool:
-    """誇大語なし かつ facts外の数値なし なら True。"""
+def _pr_is_clean(s: str, haystack_norm: str, extra_banned=()) -> bool:
+    """誇大語（＋弱立地時の立地訴求語）なし かつ facts外の数値なし なら True。"""
     if not isinstance(s, str) or not s.strip():
         return False
     if any(b in s for b in _PR_BANNED):
+        return False
+    if any(b in s for b in extra_banned):
         return False
     return not _pr_bad_numbers(s, haystack_norm)
 
@@ -867,6 +890,7 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
     if not isinstance(data, dict):
         return None
     hay = _pr_norm(full_text + " " + _json.dumps(facts, ensure_ascii=False))
+    loc_ban = _pr_location_banned(facts.get("access"))   # 弱立地なら駅近等を禁止
 
     titles = []
     for t in data.get("titles", []) or []:
@@ -874,18 +898,18 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
             continue
         title = str(t.get("title", "")).strip()
         sub = str(t.get("subtitle", "")).strip()
-        if not _pr_is_clean(title, hay):
-            continue                              # 誇大/facts外数値の案は落とす
-        if sub and not _pr_is_clean(sub, hay):
+        if not _pr_is_clean(title, hay, loc_ban):
+            continue                              # 誇大/facts外数値/弱立地の駅近 は落とす
+        if sub and not _pr_is_clean(sub, hay, loc_ban):
             sub = ""                              # サブだけNGなら空に
         titles.append({"direction": str(t.get("direction", "")).strip(),
                        "title": title, "subtitle": sub})
     highlights = [h for h in (data.get("highlights", []) or [])
-                  if _pr_is_clean(h, hay)][:5]
+                  if _pr_is_clean(h, hay, loc_ban)][:5]
     room_subs = {}
     for k, v in (data.get("room_subs", {}) or {}).items():
         s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
-        if _pr_is_clean(s.replace("\n", " "), hay):
+        if _pr_is_clean(s.replace("\n", " "), hay, loc_ban):
             room_subs[str(k)] = s
     if not titles and not highlights and not room_subs:
         return None

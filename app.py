@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42 (PRコピー下書き：タイトル3案＋情感2行・事実アンカー＋誇大/数値バリデータ)")
+    st.caption("build: prcopy-v42a (PRコピー下書き：3案＋情感2行・事実アンカー＋誇大/数値/条件付き立地バリデータ)")
 
 
 # ======================================================================
@@ -1974,4 +1974,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42 (PRコピー下書き：タイトル3案＋情感2行・事実アンカー＋誇大/数値バリデータ)")
+    st.caption("build: prcopy-v42a (PRコピー下書き：3案＋情感2行・事実アンカー＋誇大/数値/条件付き立地バリデータ)")
