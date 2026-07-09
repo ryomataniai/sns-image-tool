@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42a (PRコピー下書き：3案＋情感2行・事実アンカー＋誇大/数値/条件付き立地バリデータ)")
+    st.caption("build: prcopy-v42b (冒頭フラッシュ設定をon_clickコールバック化・flash seed生成前)")
 
 
 # ======================================================================
@@ -1026,6 +1026,12 @@ def _pl_resolve_pos(it, global_pos):
     return v if v in _PL_TELOP_POSITIONS else global_pos
 
 
+def _pl_set_flash_title(title):
+    """『冒頭フラッシュに設定』の on_click（ウィジェット生成前に実行されるため代入が安全）。"""
+    st.session_state["pl_open_title"] = "flash"
+    st.session_state["pl_flash_text"] = title
+
+
 def _pl_room_use(room):
     """build_staging_prompt の room_use（room指定を生成に効かせる＝痛み#3対策）。"""
     if room == "LDK":
@@ -1765,7 +1771,9 @@ def _pl_stage_video():
         _madori = (_f.get("madori", "").split("[")[0]).strip()
         _fdef = (f"{_f['name']} ｜ {_madori}" if _f.get("name") and _madori
                  else f"{_madori} ｜ {_f['area']}" if _madori and _f.get("area") else "")
-        v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳・短く）", value=_fdef,
+        if "pl_flash_text" not in st.session_state:   # 生成前seed（未設定時のみ・既定=物件名｜間取り）
+            st.session_state["pl_flash_text"] = _fdef
+        v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳・短く）",
                                 key="pl_flash_text", placeholder="例: ニューモート204 ｜ 2LDK")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
@@ -1825,10 +1833,8 @@ def _pl_stage_video():
                                           key="pl_title_edit")
                 tc2.text_input("サブタイトル（編集可）", value=_sel.get("subtitle", ""),
                                key="pl_sub_edit")
-                if st.button("このタイトルを冒頭フラッシュに設定", key="pl_title_to_flash"):
-                    st.session_state["pl_open_title"] = "flash"
-                    st.session_state["pl_flash_text"] = _t_title
-                    st.rerun()
+                st.button("このタイトルを冒頭フラッシュに設定", key="pl_title_to_flash",
+                          on_click=_pl_set_flash_title, args=(_t_title,))
                 st.caption("表紙特大（P1b-2）＝タイトル大見出し＋サブ補足。冒頭フラッシュ＝短いタイトルのみ"
                            "（0.5秒では読めないためサブは載せません）。情感2行は各シーンに反映済み。")
 
@@ -1974,4 +1980,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: prcopy-v42a (PRコピー下書き：3案＋情感2行・事実アンカー＋誇大/数値/条件付き立地バリデータ)")
+    st.caption("build: prcopy-v42b (冒頭フラッシュ設定をon_clickコールバック化・flash seed生成前)")
