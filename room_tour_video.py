@@ -250,6 +250,27 @@ def generate_clip_fal(image_bytes: bytes, prompt: str, duration: int = 5,
     return r.content
 
 
+def _still_clip(image_bytes: bytes, seconds: float, out_path: str) -> str:
+    """画像を seconds 秒ループした静止クリップを生成（fal/Klingを通さない＝morphゼロ・課金ゼロ）。
+    間取り図・3Dパース等、image-to-videoで図面が壊れるものに使う。以降は _normalize_clip で整形。"""
+    ff = _ffmpeg()
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(image_bytes)
+        img = f.name
+    try:
+        subprocess.run([ff, "-y", "-loglevel", "error", "-loop", "1", "-i", img,
+                        "-t", f"{max(seconds, 1):g}", "-r", "30",
+                        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-preset", "veryfast", out_path], check=True, timeout=120)
+    finally:
+        try:
+            os.unlink(img)
+        except Exception:  # noqa: BLE001
+            pass
+    return out_path
+
+
 # 部屋種別ごとの既定プロンプト（ゆっくり・破綻しにくい）
 ROOM_PROMPTS = {
     "entrance": "Real estate room tour. Slow smooth forward dolly through the entrance into the hallway. Furniture stays completely still. No people. Natural light, stable cinematic camera, no warping.",
@@ -626,7 +647,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                with_bgm: bool = True, also_silent: bool = True,
                model_key: str = "kling2.6_pro", duration: int = 5,
                room_types: Optional[list] = None, image_note: str = "",
-               notes: Optional[list] = None,
+               notes: Optional[list] = None, still_flags: Optional[list] = None,
                taste: str = "clean", tastes: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
                negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
@@ -638,6 +659,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
     image_note: 全クリップ共通の右下注記（優先）。空なら notes[i] を使う。
     notes: クリップ個別の右下注記（image_note が空のときに使用。例：ステージング/リノベで文言を分ける）
         ※ image_note も notes[i] も空なら注記なし（旧render_videoの挙動を維持）。
+    still_flags: True のクリップは fal/Kling を通さず静止クリップにする（間取り図・3Dパース＝
+        morph防止・fal課金なし）。fit_mode は contain 固定（図面全体を表示）。None は全クリップ通常。
     aspect: 動画の向き "9:16"（既定）/ "1:1" / "16:9"
     fit_mode: 余白の扱い "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・余白あり）
     progress: callable(step:int, total:int, msg:str) 進捗コールバック（任意）
@@ -656,15 +679,22 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
     try:
         # ① 各画像を動画化 → ② 正規化＋キャプション
         for i, (name, img) in enumerate(images):
+            _still = bool(still_flags and i < len(still_flags) and still_flags[i])
             if progress:
-                progress(i, n, f"{name}: 動画生成中…")
-            rt = room_types[i] if i < len(room_types) else "generic"
-            prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
-            clip_bytes = generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
-                                           negative_prompt=negative_prompt, cfg_scale=cfg_scale)
+                progress(i, n, f"{name}: {'静止クリップ生成中' if _still else '動画生成中'}…")
             raw = os.path.join(workdir, f"raw_{i}.mp4")
-            with open(raw, "wb") as f:
-                f.write(clip_bytes)
+            if _still:
+                # 間取り図・3Dパース等：fal/Klingを通さず静止クリップ（morphゼロ・課金ゼロ）
+                _still_clip(img, duration, raw)
+                _fit = "contain"                       # 全体表示（図面の端を切らない）
+            else:
+                rt = room_types[i] if i < len(room_types) else "generic"
+                prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
+                clip_bytes = generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
+                                               negative_prompt=negative_prompt, cfg_scale=cfg_scale)
+                with open(raw, "wb") as f:
+                    f.write(clip_bytes)
+                _fit = fit_mode
             seg = os.path.join(workdir, f"seg_{i}.mp4")
             cap = captions[i] if (with_captions and i < len(captions)) else ""
             subs = None
@@ -680,7 +710,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
             _normalize_clip(raw, seg, caption=cap, sub_lines=subs,
                             top_tag=top_tag if with_captions else "",
                             note=_note, taste=tst, pos=pos, flash=flash,
-                            out_w=out_w, out_h=out_h, fit_mode=fit_mode)
+                            out_w=out_w, out_h=out_h, fit_mode=_fit)
             seg_paths.append(seg)
 
         # ③ クロスフェード連結
