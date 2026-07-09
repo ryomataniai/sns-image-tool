@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: gapui-v48 (補完生成/3Dパースを画像化ボタンに統合・3Dパース再生成対応)")
+    st.caption("build: factguard-v49 (補完生成に事実ガード・注記の折返し・ステージング白帯トリミング)")
 
 
 # ======================================================================
@@ -1434,9 +1434,11 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
         room_label = _PL_GAP_LABEL.get(room, room)
         base = it.get("_gap_base") or it.get("src_bytes")
         anchor = it.get("_gap_anchor")
+        # 事実ガード（設備・築年）を前置＝記載外設備を描かせない（優良誤認防止）
+        _req = "\n".join(x for x in [it.get("_gap_facts", ""), req] if x)
         pr = core.build_room_tour_prompt(
             style_desc, room_label, core.ROOM_TOUR_PRESETS.get(room_label, ""),
-            with_ref=anchor is not None, user_request=req)
+            with_ref=anchor is not None, user_request=_req)
         imgs = [(base, "image/png")]
         if anchor:
             imgs.append((anchor, "image/png"))
@@ -1446,7 +1448,8 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
     if t == "3Dパース（試験）":
         # 間取り図（src_bytes）を土台に俯瞰パースを生成。関所の再生成＋メモもここを通る
         base = it.get("src_bytes")
-        pr = core.build_3d_perspective_prompt(style_desc, user_request=req)
+        _req = "\n".join(x for x in [it.get("_gap_facts", ""), req] if x)  # 事実ガード
+        pr = core.build_3d_perspective_prompt(style_desc, user_request=_req)
         data, err = core.generate_from_images(
             client, [(base, "image/png")], pr, model=model, aspect=aspect,
             size="2K", add_safety=False)
@@ -1503,7 +1506,7 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
             else:
                 for it in st.session_state.get("pl_items", []):
                     if it["id"] == iid:
-                        it["gen_bytes"] = data
+                        it["gen_bytes"] = _pl_crop_gen(data, it)  # 白帯除去（3Dパースは除外）
                         it["disc"] = disc      # 注記文言（ZIP/DL出力時に焼く）
             prog.progress(done / len(jobs), text=f"画像化中… {done}/{len(jobs)}")
     prog.empty()
@@ -1542,6 +1545,14 @@ def _pl_uncovered_rooms(pl_rooms, items):
                if it.get("room_id") is not None and it.get("treatment") != "使わない"}
     return [r for r in (pl_rooms or [])
             if r["id"] not in covered and r["type"] not in _PL_GAP_EXCLUDE_TYPES]
+
+
+def _pl_crop_gen(data, it):
+    """生成結果の白帯レターボックスを除去。ただし3Dパース（_origin=="persp"）は俯瞰図が
+    単色背景に浮く構図で上下の余白が意図的なため、トリミングしない。"""
+    if it.get("_origin") == "persp":
+        return data
+    return core.crop_uniform_borders(data)
 
 
 def _pl_pick_anchor(items):
@@ -1740,10 +1751,27 @@ def _pl_stage_input():
         _pl_run_all_generation(style_name, model, aspect, req)
 
 
+def _pl_gap_facts_block(facts):
+    """補完/3D生成プロンプトへ前置する事実ブロック（設備・築年）＋記載外設備の禁止（優良誤認防止）。"""
+    eq = (facts.get("equipment") or "").strip()
+    built = (facts.get("built") or "").strip()
+    parts = ["【この住戸の確定事実（マイソク記載）】"]
+    parts.append(f"・設備は次の記載のみ：{eq[:300]}" if eq else "・設備の特記なし。")
+    if built:
+        parts.append(f"・{built}。築年相当の年式感を保ち、新築同様には描かない。")
+    parts.append(
+        "【厳守】マイソクに記載の無い設備を絶対に描かない（創作＝優良誤認）。"
+        "記載が無ければ 追い焚き（リモコン）・浴室乾燥・温水洗浄便座・手洗いカウンター・"
+        "浴室の窓・手すり・ウッドデッキ・造作棚 などは描かない。"
+        "実在しない設備・広さ・眺望を足して誇張しない。")
+    return "\n".join(parts)
+
+
 def _pl_pending_absorb_items(items, pl_rooms):
     """選択に基づく補完/3Dパースの pending item（gen_bytes=None）を作る。生成はしない。"""
     pending = []
     floorplan = st.session_state.get("pl_floorplan")
+    facts_block = _pl_gap_facts_block(st.session_state.get("pl_facts", {}))  # 事実ガード
     base = floorplan or next(
         (it.get("src_bytes") for it in items if it.get("_origin", "photo") == "photo"), None)
     if base is not None:                      # 補完生成（間取り図/実写真を土台）
@@ -1758,13 +1786,15 @@ def _pl_pending_absorb_items(items, pl_rooms):
                             "room": r["type"], "treatment": "補完生成", "gen_bytes": None,
                             "caption": "", "jo": r.get("jo"), "room_id": rid,
                             "disc": _PL_GAP_DISC, "_origin": "gap",
-                            "_gap_base": base, "_gap_anchor": anchor})
+                            "_gap_base": base, "_gap_anchor": anchor,
+                            "_gap_facts": facts_block})
     if st.session_state.get("pl_make_persp") and floorplan is not None:  # 3Dパース
         nid = _pl_next_item_id(items + pending)
         pending.append({"id": nid, "order": 20000 + nid, "src_bytes": floorplan,
                         "room": "その他", "treatment": "3Dパース（試験）", "gen_bytes": None,
                         "caption": "", "jo": None, "room_id": None,
-                        "disc": _PL_PERSP_DISC, "_origin": "persp"})
+                        "disc": _PL_PERSP_DISC, "_origin": "persp",
+                        "_gap_facts": facts_block})
     return pending
 
 
@@ -1918,7 +1948,7 @@ def _pl_stage_review():
                     if err:
                         st.error(f"再生成失敗: {err}")
                     else:
-                        it["gen_bytes"] = data
+                        it["gen_bytes"] = _pl_crop_gen(data, it)  # 白帯除去（3Dパースは除外）
                         it["disc"] = disc
                         st.rerun()
 
@@ -2369,4 +2399,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: gapui-v48 (補完生成/3Dパースを画像化ボタンに統合・3Dパース再生成対応)")
+    st.caption("build: factguard-v49 (補完生成に事実ガード・注記の折返し・ステージング白帯トリミング)")

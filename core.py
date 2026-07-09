@@ -200,24 +200,86 @@ def _disclaimer_font(size: int):
     return ImageFont.load_default()
 
 
+def _wrap_text_to_width(draw, text: str, font, max_w: float, max_lines: int) -> list:
+    """max_w(px) に収まるよう貪欲に折返し。max_lines を超える分は末尾を … で切り詰める。"""
+    lines, cur = [], ""
+    for ch in text:
+        if not cur or draw.textlength(cur + ch, font=font) <= max_w:
+            cur += ch
+        else:
+            lines.append(cur)
+            cur = ch
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while last and draw.textlength(last + "…", font=font) > max_w:
+            last = last[:-1]
+        lines[-1] = (last + "…") if last else "…"
+    return lines
+
+
 def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -> bytes:
-    """生成画像の下部に注記帯（半透明黒＋白文字）を焼き込む。"""
+    """生成画像の下部に注記帯（半透明黒＋白文字）を焼き込む。長い文言でも右端で切れない
+    ようフォント自動縮小→2行折返し→…切詰めで画像幅に必ず収める（法令注記の可読性維持）。"""
     from PIL import Image, ImageDraw
     img = Image.open(BytesIO(png_bytes)).convert("RGB")
     W, H = img.size
     draw = ImageDraw.Draw(img, "RGBA")
-    fs = max(20, W // 38)
+    pad = max(8, W // 80)
+    max_w = W - 2 * pad
+    base_fs = max(20, W // 34)
+    min_fs = max(13, W // 60)
+    fs = base_fs                                   # まず1行で収まる最大フォントへ縮小
+    while fs > min_fs and draw.textlength(text, font=_disclaimer_font(fs)) > max_w:
+        fs -= 1
     font = _disclaimer_font(fs)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    th = bbox[3] - bbox[1]
-    pad = max(8, fs // 2)
-    band_h = th + pad * 2
-    draw.rectangle([0, H - band_h, W, H], fill=(0, 0, 0, 120))
-    draw.text((pad, H - band_h + pad - bbox[1]), text, font=font,
-              fill=(255, 255, 255, 255),
-              stroke_width=max(1, fs // 12), stroke_fill=(0, 0, 0, 255))
+    if draw.textlength(text, font=font) <= max_w:
+        lines = [text]
+    else:                                          # 最小フォントでも入らない→2行→…切詰め
+        lines = _wrap_text_to_width(draw, text, font, max_w, max_lines=2)
+    bb = draw.textbbox((0, 0), "※あAg1｜", font=font)
+    line_h = int((bb[3] - bb[1]) * 1.4)
+    pad_v = max(6, fs // 3)
+    band_h = line_h * len(lines) + pad_v * 2
+    draw.rectangle([0, H - band_h, W, H], fill=(0, 0, 0, 130))
+    y = H - band_h + pad_v
+    sw = max(1, fs // 12)
+    for ln in lines:
+        draw.text((pad, y - bb[1]), ln, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=sw, stroke_fill=(0, 0, 0, 255))
+        y += line_h
     out = BytesIO()
     img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def crop_uniform_borders(png_bytes: bytes, var_thresh: float = 6.0,
+                         min_keep: float = 0.55) -> bytes:
+    """上下の『均一な余白帯』（生成AIが正方素材を縦横比変換した際のレターボックス）を
+    自動トリミング。各行のピクセル分散がほぼ0（単色）かつ端から連続する行のみ除去する。
+    ※横方向は切らない（写真の白壁の端を誤って切らないため）。パイプラインの生成比率は
+    4:5/1:1/3:4（縦・正方）で、白帯は上下にしか出ないため行だけで十分。
+    切りすぎ（min_keep未満）になる場合は切らない（誤検出回避）。"""
+    import numpy as np
+    try:
+        img = Image.open(BytesIO(png_bytes)).convert("RGB")
+    except Exception:  # noqa: BLE001
+        return png_bytes
+    arr = np.asarray(img, dtype=np.float32)
+    H, W, _ = arr.shape
+    row_var = arr.reshape(H, W * 3).var(axis=1)              # 各行の分散
+    t = 0
+    while t < H and row_var[t] < var_thresh:                 # 上端から連続する単色行
+        t += 1
+    b = H
+    while b > t and row_var[b - 1] < var_thresh:             # 下端から連続する単色行
+        b -= 1
+    if (b - t) < H * min_keep or (t, b) == (0, H):           # 切りすぎ or 不要
+        return png_bytes
+    out = BytesIO()
+    img.crop((0, t, W, b)).save(out, format="PNG")
     return out.getvalue()
 
 
