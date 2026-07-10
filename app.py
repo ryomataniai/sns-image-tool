@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-v49 (補完生成に事実ガード・注記の折返し・ステージング白帯トリミング)")
+    st.caption("build: multiroom-v50 (複数部屋のマルチラベル分類・補完既定OFF・色付き帯除去)")
 
 
 # ======================================================================
@@ -1191,8 +1191,9 @@ def _pl_choose_floorplan(pdf_imgs, codes):
     if best_b is not None:
         return best_b
     # フォールバック：classify_maisoku_images が FLOORPLAN とタグした最初の画像
+    # （codes[i] はマルチラベル＝コードのリスト）
     for i, b in enumerate(pdf_imgs):
-        if i < len(codes) and codes[i] == "FLOORPLAN":
+        if i < len(codes) and "FLOORPLAN" in (codes[i] or []):
             return b
     return None
 
@@ -1522,9 +1523,8 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
 # 補完生成の対象外＝居室と外観。居室は間取り図からの生成では品質が不安定なため実写真が必要
 # （旧render_maisokuの gap_rooms が非居室固定だったのと同じ安全域）。
 _PL_GAP_EXCLUDE_TYPES = {"LDK", "洋室", "寝室", "外観"}
-# 補完生成で既定チェックする部屋種別（水回り・玄関・バルコニー＝写真が無いことが多い）。
-# キッチン・クローゼットは候補に残すが既定OFF。
-_PL_GAP_DEFAULT_TYPES = {"玄関", "トイレ", "洗面", "浴室", "バルコニー"}
+# ※補完生成の既定チェックは全OFF（マルチラベル分類でも検出漏れは残るため、実写真に
+#   写り込んでいないか人が確認して選ぶ設計）。
 # pl_room の type → ROOM_TOUR_PRESETS のラベル（表記差の吸収）
 _PL_GAP_LABEL = {"洗面": "洗面所"}
 _PL_GEN_UNIT_USD = 0.039   # Gemini 画像生成の単価/枚（コスト表示用）
@@ -1538,13 +1538,26 @@ def _pl_next_item_id(items):
     return max((it["id"] for it in items), default=-1) + 1
 
 
-def _pl_uncovered_rooms(pl_rooms, items):
-    """写真が1枚も紐づいていない部屋＝補完生成の候補。居室(LDK/洋室/寝室)・外観は除外
-    （居室は間取り図からの生成品質が不安定なため実写真が必要）。"""
-    covered = {it.get("room_id") for it in items
-               if it.get("room_id") is not None and it.get("treatment") != "使わない"}
-    return [r for r in (pl_rooms or [])
-            if r["id"] not in covered and r["type"] not in _PL_GAP_EXCLUDE_TYPES]
+def _pl_gap_candidate_rooms(pl_rooms):
+    """補完生成の候補＝居室(LDK/洋室/寝室)・外観 以外の全部屋。写り込みでハード除外はしない
+    （実写真に写り込む部屋も候補に出し、選択肢を奪わず警告ラベルで判断材料として見せる）。
+    居室・外観のハード除外だけは維持（居室は間取り図からの生成品質が不安定）。"""
+    return [r for r in (pl_rooms or []) if r["type"] not in _PL_GAP_EXCLUDE_TYPES]
+
+
+def _pl_room_coverage(items):
+    """部屋種別 → その種別が写り込んでいる実写真の記述 ['#N ラベル', ...]（マルチラベル和集合）。
+    『ちらっと写っている』の判断材料（ハードフィルタしない）。#N は実写真の表示順。"""
+    cov = {}
+    photos = [x for x in items if x.get("_origin", "photo") == "photo"
+              and x.get("treatment") != "使わない"]
+    for k, it in enumerate(photos, 1):
+        codes = it.get("_codes") or [it.get("room")]
+        label = "・".join(dict.fromkeys(c for c in codes if c)) or it.get("room", "")
+        for typ in codes:
+            if typ:
+                cov.setdefault(typ, []).append(f"#{k} {label}")
+    return cov
 
 
 def _pl_crop_gen(data, it):
@@ -1599,7 +1612,7 @@ def _pl_stage_input():
                        + str(len(raw_srcs)).encode()).hexdigest()
     if st.session_state.get("pl_src_sig") != sig:
         # 細粒度分類を取り込み時1回だけ（部屋種別＋間取り図/外観/地図/白紙の判定を兼ねる）
-        codes = ["OTHER"] * len(raw_srcs)
+        codes = [["OTHER"] for _ in raw_srcs]   # マルチラベル：各画像＝コードのリスト
         try:
             with st.spinner("AIが各写真の部屋種別を判定中…"):
                 codes = core.classify_maisoku_images(make_client(), raw_srcs)
@@ -1611,15 +1624,19 @@ def _pl_stage_input():
         floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)])
         items = []
         for i, b in enumerate(raw_srcs):
-            code = codes[i] if i < len(codes) else "OTHER"
-            room = _PL_CODE_TO_ROOM.get(code, "その他")
-            if code in _PL_EXCLUDE_CODES or core.is_blank_image(b) or b is floor_plan:
+            code_list = codes[i] if i < len(codes) else ["OTHER"]   # マルチラベル
+            primary = code_list[0] if code_list else "OTHER"         # 主種別＝先頭コード
+            room = _PL_CODE_TO_ROOM.get(primary, "その他")
+            # 写っている部屋種別（除外コードを除く・coverage判定用）
+            seen_types = [_PL_CODE_TO_ROOM[c] for c in code_list
+                          if c not in _PL_EXCLUDE_CODES and c in _PL_CODE_TO_ROOM]
+            if primary in _PL_EXCLUDE_CODES or core.is_blank_image(b) or b is floor_plan:
                 treat = "使わない"     # 間取り図・外観・地図・白紙は生成対象から除外
             else:
                 treat = _pl_default_treatment(room, _mode)
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
                           "treatment": treat, "gen_bytes": None, "caption": "",
-                          "jo": None, "room_id": None})
+                          "jo": None, "room_id": None, "_codes": seen_types})
         # 間取り図をvisionで読んで部屋を列挙（取り込み時1回・floor_planがある時のみ）
         vision_rooms = []
         if floor_plan is not None:
@@ -1761,8 +1778,9 @@ def _pl_gap_facts_block(facts):
         parts.append(f"・{built}。築年相当の年式感を保ち、新築同様には描かない。")
     parts.append(
         "【厳守】マイソクに記載の無い設備を絶対に描かない（創作＝優良誤認）。"
-        "記載が無ければ 追い焚き（リモコン）・浴室乾燥・温水洗浄便座・手洗いカウンター・"
-        "浴室の窓・手すり・ウッドデッキ・造作棚 などは描かない。"
+        "記載が無ければ 追い焚き（リモコン）・浴室乾燥・浴室の窓・浴室の手すり・"
+        "温水洗浄便座・トイレの窓・手洗いカウンター・室内洗濯機置場・"
+        "ウッドデッキ・造作棚 などは描かない。"
         "実在しない設備・広さ・眺望を足して誇張しない。")
     return "\n".join(parts)
 
@@ -1826,25 +1844,47 @@ def _pl_render_absorb_select(pl_rooms, items):
             st.caption("※間取り図が未検出のため無効（サイドバーで手動指定できます）。")
         st.divider()
         # A: 補完生成の選択（生成は「画像化」でまとめて）
-        _unc = _pl_uncovered_rooms(pl_rooms, items)
+        _cands = _pl_gap_candidate_rooms(pl_rooms)
+        _cov = _pl_room_coverage(items)   # 部屋種別→写り込み写真（判断材料・ハード除外しない）
         st.markdown("**写真の無い部屋を生成して補う**")
         st.caption("居室（LDK・洋室・寝室）は実写真が必要です（補完生成の対象外）。"
                    "水回り・玄関・バルコニー等を間取り図から補います。")
-        if _unc:
-            _optids = [r["id"] for r in _unc]
-            _lbl = {r["id"]: r["name"] for r in _unc}
+        if _cands:
+            # ★安全側：既定は全てOFF。写り込みの可能性はラベルに付記し、人が見て選ぶ
+            st.warning("⚠️ 選んだ部屋を間取り図からAI生成します。**下の実写真に写り込んでいないか"
+                       "確認**し、写っていない部屋だけ選んでください（実写とAI生成の併存を防ぐ）。")
+            _optids = [r["id"] for r in _cands]
+
+            def _lbl_of(rid):
+                r = next((x for x in _cands if x["id"] == rid), None)
+                if not r:
+                    return str(rid)
+                hit = _cov.get(r["type"])
+                return (f"{r['name']}  ⚠️ 実写真に写り込みの可能性（{'・'.join(hit)}）"
+                        if hit else r["name"])
+
             cur = st.session_state.get("pl_gap_targets")
-            if cur is None:   # 生成前seed（自動検出の非居室を既定チェック）
-                st.session_state["pl_gap_targets"] = [
-                    r["id"] for r in _unc if r["type"] in _PL_GAP_DEFAULT_TYPES]
-            else:             # stale id（既にカバー済み等）を除外して例外回避
+            if cur is None:   # 生成前seed＝全OFF（人が選ぶ）
+                st.session_state["pl_gap_targets"] = []
+            else:             # stale id を除外して例外回避
                 st.session_state["pl_gap_targets"] = [i for i in cur if i in _optids]
-            st.multiselect("補う部屋（自動検出・増減できます）", _optids,
-                           format_func=lambda i: _lbl.get(i, str(i)), key="pl_gap_targets")
+            st.multiselect("補う部屋（既定OFF・写り込みを確認して選ぶ）", _optids,
+                           format_func=_lbl_of, key="pl_gap_targets")
+            # 実写真サムネイル一覧（写り込み確認用・#Nは上のラベルと対応）
+            _photos = [it for it in items if it.get("_origin", "photo") == "photo"
+                       and it.get("treatment") != "使わない"]
+            if _photos:
+                st.caption("実写真（写り込み確認用・番号は上の⚠️と対応）：")
+                _cols = st.columns(min(len(_photos), 6))
+                for _k, _it in enumerate(_photos, 1):
+                    with _cols[(_k - 1) % len(_cols)]:
+                        st.image(_it["src_bytes"], use_container_width=True)
+                        _tags = "・".join(dict.fromkeys(_it.get("_codes") or [_it.get("room", "")]))
+                        st.caption(f"#{_k} {_tags or _it.get('room', '')}")
         elif pl_rooms:
-            st.caption("写真の無い部屋はありません（全部屋に写真が紐づいています）。")
+            st.caption("補完候補の部屋がありません（居室・外観のみ）。")
         else:
-            st.caption("※マイソク（間取り）が無いため自動検出できません（手持ち写真のみ）。")
+            st.caption("※マイソク（間取り）が無いため候補を出せません（手持ち写真のみ）。")
         st.divider()
         # C: 3Dパース（試験）
         st.markdown("**3Dパース（間取り俯瞰イメージ・試験）**")
@@ -2399,4 +2439,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-v49 (補完生成に事実ガード・注記の折返し・ステージング白帯トリミング)")
+    st.caption("build: multiroom-v50 (複数部屋のマルチラベル分類・補完既定OFF・色付き帯除去)")

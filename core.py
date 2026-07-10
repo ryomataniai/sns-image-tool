@@ -258,9 +258,10 @@ def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -
 def crop_uniform_borders(png_bytes: bytes, var_thresh: float = 6.0,
                          min_keep: float = 0.55) -> bytes:
     """上下の『均一な余白帯』（生成AIが正方素材を縦横比変換した際のレターボックス）を
-    自動トリミング。各行のピクセル分散がほぼ0（単色）かつ端から連続する行のみ除去する。
+    自動トリミング。色に依存せず、各行が単色（各チャンネルの行内分散がほぼ0）かつ端から
+    連続する行のみ除去する（白帯だけでなく茶色等の色付き帯も対象）。
     ※横方向は切らない（写真の白壁の端を誤って切らないため）。パイプラインの生成比率は
-    4:5/1:1/3:4（縦・正方）で、白帯は上下にしか出ないため行だけで十分。
+    4:5/1:1/3:4（縦・正方）で、余白帯は上下にしか出ないため行だけで十分。
     切りすぎ（min_keep未満）になる場合は切らない（誤検出回避）。"""
     import numpy as np
     try:
@@ -269,7 +270,9 @@ def crop_uniform_borders(png_bytes: bytes, var_thresh: float = 6.0,
         return png_bytes
     arr = np.asarray(img, dtype=np.float32)
     H, W, _ = arr.shape
-    row_var = arr.reshape(H, W * 3).var(axis=1)              # 各行の分散
+    # 各行・各チャンネルの分散→チャンネル最大。単色行は色に関わらず全ch≈0（茶帯も検出）。
+    # ※チャンネルをまたいで分散を取ると R≠G≠B の色帯で値が大きくなり白帯しか拾えない。
+    row_var = arr.var(axis=1).max(axis=1)
     t = 0
     while t < H and row_var[t] < var_thresh:                 # 上端から連続する単色行
         t += 1
@@ -690,32 +693,35 @@ GAP_LABEL_TO_CODE = {
 
 
 def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
-    """マイソクから抽出した画像を、細かい部屋種別コードで分類する。
-    返り値: 各画像のコード（LIVING/BEDROOM/.../FLOORPLAN/EXTERIOR/MAP/BLANK/OTHER）のリスト。"""
+    """マイソク抽出画像を細かい部屋種別コードで分類（マルチラベル）。Gemini呼び出しは1回。
+    返り値: 各画像について『写っている部屋コードのリスト』（例 [["BEDROOM"],["KITCHEN","WASH"],...]）。
+    ※日本の賃貸マイソクは1枚に複数部屋（キッチン＋洗面台 等）が写るため複数コードを返す。
+      主に写っている部屋を各配列の先頭に置く（主種別＝先頭コード）。
+    後方互換: Geminiが単一コード（文字列）を返しても [code] に包んで返す。"""
     import json as _json
     n = len(images)
-    default = ["OTHER"] * n
+    default = [["OTHER"] for _ in range(n)]
     if n == 0:
         return default
     try:
         parts = [_image_part(b, "image/png") for b in images]
         instruction = (
             f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
-            "各画像を次のコードのいずれかで分類してください：\n"
+            "各画像に写っている部屋を『すべて』次のコードで挙げてください。日本の賃貸マイソクは"
+            "1枚に複数部屋（例：キッチンと洗面台、洗面とトイレ）が写ることが多いので、"
+            "写っていれば複数挙げる。主に写っている部屋を配列の先頭に置くこと。\n"
+            "コード：\n"
             "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
-            "BATH=浴室、WASH=洗面・脱衣所、TOILET=トイレ、"
-            "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、"
-            "HALLWAY=廊下、"
+            "BATH=浴室、WASH=洗面・脱衣所（洗面台）、TOILET=トイレ、"
+            "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、HALLWAY=廊下、"
             "STORAGE=収納・クローゼット・ウォークインクローゼット(WIC)・納戸・シューズクローク"
             "（棚やハンガーパイプ主体で、生活家具〈ベッド/ソファ〉や掃き出し窓が無い小部屋は居室でなくSTORAGE）、"
-            "BALCONY=バルコニー・ベランダ、"
-            "FLOORPLAN=間取り図・平面図、"
+            "BALCONY=バルコニー・ベランダ、FLOORPLAN=間取り図・平面図、"
             "EXTERIOR=屋外から写した建物外観・外壁・共用部・玄関ドアの外側"
             "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
-            "MAP=地図・案内図、"
-            "BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
-            f"出力はJSON配列のみ・長さ{n}。説明文は書かないこと。"
-            '例: ["BEDROOM","KITCHEN","BATH","FLOORPLAN","EXTERIOR"]。'
+            "MAP=地図・案内図、BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
+            f"出力はJSON配列のみ・長さ{n}。各要素はその画像のコード配列（1つ以上）。説明文は書かない。"
+            '例: [["BEDROOM"],["KITCHEN","WASH"],["BATH"],["FLOORPLAN"],["EXTERIOR"]]。'
         )
         resp = client.models.generate_content(model=model, contents=parts + [instruction])
         text = (getattr(resp, "text", "") or "").strip()
@@ -725,8 +731,14 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
         return default
     out = []
     for i in range(n):
-        c = arr[i].upper() if i < len(arr) and isinstance(arr[i], str) else "OTHER"
-        out.append(c)
+        el = arr[i] if i < len(arr) else None
+        if isinstance(el, list):
+            codes = [str(c).upper() for c in el if isinstance(c, str) and c.strip()]
+        elif isinstance(el, str):          # 後方互換：単一コード文字列
+            codes = [el.upper()]
+        else:
+            codes = []
+        out.append(codes or ["OTHER"])
     return out
 
 
