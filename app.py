@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: multiroom-v50 (複数部屋のマルチラベル分類・補完既定OFF・色付き帯除去)")
+    st.caption("build: factguard-all-v51 (ステージング事実ガード3条件・防水パン検出・浴室手すり許容)")
 
 
 # ======================================================================
@@ -1242,6 +1242,7 @@ _PL_CODE_TO_ROOM = {
     "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
     "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
     "BALCONY": "バルコニー", "EXTERIOR": "外観", "HALLWAY": "その他", "OTHER": "その他",
+    "WASHER_PAN": "洗面",   # 防水パン＝洗面/脱衣の設備。coverage上は洗面として扱う
 }
 # 生成対象から除外するコード（間取り図・地図・白紙）。外観はツアーの掴みに使うため除外しない
 _PL_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
@@ -1455,23 +1456,25 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
             client, [(base, "image/png")], pr, model=model, aspect=aspect,
             size="2K", add_safety=False)
         return data, err, _PL_PERSP_DISC
+    # 事実ガード（3条件）を req 先頭に前置＝記載外設備を描かせない（帖数ヒントと同方式）
+    _sreq = "\n".join(x for x in [it.get("_stage_facts", ""), req] if x)
     if t == "リノベ後イメージ":
         # room-aware（部屋の機能を保ったまま刷新）
-        pr = core.build_renovation_prompt(style_desc, user_request=req, room=room)
+        pr = core.build_renovation_prompt(style_desc, user_request=_sreq, room=room)
         disc = "※リノベ後のイメージ（仕上がりは設計により異なります）"
     elif t == "家具ステージング" and room in PL_RESIDENTIAL:
-        pr = core.build_staging_prompt(style_desc, _pl_room_use(room), user_request=req)
+        pr = core.build_staging_prompt(style_desc, _pl_room_use(room), user_request=_sreq)
         disc = "※AI加工のイメージ"
     elif t == "家具ステージング":
         # 非居室に家具ステージングが来た場合の最終防波堤（居室用ステージングは流さない）
         if room in ("キッチン", "玄関", "廊下", "バルコニー"):
-            pr = core.build_water_staging_prompt(style_desc, user_request=req)
+            pr = core.build_water_staging_prompt(style_desc, user_request=_sreq)
             disc = "※AI加工のイメージ"
         else:  # 浴室・洗面・トイレ・クローゼット・その他
             pr = core.build_enhance_prompt()
             disc = None
     elif t == "水回り・玄関を演出":
-        pr = core.build_water_staging_prompt(style_desc, user_request=req)
+        pr = core.build_water_staging_prompt(style_desc, user_request=_sreq)
         disc = "※AI加工のイメージ"
     else:  # 高解像度化のみ
         pr = core.build_enhance_prompt()
@@ -1492,6 +1495,9 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
     style_desc = core.INTERIOR_STYLES[style_name]
     prog = st.progress(0.0, text=f"画像化中… 0/{len(jobs)}")
     done = 0
+    # 事実ガードはメインスレッドで算出して item に載せる（worker threadでsession_stateを触らない）
+    for it in jobs:
+        it["_stage_facts"] = _pl_stage_facts_for(it, req)
     with _cf.ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_pl_generate_one, client, it, style_desc, model, aspect, req): it["id"]
                 for it in jobs}
@@ -1636,7 +1642,8 @@ def _pl_stage_input():
                 treat = _pl_default_treatment(room, _mode)
             items.append({"id": i, "order": i, "src_bytes": b, "room": room,
                           "treatment": treat, "gen_bytes": None, "caption": "",
-                          "jo": None, "room_id": None, "_codes": seen_types})
+                          "jo": None, "room_id": None, "_codes": seen_types,
+                          "_raw_codes": code_list})   # 生コード（防水パン検出用）
         # 間取り図をvisionで読んで部屋を列挙（取り込み時1回・floor_planがある時のみ）
         vision_rooms = []
         if floor_plan is not None:
@@ -1778,11 +1785,69 @@ def _pl_gap_facts_block(facts):
         parts.append(f"・{built}。築年相当の年式感を保ち、新築同様には描かない。")
     parts.append(
         "【厳守】マイソクに記載の無い設備を絶対に描かない（創作＝優良誤認）。"
-        "記載が無ければ 追い焚き（リモコン）・浴室乾燥・浴室の窓・浴室の手すり・"
+        "記載が無ければ 追い焚き（リモコン）・浴室乾燥・浴室の窓・"
         "温水洗浄便座・トイレの窓・手洗いカウンター・室内洗濯機置場・"
         "ウッドデッキ・造作棚 などは描かない。"
         "実在しない設備・広さ・眺望を足して誇張しない。")
     return "\n".join(parts)
+
+
+def _pl_staging_facts_block(facts, washer_ok=False, wreason="", reno=False):
+    """ステージング/水回り/リノベ生成へ前置する『3条件の事実ガード』ブロック。
+    足してよいのは ①持ち込み小物・家具 ②設備欄記載の設備 ③元画像に痕跡のある設備 の3つだけ。
+    washer_ok: 洗濯機を置いてよいか（防水パン写り込み or ご要望）。wreason: その理由文字列。
+    reno=True はリノベモード（既存設備の"更新"は可・"新設"は不可）。"""
+    eq = (facts.get("equipment") or "").strip()
+    built = (facts.get("built") or "").strip()
+    parts = ["【この住戸の確定事実（マイソク記載）】"]
+    parts.append(f"・設備欄の記載：{eq[:300]}" if eq else "・設備欄に特記なし。")
+    if built:
+        parts.append(f"・{built}。築年相当の年式感を保ち、新築同様には描かない。")
+    if washer_ok:
+        parts.append(f"・室内洗濯機置場：{wreason}。"
+                     "防水パンの上に生活感のある洗濯機を1台だけ置いてよい。")
+    else:
+        parts.append("・この写真には防水パンが写っていないため、洗濯機は描かない"
+                     "（洗濯機は防水パンが写る写真にのみ、その上に1台だけ置く）。")
+    if reno:
+        parts.append(
+            "【リノベ後イメージで反映してよいのは次だけ】"
+            "①持ち込みの小物・家具（ソファ・ラグ・タオル・観葉植物・スリッパ・カーテン・アート等）。"
+            "②上記『設備欄の記載』にある設備、および既存設備の更新（グレードアップ・刷新）。"
+            "③元画像に痕跡が写っている設備の更新。"
+            "【厳守】記載にも写真にも無い設備を新設しない"
+            "（リノベでも設備の“新設”は不可・“更新”のみ＝優良誤認の防止）。"
+            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・窓・収納を新たに足さない。")
+    else:
+        parts.append(
+            "【画像に足してよいのは次の3つだけ】"
+            "①持ち込みの小物・家具（ソファ・ラグ・タオル・観葉植物・スリッパ・カーテン・アート等）＝常にOK。"
+            "②上記『設備欄の記載』にある設備。"
+            "③元画像に痕跡が写っている設備"
+            "（とくに洗濯機は防水パンが写っている場合のみ、その上に1台。パンが無ければ置かない）。"
+            "【厳守】上記①〜③以外の設備を新設しない（＝優良誤認の防止）。"
+            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・窓・収納などを新たに描き足さない。")
+    parts.append("※このあと（↓）にユーザーの個別のご要望が続く場合、"
+                 "設備に関する指定はそちらを優先する（人の補足を尊重する）。")
+    return "\n".join(parts)
+
+
+def _pl_stage_facts_for(it, req):
+    """reno/家具ステージング/水回り の item に前置する事実ブロックを返す（該当外は ""）。
+    ※session_state を読むためメインスレッドから呼ぶこと（worker threadでは呼ばない）。"""
+    import re
+    t = it.get("treatment")
+    if t not in ("リノベ後イメージ", "家具ステージング", "水回り・玄関を演出"):
+        return ""
+    facts = st.session_state.get("pl_facts", {})
+    raw = it.get("_raw_codes") or []
+    pan = "WASHER_PAN" in raw
+    user_washer = bool(re.search(r"洗濯機|室内洗濯", req or ""))
+    washer_ok = pan or user_washer
+    wreason = ("写真で確認（防水パンあり）" if pan
+               else ("ご要望のため" if user_washer else ""))
+    return _pl_staging_facts_block(facts, washer_ok, wreason,
+                                   reno=(t == "リノベ後イメージ"))
 
 
 def _pl_pending_absorb_items(items, pl_rooms):
@@ -1979,6 +2044,7 @@ def _pl_stage_review():
                     _req = "\n".join(x for x in [
                         st.session_state.get("pl_request", ""),
                         it.get("regen_note", "")] if x)
+                    it["_stage_facts"] = _pl_stage_facts_for(it, _req)  # 事実ガード（メイン側）
                     with st.spinner(f"#{i+1} を再生成中…"):
                         data, err, disc = _pl_generate_one(
                             client, it, style_desc,
@@ -2439,4 +2505,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: multiroom-v50 (複数部屋のマルチラベル分類・補完既定OFF・色付き帯除去)")
+    st.caption("build: factguard-all-v51 (ステージング事実ガード3条件・防水パン検出・浴室手すり許容)")

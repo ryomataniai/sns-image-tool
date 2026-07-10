@@ -713,6 +713,8 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
             "コード：\n"
             "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
             "BATH=浴室、WASH=洗面・脱衣所（洗面台）、TOILET=トイレ、"
+            "WASHER_PAN=室内洗濯機置場・防水パン（洗濯機用の四角い防水パン・給水栓・排水口が"
+            "写っている場合のみ。洗面/脱衣と一緒に写ることが多いのでWASHと併記してよい）、"
             "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、HALLWAY=廊下、"
             "STORAGE=収納・クローゼット・ウォークインクローゼット(WIC)・納戸・シューズクローク"
             "（棚やハンガーパイプ主体で、生活家具〈ベッド/ソファ〉や掃き出し窓が無い小部屋は居室でなくSTORAGE）、"
@@ -721,7 +723,8 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
             "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
             "MAP=地図・案内図、BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
             f"出力はJSON配列のみ・長さ{n}。各要素はその画像のコード配列（1つ以上）。説明文は書かない。"
-            '例: [["BEDROOM"],["KITCHEN","WASH"],["BATH"],["FLOORPLAN"],["EXTERIOR"]]。'
+            '例: [["BEDROOM"],["KITCHEN","WASH"],["WASH","WASHER_PAN"],'
+            '["BATH"],["FLOORPLAN"],["EXTERIOR"]]。'
         )
         resp = client.models.generate_content(model=model, contents=parts + [instruction])
         text = (getattr(resp, "text", "") or "").strip()
