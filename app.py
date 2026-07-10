@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: opening-guard-v52 (開口部の捏造防止・カーテンは窓条件・WASHER_PANを部屋種別から除外・白帯crop修正)")
+    st.caption("build: crop-fix-v53 (白帯crop判定を実20枚で再設計・bright/jump境界で頑健化)")
 
 
 # ======================================================================
@@ -2524,4 +2524,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: opening-guard-v52 (開口部の捏造防止・カーテンは窓条件・WASHER_PANを部屋種別から除外・白帯crop修正)")
+    st.caption("build: crop-fix-v53 (白帯crop判定を実20枚で再設計・bright/jump境界で頑健化)")

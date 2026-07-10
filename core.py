@@ -256,20 +256,22 @@ def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -
 
 
 def crop_uniform_borders(png_bytes: bytes, min_keep: float = 0.55,
-                         color_tol: float = 4.0, max_frac: float = 0.30,
-                         min_band: int = 8, inner_med_thresh: float = 2.0,
-                         region_max_var: float = 80.0) -> bytes:
-    """上下の『均一な余白帯』（生成AIが正方素材を縦横比変換した際のレターボックス）を
-    色に依存せず自動トリミング。白帯だけでなく茶/灰など色付き帯も対象。
-    帯の最上部に圧縮ノイズ（例：y=0で分散33でも内側は0.5）があると、
-    『端から分散<しきい値の行を数える』旧方式は1行目で止まり削れない。そこで—
-      1) 端色（端行の平均色）に各チャンネル ±color_tol 以内で連続する行を『帯候補』とする
-         （分散は見ない・高さの max_frac まで）。端のノイズ行で走査が止まらない。
-      2) 帯と認めるのは、候補が min_band 行以上・候補の内側半分の行分散の中央値が
-         inner_med_thresh 未満・候補内の最大行分散が region_max_var 未満のときだけ
-         （＝実写真の均一な壁面や俯瞰図の単色背景を誤検出しない）。
-    ※横方向は切らない（白壁の端の誤切り防止）。3Dパースは呼び出し側で除外する
-      （単色背景に浮く俯瞰図は上記条件で誤爆しうるため）。切りすぎ（min_keep未満）は切らない。"""
+                         bright: float = 240.0, var_tol: float = 40.0,
+                         med_cap: float = 3.0, jump: float = 150.0,
+                         look: int = 10, min_rows: int = 12,
+                         max_frac: float = 0.30) -> bytes:
+    """上下の『明るい余白帯』（生成AIが正方素材を縦横比変換した際の白レターボックス）を
+    自動トリミング。実画像20枚＋誤爆テストで検証したパラメータで判定する。
+    帯の条件（上端・下端それぞれ／下端は配列反転で同じ関数）：
+      1) 端から連続して『行平均の最小chが bright 以上（＝白い）』かつ『行内分散の最大chが
+         var_tol 未満（＝ほぼ平坦）』の行を数える（高さの max_frac まで）。
+      2) その行数 t が min_rows 未満、または max_frac に達したら帯なし（0）。
+      3) 帯全体の分散の中央値が med_cap 以上なら帯でない（帯は全体が極端に平坦なはず）。
+      4) 帯の内側 look 行の最大分散が jump 以下なら帯でない（内側の境界＝写真開始が急峻でない）。
+    ※旧方式は端ノイズ行で走査停止／内側半分の分散中央値がしきい値2.0の境界を跨いで取りこぼした
+      （辰巳402再生成の 05_洋室=2.08・08_クローゼット=1.50）。本方式は bright＋jump境界で頑健化。
+    横は切らない。3Dパースは呼び出し側で除外（明るい背景の俯瞰図は誤爆しうるため）。
+    切りすぎ（min_keep未満）は切らない。"""
     import numpy as np
     try:
         img = Image.open(BytesIO(png_bytes)).convert("RGB")
@@ -277,27 +279,26 @@ def crop_uniform_borders(png_bytes: bytes, min_keep: float = 0.55,
         return png_bytes
     arr = np.asarray(img, dtype=np.float32)
     H, W, _ = arr.shape
-    row_mean = arr.mean(axis=1)               # (H,3) 各行の平均色
-    row_var = arr.var(axis=1).max(axis=1)     # (H,)  各行の分散（チャンネル最大）
-    cap = int(H * max_frac)
+    cap = H * max_frac
 
-    def _band(means, vars_):
-        """index 0 側の端から帯の行数を返す（帯判定を満たさなければ 0）。"""
-        edge = means[0]
-        k = 0
-        while k < cap and np.all(np.abs(means[k] - edge) <= color_tol):
-            k += 1
-        if k < min_band:
+    def _band(m, v):
+        """index 0 側の端から白帯の行数を返す（帯判定を満たさなければ 0）。
+        m: 各行平均の最小チャンネル値, v: 各行分散の最大チャンネル値。"""
+        t = 0
+        while t < cap and m[t] >= bright and v[t] < var_tol:
+            t += 1
+        if t < min_rows or t >= cap:
             return 0
-        inner = vars_[k // 2:k]               # 内側半分（端ノイズを避けて分散を見る）
-        if inner.size == 0 or float(np.median(inner)) >= inner_med_thresh:
+        if float(np.median(v[:t])) >= med_cap:            # 帯は全体が極端に平坦
             return 0
-        if float(vars_[:k].max()) >= region_max_var:
+        if float(v[t:t + look].max()) <= jump:            # 内側の境界が急峻
             return 0
-        return k
+        return t
 
-    t = _band(row_mean, row_var)                          # 上端
-    b = H - _band(row_mean[::-1], row_var[::-1])           # 下端（反転して同判定）
+    m = arr.mean(axis=1).min(axis=1)          # (H,) 各行平均の最小チャンネル値
+    v = arr.var(axis=1).max(axis=1)           # (H,) 各行分散の最大チャンネル値
+    t = _band(m, v)                                       # 上端
+    b = H - _band(m[::-1], v[::-1])                        # 下端（反転して同判定）
     if (t, b) == (0, H):                                   # 帯なし
         return png_bytes
     if (b - t) < H * min_keep:                             # 切りすぎ防止（誤検出回避）
