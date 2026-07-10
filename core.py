@@ -728,38 +728,37 @@ def classify_maisoku_images(client, images, model="gemini-2.5-flash"):
     後方互換: Geminiが単一コード（文字列）を返しても [code] に包んで返す。"""
     import json as _json
     n = len(images)
-    default = [["OTHER"] for _ in range(n)]
     if n == 0:
-        return default
-    try:
-        parts = [_image_part(b, "image/png") for b in images]
-        instruction = (
-            f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
-            "各画像に写っている部屋を『すべて』次のコードで挙げてください。日本の賃貸マイソクは"
-            "1枚に複数部屋（例：キッチンと洗面台、洗面とトイレ）が写ることが多いので、"
-            "写っていれば複数挙げる。主に写っている部屋を配列の先頭に置くこと。\n"
-            "コード：\n"
-            "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
-            "BATH=浴室、WASH=洗面・脱衣所（洗面台）、TOILET=トイレ、"
-            "WASHER_PAN=室内洗濯機置場・防水パン（洗濯機用の四角い防水パン・給水栓・排水口が"
-            "写っている場合のみ。洗面/脱衣と一緒に写ることが多いのでWASHと併記してよい）、"
-            "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、HALLWAY=廊下、"
-            "STORAGE=収納・クローゼット・ウォークインクローゼット(WIC)・納戸・シューズクローク"
-            "（棚やハンガーパイプ主体で、生活家具〈ベッド/ソファ〉や掃き出し窓が無い小部屋は居室でなくSTORAGE）、"
-            "BALCONY=バルコニー・ベランダ、FLOORPLAN=間取り図・平面図、"
-            "EXTERIOR=屋外から写した建物外観・外壁・共用部・玄関ドアの外側"
-            "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
-            "MAP=地図・案内図、BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
-            f"出力はJSON配列のみ・長さ{n}。各要素はその画像のコード配列（1つ以上）。説明文は書かない。"
-            '例: [["BEDROOM"],["KITCHEN","WASH"],["WASH","WASHER_PAN"],'
-            '["BATH"],["FLOORPLAN"],["EXTERIOR"]]。'
-        )
-        resp = client.models.generate_content(model=model, contents=parts + [instruction])
-        text = (getattr(resp, "text", "") or "").strip()
-        m = re.search(r"\[.*\]", text, re.S)
-        arr = _json.loads(m.group(0)) if m else []
-    except Exception:  # noqa: BLE001
-        return default
+        return []
+    # 例外は握り潰さず上位へ伝播させる（呼び出し側 app._pl_classify_with_retry が
+    # 実例外型・メッセージを警告表示し、1回リトライする）。空結果（arr=[]）は全OTHERで返し、
+    # 呼び出し側の「全OTHER→リトライ」の保険が拾う。
+    parts = [_image_part(b, "image/png") for b in images]
+    instruction = (
+        f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
+        "各画像に写っている部屋を『すべて』次のコードで挙げてください。日本の賃貸マイソクは"
+        "1枚に複数部屋（例：キッチンと洗面台、洗面とトイレ）が写ることが多いので、"
+        "写っていれば複数挙げる。主に写っている部屋を配列の先頭に置くこと。\n"
+        "コード：\n"
+        "LIVING=リビング/居間、BEDROOM=洋室・和室などの居室、KITCHEN=キッチン、"
+        "BATH=浴室、WASH=洗面・脱衣所（洗面台）、TOILET=トイレ、"
+        "WASHER_PAN=室内洗濯機置場・防水パン（洗濯機用の四角い防水パン・給水栓・排水口が"
+        "写っている場合のみ。洗面/脱衣と一緒に写ることが多いのでWASHと併記してよい）、"
+        "ENTRANCE=室内側から見た玄関土間・上がり框・靴箱（屋内）、HALLWAY=廊下、"
+        "STORAGE=収納・クローゼット・ウォークインクローゼット(WIC)・納戸・シューズクローク"
+        "（棚やハンガーパイプ主体で、生活家具〈ベッド/ソファ〉や掃き出し窓が無い小部屋は居室でなくSTORAGE）、"
+        "BALCONY=バルコニー・ベランダ、FLOORPLAN=間取り図・平面図、"
+        "EXTERIOR=屋外から写した建物外観・外壁・共用部・玄関ドアの外側"
+        "（空・外壁タイル・道路・駐車場などが写る屋外写真は必ずEXTERIOR）、"
+        "MAP=地図・案内図、BLANK=白紙・単色・ロゴ・文字のみ、OTHER=室内だが判別不能。\n"
+        f"出力はJSON配列のみ・長さ{n}。各要素はその画像のコード配列（1つ以上）。説明文は書かない。"
+        '例: [["BEDROOM"],["KITCHEN","WASH"],["WASH","WASHER_PAN"],'
+        '["BATH"],["FLOORPLAN"],["EXTERIOR"]]。'
+    )
+    resp = client.models.generate_content(model=model, contents=parts + [instruction])
+    text = (getattr(resp, "text", "") or "").strip()
+    m = re.search(r"\[.*\]", text, re.S)
+    arr = _json.loads(m.group(0)) if m else []
     out = []
     for i in range(n):
         el = arr[i] if i < len(arr) else None
@@ -804,29 +803,27 @@ def _normalize_floorplan_type(raw):
 
 def read_floorplan_rooms(client, floorplan_bytes, model="gemini-2.5-flash"):
     """間取り図画像1枚をGeminiに読ませ、記載ラベルから部屋を列挙。
-    返り値: [{"type":正規化種別, "label":図の文字, "jo":帖float|None, "position":位置str}]。失敗/空は []。"""
+    返り値: [{"type":正規化種別, "label":図の文字, "jo":帖float|None, "position":位置str}]。空は []。
+    ※例外は握り潰さず上位へ伝播（呼び出し側 app._pl_stage_input が警告表示し続行する）。"""
     import json as _json
-    try:
-        part = _image_part(floorplan_bytes, "image/png")
-        instruction = (
-            "この画像は日本の賃貸物件の間取り図（平面図）です。"
-            "図に文字で書かれている部屋・空間をすべて列挙してください（線や寸法ではなく、記載ラベルを読む）。\n"
-            "各部屋を {\"type\":種別, \"label\":図の文字そのまま, \"jo\":帖数, \"position\":位置} で表現。\n"
-            "type は次から：居室 / LDK / DK / キッチン / 浴室 / 洗面 / トイレ / 玄関 / ホール / "
-            "ウォークインクローゼット / 納戸 / 収納 / シューズクローク / クローゼット / バルコニー / その他。\n"
-            "jo は『6』『6.2帖』等の畳数を数値で（記載が無ければ null）。"
-            "position は図の中の大まかな位置（上/下/左/右/中央/左上 等、分からなければ空文字）。\n"
-            "同じ部屋が複数あれば複数要素で列挙。出力はJSON配列のみ・説明文なし。\n"
-            "例：[{\"type\":\"居室\",\"label\":\"洋室\",\"jo\":6,\"position\":\"上\"},"
-            "{\"type\":\"LDK\",\"label\":\"LDK\",\"jo\":11,\"position\":\"下\"},"
-            "{\"type\":\"ウォークインクローゼット\",\"label\":\"WIC\",\"jo\":null,\"position\":\"右\"}]"
-        )
-        resp = client.models.generate_content(model=model, contents=[part, instruction])
-        text = (getattr(resp, "text", "") or "").strip()
-        m = re.search(r"\[.*\]", text, re.S)
-        arr = _json.loads(m.group(0)) if m else []
-    except Exception:  # noqa: BLE001
-        return []
+    part = _image_part(floorplan_bytes, "image/png")
+    instruction = (
+        "この画像は日本の賃貸物件の間取り図（平面図）です。"
+        "図に文字で書かれている部屋・空間をすべて列挙してください（線や寸法ではなく、記載ラベルを読む）。\n"
+        "各部屋を {\"type\":種別, \"label\":図の文字そのまま, \"jo\":帖数, \"position\":位置} で表現。\n"
+        "type は次から：居室 / LDK / DK / キッチン / 浴室 / 洗面 / トイレ / 玄関 / ホール / "
+        "ウォークインクローゼット / 納戸 / 収納 / シューズクローク / クローゼット / バルコニー / その他。\n"
+        "jo は『6』『6.2帖』等の畳数を数値で（記載が無ければ null）。"
+        "position は図の中の大まかな位置（上/下/左/右/中央/左上 等、分からなければ空文字）。\n"
+        "同じ部屋が複数あれば複数要素で列挙。出力はJSON配列のみ・説明文なし。\n"
+        "例：[{\"type\":\"居室\",\"label\":\"洋室\",\"jo\":6,\"position\":\"上\"},"
+        "{\"type\":\"LDK\",\"label\":\"LDK\",\"jo\":11,\"position\":\"下\"},"
+        "{\"type\":\"ウォークインクローゼット\",\"label\":\"WIC\",\"jo\":null,\"position\":\"右\"}]"
+    )
+    resp = client.models.generate_content(model=model, contents=[part, instruction])
+    text = (getattr(resp, "text", "") or "").strip()
+    m = re.search(r"\[.*\]", text, re.S)
+    arr = _json.loads(m.group(0)) if m else []
     out = []
     for d in arr if isinstance(arr, list) else []:
         if not isinstance(d, dict):

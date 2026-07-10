@@ -103,7 +103,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cleanup-v54 (旧3ツール撤去・パイプライン1本に集約)")
+    st.caption("build: uploadfix-v55 (分類失敗を警告＋リトライ・取り込み解除で状態一掃・再アップ修正)")
 
 
 # ======================================================================
@@ -444,8 +444,13 @@ def _pl_guess_room_treat(ai_label, blank):
 
 
 def _pl_reset():
+    # on_click コールバック（地雷①）。uploaderの nonce を進めてから全 pl_ キーを消し、
+    # 消えた nonce を新値で復活させる → 次回 file_uploader が別キーで作り直され、
+    # 同じファイルの再アップが載るようになる（del はウィジェットをリセットしない＝地雷②回避）。
+    n = st.session_state.get("pl_upload_nonce", 0) + 1
     for k in [k for k in list(st.session_state) if k.startswith("pl_")]:
         del st.session_state[k]
+    st.session_state["pl_upload_nonce"] = n
 
 
 # 用途モード（度合いだけを切り替える。機能＝部屋種別は不変）
@@ -946,14 +951,79 @@ def _pl_pick_anchor(items):
     return _b(photos[0]) if photos else None
 
 
+# 取り込み解除／再取り込みで一掃する物件固有キー（ユーザー設定 _PL_KEEP_ON_IMPORT は保持）
+_PL_PROPERTY_EXACT = (
+    "pl_src_sig", "pl_items", "pl_rooms", "pl_floorplan", "pl_summary",
+    "pl_facts", "pl_prcopy", "pl_flash_text", "pl_v_tag", "pl_title_edit",
+    "pl_sub_edit", "pl_title_idx", "pl_cover_title", "pl_cover_sub",
+    "pl_cover_src", "pl_cover_png", "pl_gap_targets", "pl_persp_png")
+_PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
+                       "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_")
+
+
+def _pl_clear_property_keys():
+    """物件固有キーを一掃（取り込み解除／再取り込み用）。ユーザー設定(_PL_KEEP_ON_IMPORT)は保持。
+    ※ pl_room_ 接頭辞は pl_room_lang（ユーザー設定）を巻き込むため除外リストで守る（地雷③）。
+    ウィジェットキー(pl_room_*/pl_treat_*/pl_roomid_*)を消すのは、それらを生成する前に呼ぶこと。"""
+    for k in _PL_PROPERTY_EXACT:
+        st.session_state.pop(k, None)
+    for k in [k for k in list(st.session_state)
+              if k.startswith(_PL_PROPERTY_PREFIX) and k not in _PL_KEEP_ON_IMPORT]:
+        del st.session_state[k]
+
+
+def _pl_all_other(codes):
+    """分類結果が全画像『その他』のみか（＝分類失敗の可能性）。設備痕跡コードは除外して判定。"""
+    if not codes:
+        return True
+    for cl in codes:
+        room = [c for c in (cl or []) if c not in _PL_FEATURE_CODES]
+        if any(c != "OTHER" for c in room):
+            return False
+    return True
+
+
+def _pl_classify_with_retry(raw_srcs):
+    """部屋種別分類を実行。失敗（例外 or 全『その他』）なら2.5秒待って1回だけ再試行する
+    （レート制限は一過性のため）。返り値 (codes, warn|None)。落とさず必ず codes を返す。
+    warn は '{例外型}: {先頭120字}' か '全画像が『その他』判定になりました'。"""
+    import time as _time
+    default = [["OTHER"] for _ in raw_srcs]
+
+    def _run():
+        return core.classify_maisoku_images(make_client(), raw_srcs)
+
+    warn = None
+    try:
+        codes = _run()
+    except Exception as e:  # noqa: BLE001  make_client失敗・想定外例外（黙って握り潰さない）
+        codes, warn = None, f"{type(e).__name__}: {str(e)[:120]}"
+    if codes is None or _pl_all_other(codes):          # 失敗の可能性→1回だけ再試行
+        _time.sleep(2.5)
+        try:
+            retry = _run()
+            if _pl_all_other(retry):
+                codes = retry
+                warn = warn or "全画像が『その他』判定になりました"
+            else:
+                codes, warn = retry, None               # 再試行で成功
+        except Exception as e:  # noqa: BLE001
+            codes = codes if codes is not None else default
+            warn = f"{type(e).__name__}: {str(e)[:120]}"
+    return (codes or default), warn
+
+
 def _pl_stage_input():
     import hashlib as _hashlib
     st.markdown("#### ① 取り込み・種別わけ")
     c1, c2 = st.columns(2)
-    pdf = c1.file_uploader("マイソクPDF（埋め込み写真を抽出）", type=["pdf"], key="pl_pdf")
+    # uploaderキーは nonce 付き＝リセット/取り込み解除で作り直し、同一ファイルの再アップを可能に
+    _un = st.session_state.setdefault("pl_upload_nonce", 0)
+    pdf = c1.file_uploader("マイソクPDF（埋め込み写真を抽出）", type=["pdf"],
+                           key=f"pl_pdf_{_un}")
     photos_up = c2.file_uploader("手持ち写真（複数可）",
                                  type=["png", "jpg", "jpeg", "webp"],
-                                 accept_multiple_files=True, key="pl_photos")
+                                 accept_multiple_files=True, key=f"pl_photos_{_un}")
     raw_srcs = []
     pdf_imgs = []
     if pdf is not None:
@@ -970,19 +1040,28 @@ def _pl_stage_input():
         raw_srcs += [f.getvalue() for f in photos_up]
 
     if not raw_srcs:
-        st.info("マイソクPDF か 手持ち写真をアップしてください。")
+        # 取り込み解除：以前に取り込んだ物件があるなら状態を一掃して input へ戻す
+        # （✕で消した後に同じファイルを再アップ→sig一致で旧itemsが使われ続ける事故を防ぐ）
+        if st.session_state.get("pl_src_sig"):
+            _pl_clear_property_keys()
+            st.session_state["pl_stage"] = "input"
+            st.session_state["pl_upload_nonce"] = st.session_state.get("pl_upload_nonce", 0) + 1
+            st.info("取り込みを解除しました。マイソクPDF か 手持ち写真をアップしてください。")
+        else:
+            st.info("マイソクPDF か 手持ち写真をアップしてください。")
         return
 
     sig = _hashlib.md5(b"".join(s[:2000] for s in raw_srcs)
                        + str(len(raw_srcs)).encode()).hexdigest()
+    _classify_warn = None
     if st.session_state.get("pl_src_sig") != sig:
-        # 細粒度分類を取り込み時1回だけ（部屋種別＋間取り図/外観/地図/白紙の判定を兼ねる）
-        codes = [["OTHER"] for _ in raw_srcs]   # マルチラベル：各画像＝コードのリスト
-        try:
-            with st.spinner("AIが各写真の部屋種別を判定中…"):
-                codes = core.classify_maisoku_images(make_client(), raw_srcs)
-        except Exception:  # noqa: BLE001
-            pass
+        # 細粒度分類を取り込み時1回だけ（部屋種別＋間取り図/外観/地図/白紙の判定を兼ねる）。
+        # 失敗（例外/全その他）は握り潰さず警告＋1回リトライ。パイプラインは続行する。
+        with st.spinner("AIが各写真の部屋種別を判定中…"):
+            codes, _classify_warn = _pl_classify_with_retry(raw_srcs)
+        if _classify_warn:
+            st.warning(f"AIによる部屋種別の判定に失敗しました（{_classify_warn}）。"
+                       "部屋種別を手動で選んでください。")
         parsed = _pl_parse_maisoku(pdf.getvalue()) if pdf is not None else {"rooms": [], "summary": ""}
         _mode = st.session_state.get("pl_mode", PL_MODES[0])
         # 間取り図はローカル画像判定で選ぶ（LLM誤タグ対策・決定的）。候補はPDF抽出画像のみ
@@ -1011,12 +1090,19 @@ def _pl_stage_input():
             try:
                 with st.spinner("間取り図から部屋を読み取り中…"):
                     vision_rooms = core.read_floorplan_rooms(make_client(), floor_plan)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001  握り潰さず知らせる（続行はする）
+                st.warning(f"間取り図の読み取りに失敗しました（{type(e).__name__}: "
+                           f"{str(e)[:120]}）。部屋の自動リンクが減る場合があります。")
         # 名前付き部屋リスト（間取り図読取∪間取タイプ居室∪標準部屋）。マイソク文脈がある時のみ
         if floor_plan is not None or parsed["rooms"] or vision_rooms:
             pl_rooms = _pl_build_rooms(parsed["rooms"], items, vision_rooms)
             _pl_link_items(items, pl_rooms)
+            # 名前付き部屋はあるのに1件もリンクできない＝自動リンク全滅（分類が弱い等）。
+            # 分類警告を既に出していなければ、原因が見えるよう知らせる。
+            if (pl_rooms and not _classify_warn
+                    and not any(it.get("room_id") for it in items)):
+                st.warning("部屋の自動リンクができませんでした"
+                           "（AI判定が不十分な可能性）。部屋種別を手動で選んでください。")
         else:
             pl_rooms = []                            # 手持ち写真のみ→汎用ドロップダウン
             _pl_assign_jo(items, parsed["rooms"])
@@ -1832,8 +1918,8 @@ def render_pipeline():
     steps = ["① 取り込み・種別", "② 画像化", "③ 確認", "④ 動画化"]
     cur = {"input": 0, "review": 2, "video": 3}.get(stage, 0)
     st.caption("　→　".join(f"**{s}**" if i == cur else s for i, s in enumerate(steps)))
-    if st.button("最初からやり直す", key="pl_reset_btn"):
-        _pl_reset(); st.rerun()
+    # on_click で nonce を進めてから全消し（uploaderを作り直す＝地雷②回避）。rerunは自動
+    st.button("最初からやり直す", key="pl_reset_btn", on_click=_pl_reset)
     st.divider()
     if stage == "review":
         _pl_stage_review()
@@ -1875,4 +1961,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: cleanup-v54 (旧3ツール撤去・パイプライン1本に集約)")
+    st.caption("build: uploadfix-v55 (分類失敗を警告＋リトライ・取り込み解除で状態一掃・再アップ修正)")
