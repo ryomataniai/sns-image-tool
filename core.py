@@ -255,14 +255,21 @@ def add_disclaimer(png_bytes: bytes, text: str = "※AI加工のイメージ") -
     return out.getvalue()
 
 
-def crop_uniform_borders(png_bytes: bytes, var_thresh: float = 6.0,
-                         min_keep: float = 0.55) -> bytes:
+def crop_uniform_borders(png_bytes: bytes, min_keep: float = 0.55,
+                         color_tol: float = 4.0, max_frac: float = 0.30,
+                         min_band: int = 8, inner_med_thresh: float = 2.0,
+                         region_max_var: float = 80.0) -> bytes:
     """上下の『均一な余白帯』（生成AIが正方素材を縦横比変換した際のレターボックス）を
-    自動トリミング。色に依存せず、各行が単色（各チャンネルの行内分散がほぼ0）かつ端から
-    連続する行のみ除去する（白帯だけでなく茶色等の色付き帯も対象）。
-    ※横方向は切らない（写真の白壁の端を誤って切らないため）。パイプラインの生成比率は
-    4:5/1:1/3:4（縦・正方）で、余白帯は上下にしか出ないため行だけで十分。
-    切りすぎ（min_keep未満）になる場合は切らない（誤検出回避）。"""
+    色に依存せず自動トリミング。白帯だけでなく茶/灰など色付き帯も対象。
+    帯の最上部に圧縮ノイズ（例：y=0で分散33でも内側は0.5）があると、
+    『端から分散<しきい値の行を数える』旧方式は1行目で止まり削れない。そこで—
+      1) 端色（端行の平均色）に各チャンネル ±color_tol 以内で連続する行を『帯候補』とする
+         （分散は見ない・高さの max_frac まで）。端のノイズ行で走査が止まらない。
+      2) 帯と認めるのは、候補が min_band 行以上・候補の内側半分の行分散の中央値が
+         inner_med_thresh 未満・候補内の最大行分散が region_max_var 未満のときだけ
+         （＝実写真の均一な壁面や俯瞰図の単色背景を誤検出しない）。
+    ※横方向は切らない（白壁の端の誤切り防止）。3Dパースは呼び出し側で除外する
+      （単色背景に浮く俯瞰図は上記条件で誤爆しうるため）。切りすぎ（min_keep未満）は切らない。"""
     import numpy as np
     try:
         img = Image.open(BytesIO(png_bytes)).convert("RGB")
@@ -270,16 +277,30 @@ def crop_uniform_borders(png_bytes: bytes, var_thresh: float = 6.0,
         return png_bytes
     arr = np.asarray(img, dtype=np.float32)
     H, W, _ = arr.shape
-    # 各行・各チャンネルの分散→チャンネル最大。単色行は色に関わらず全ch≈0（茶帯も検出）。
-    # ※チャンネルをまたいで分散を取ると R≠G≠B の色帯で値が大きくなり白帯しか拾えない。
-    row_var = arr.var(axis=1).max(axis=1)
-    t = 0
-    while t < H and row_var[t] < var_thresh:                 # 上端から連続する単色行
-        t += 1
-    b = H
-    while b > t and row_var[b - 1] < var_thresh:             # 下端から連続する単色行
-        b -= 1
-    if (b - t) < H * min_keep or (t, b) == (0, H):           # 切りすぎ or 不要
+    row_mean = arr.mean(axis=1)               # (H,3) 各行の平均色
+    row_var = arr.var(axis=1).max(axis=1)     # (H,)  各行の分散（チャンネル最大）
+    cap = int(H * max_frac)
+
+    def _band(means, vars_):
+        """index 0 側の端から帯の行数を返す（帯判定を満たさなければ 0）。"""
+        edge = means[0]
+        k = 0
+        while k < cap and np.all(np.abs(means[k] - edge) <= color_tol):
+            k += 1
+        if k < min_band:
+            return 0
+        inner = vars_[k // 2:k]               # 内側半分（端ノイズを避けて分散を見る）
+        if inner.size == 0 or float(np.median(inner)) >= inner_med_thresh:
+            return 0
+        if float(vars_[:k].max()) >= region_max_var:
+            return 0
+        return k
+
+    t = _band(row_mean, row_var)                          # 上端
+    b = H - _band(row_mean[::-1], row_var[::-1])           # 下端（反転して同判定）
+    if (t, b) == (0, H):                                   # 帯なし
+        return png_bytes
+    if (b - t) < H * min_keep:                             # 切りすぎ防止（誤検出回避）
         return png_bytes
     out = BytesIO()
     img.crop((0, t, W, b)).save(out, format="PNG")
@@ -310,13 +331,17 @@ def build_staging_prompt(style_desc: str, room_use: str = "",
         "この部屋の壁・窓・床・扉・天井・建具・広さ・構造・設備は一切変えずに維持したまま、"
         "画像を高解像度・高精細に整え、"
         f"{style_desc}の色調・家具テイストに合わせて、"
-        "家具・小物・ラグ・カーテン・据置型の照明器具だけを自然に追加し、"
+        "家具・小物・ラグ・据置型の照明器具だけを自然に追加し、"
         "生活感のある部屋にしてください。"
         "壁・天井・床・建具・キッチン・水回りなどの内装や設備は入力画像のまま一切変更しないでください。\n"
         f"{furni}"
         f"{_request_line(user_request)}\n"
         "【厳守】実際にない窓・眺望・設備を足さない。部屋を実際より広く見せない。"
         "壁の色・間取り・設備のグレードを変えない。"
+        "入力画像で壁になっている面に、窓・扉・開口部・別室への抜けを一切新設しない"
+        "（壁は壁のまま維持する）。窓の無い壁にカーテンを描かない"
+        "（カーテンは窓の存在を含意するため＝窓の捏造につながる）。カーテンは窓が写っている場合のみ、その窓に掛ける。"
+        "明るさは照明・採光の演出で表現し、窓を追加して明るくしようとしない。"
         "既存の開口部・入口・隣室への抜け・下がり壁・室内窓・扉を、塞いだり・壁にしたり・消したりしない。"
         "奥に見える部屋や通路もそのまま残す。"
         "天井・床・壁の素材や仕上げを変えない。"
@@ -418,7 +443,9 @@ def build_water_staging_prompt(style_desc: str = "", user_request: str = "") -> 
         "一切変えないこと（例：濃い色の棚やアクセント壁を明るい木目に変えない）。"
         "全体は清潔感のある高解像度な仕上がりに整えてください。"
         f"{_request_line(user_request)}\n"
-        "【厳守】実際にない設備（食洗機・浴室乾燥・収納・窓・下駄箱など）を絶対に足さない。"
+        "【厳守】実際にない設備（食洗機・浴室乾燥・収納・窓など）を絶対に足さない。"
+        "入力画像で壁になっている面に、窓・扉・開口部・別室への抜けを一切新設しない（壁は壁のまま維持）。"
+        "下駄箱・靴箱は玄関の造作が写っている場合のみ整える程度に留め、新たに新設しない。"
         "（防水パンがある場合の洗濯機は、入居者が持ち込む家電＝暮らしのイメージなので置いてよい。）"
         "蛇口・コンロ・便器・浴槽・框などの設備や造作の形・数・グレードを変えない。"
         "棚・キャビネット・扉・壁パネル・建具の色・仕上げ・素材を変えない（既存の色をそのまま維持する）。"

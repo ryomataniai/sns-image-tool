@@ -107,7 +107,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-all-v51 (ステージング事実ガード3条件・防水パン検出・浴室手すり許容)")
+    st.caption("build: opening-guard-v52 (開口部の捏造防止・カーテンは窓条件・WASHER_PANを部屋種別から除外・白帯crop修正)")
 
 
 # ======================================================================
@@ -1242,8 +1242,11 @@ _PL_CODE_TO_ROOM = {
     "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
     "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
     "BALCONY": "バルコニー", "EXTERIOR": "外観", "HALLWAY": "その他", "OTHER": "その他",
-    "WASHER_PAN": "洗面",   # 防水パン＝洗面/脱衣の設備。coverage上は洗面として扱う
 }
+# 部屋種別ではなく「設備痕跡フラグ」＝主種別・coverage の判定から除外し _raw_codes にのみ残す。
+# （WASHER_PAN を部屋にすると キッチン+洗面の写真で主種別が洗面へ流れ、処理が水回り演出→
+#   高解像度化に落ちる回帰が起きるため。防水パン検出は _raw_codes で拾う）
+_PL_FEATURE_CODES = ("WASHER_PAN",)
 # 生成対象から除外するコード（間取り図・地図・白紙）。外観はツアーの掴みに使うため除外しない
 _PL_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
 
@@ -1630,11 +1633,13 @@ def _pl_stage_input():
         floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)])
         items = []
         for i, b in enumerate(raw_srcs):
-            code_list = codes[i] if i < len(codes) else ["OTHER"]   # マルチラベル
-            primary = code_list[0] if code_list else "OTHER"         # 主種別＝先頭コード
+            code_list = codes[i] if i < len(codes) else ["OTHER"]   # マルチラベル（生コード）
+            # 設備痕跡フラグ（WASHER_PAN等）は部屋種別の判定から除外。生コードは _raw_codes に残す
+            room_codes = [c for c in code_list if c not in _PL_FEATURE_CODES] or ["OTHER"]
+            primary = room_codes[0]                                  # 主種別＝先頭の部屋コード
             room = _PL_CODE_TO_ROOM.get(primary, "その他")
             # 写っている部屋種別（除外コードを除く・coverage判定用）
-            seen_types = [_PL_CODE_TO_ROOM[c] for c in code_list
+            seen_types = [_PL_CODE_TO_ROOM[c] for c in room_codes
                           if c not in _PL_EXCLUDE_CODES and c in _PL_CODE_TO_ROOM]
             if primary in _PL_EXCLUDE_CODES or core.is_blank_image(b) or b is floor_plan:
                 treat = "使わない"     # 間取り図・外観・地図・白紙は生成対象から除外
@@ -1809,24 +1814,38 @@ def _pl_staging_facts_block(facts, washer_ok=False, wreason="", reno=False):
     else:
         parts.append("・この写真には防水パンが写っていないため、洗濯機は描かない"
                      "（洗濯機は防水パンが写る写真にのみ、その上に1台だけ置く）。")
+    # ①は建物側の前提が不要な持ち込み物のみ（カーテン＝窓の存在を含意するので①から外し③へ）
+    _bring_in = ("ソファ・テーブル・ラグ・照明スタンド・観葉植物・タオル・"
+                 "スリッパ・カゴ・アート等（建物側の前提が要らない物のみ）")
+    # ③の痕跡条件：洗濯機↔防水パン と同じ構造で、カーテン↔窓・下駄箱↔玄関造作 を条件化
+    _traces = ("とくに 洗濯機は防水パンが写る写真にのみパンの上に1台／"
+               "カーテンは窓が写っている場合のみその窓に掛ける／"
+               "下駄箱・靴箱は玄関の造作が写っている場合のみ。"
+               "痕跡（防水パン・窓・玄関造作）が無ければ足さない")
+    # 開口部の捏造禁止＋逃げ道（明るさは照明・採光で。窓を足して明るくしない）
+    _opening = ("入力画像で壁になっている面に、窓・扉・開口部・別室への抜けを一切新設しない"
+                "（壁は壁のまま維持）。窓の無い壁にカーテンを描かない"
+                "（カーテンは窓の存在を含意するため＝窓の捏造につながる）。"
+                "明るさは照明・採光の演出で表現し、窓を足して明るくしない。")
     if reno:
         parts.append(
             "【リノベ後イメージで反映してよいのは次だけ】"
-            "①持ち込みの小物・家具（ソファ・ラグ・タオル・観葉植物・スリッパ・カーテン・アート等）。"
+            f"①持ち込みの小物・家具（{_bring_in}）。"
             "②上記『設備欄の記載』にある設備、および既存設備の更新（グレードアップ・刷新）。"
-            "③元画像に痕跡が写っている設備の更新。"
-            "【厳守】記載にも写真にも無い設備を新設しない"
-            "（リノベでも設備の“新設”は不可・“更新”のみ＝優良誤認の防止）。"
-            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・窓・収納を新たに足さない。")
+            f"③元画像に痕跡が写っている設備の更新（{_traces}）。"
+            "【厳守】記載にも写真にも無い設備・開口部を新設しない"
+            "（リノベでも設備・窓の“新設”は不可・“更新”のみ＝優良誤認の防止）。"
+            f"{_opening}"
+            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・収納を新たに足さない。")
     else:
         parts.append(
             "【画像に足してよいのは次の3つだけ】"
-            "①持ち込みの小物・家具（ソファ・ラグ・タオル・観葉植物・スリッパ・カーテン・アート等）＝常にOK。"
+            f"①持ち込みの小物・家具（{_bring_in}）＝常にOK。"
             "②上記『設備欄の記載』にある設備。"
-            "③元画像に痕跡が写っている設備"
-            "（とくに洗濯機は防水パンが写っている場合のみ、その上に1台。パンが無ければ置かない）。"
-            "【厳守】上記①〜③以外の設備を新設しない（＝優良誤認の防止）。"
-            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・窓・収納などを新たに描き足さない。")
+            f"③元画像に痕跡が写っている設備（{_traces}）。"
+            "【厳守】上記①〜③以外の設備・開口部を新設しない（＝優良誤認の防止）。"
+            f"{_opening}"
+            "食洗機・下駄箱・追い焚き・浴室乾燥・独立洗面台・造作棚・収納などを新たに描き足さない。")
     parts.append("※このあと（↓）にユーザーの個別のご要望が続く場合、"
                  "設備に関する指定はそちらを優先する（人の補足を尊重する）。")
     return "\n".join(parts)
@@ -2505,4 +2524,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-all-v51 (ステージング事実ガード3条件・防水パン検出・浴室手すり許容)")
+    st.caption("build: opening-guard-v52 (開口部の捏造防止・カーテンは窓条件・WASHER_PANを部屋種別から除外・白帯crop修正)")
