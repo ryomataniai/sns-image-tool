@@ -904,6 +904,217 @@ def parse_maisoku_facts(pdf_bytes: bytes) -> dict:
     return facts
 
 
+# ── 売買マイソク（レインズ図面）対応 ─────────────────────────────
+def _first_json_object(text: str):
+    """テキストから最初の『平衡した』JSONオブジェクト文字列を取り出す。
+    コードフェンス（```json）や、JSONの後ろに散文が続く出力に強い（greedy正規表現の
+    『Extra data』誤爆を防ぐ）。見つからなければ None。"""
+    s = text or ""
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth, in_str, esc = 0, False, False
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start:i + 1]
+    return None
+
+
+def pdf_full_text(pdf_bytes: bytes) -> str:
+    """PDF全ページのテキストを連結して返す（テキストレイヤ無しページは空）。"""
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        text = "\n".join(p.get_text() for p in doc)
+        doc.close()
+        return text
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def detect_property_type(text: str) -> str:
+    """マイソク全文から賃貸/売買/不明を判定（テキストベース・Gemini不要）。
+    返り値: "rent" / "sale" / "unknown"。
+    ※賃貸マイソクも初期費用の『総額』『万円』を含むため、総額/万円だけで売買と判定しない。
+      賃料・敷金・礼金があれば賃貸を優先する（実データ10件で確認）。"""
+    t = text or ""
+    rent = any(k in t for k in ("賃料", "敷金", "礼金", "月額賃料"))
+    if rent:
+        return "rent"
+    sale = any(k in t for k in ("価格", "販売価格", "中古マンション", "中古一戸建",
+                                "土地価格", "売買代金", "万円"))
+    return "sale" if sale else "unknown"
+
+
+_BLDG_SUFFIX = ("マンション", "ハイツ", "コーポ", "ハイマート", "レジデンス", "ハイム",
+                "パレス", "プラザ", "タワー", "ヴィラ", "メゾン", "ストーク", "エルベ",
+                "苑", "荘", "館")
+
+
+def _guess_building_name(text: str):
+    """図面テキストから建物名らしき短い行を推定（分割UIのラベル用・best-effort）。"""
+    import re as _re
+    _skip = ("マンション等", "中古マンション", "分譲マンション", "新築マンション",
+             "中古一戸建", "マンション名", "物件種目")
+    for ln in (text or "").split("\n"):
+        ln = ln.strip()
+        if any(s in ln for s in _skip) or _re.match(r"^[０-９0-9]+[．.]", ln):
+            continue                       # 様式ヘッダ・物件種目カテゴリは建物名でない
+        if 2 <= len(ln) <= 30 and any(s in ln for s in _BLDG_SUFFIX):
+            return ln
+    return None
+
+
+def split_pdf_properties(pdf_bytes: bytes) -> list:
+    """複数物件が連結されたレインズ一括DL PDFを物件ごとのページ範囲に推定分割する。
+    返り値: [{"start":0基準開始, "end":排他終了, "pages":ページ数, "label":推定ラベル}]。
+    単一/分割不能なら全体1件。テキストの乏しい図面は不正確なことがあるため、
+    呼び出し側は必ず手動ページ範囲指定のフォールバックを用意すること（固定2ページ等を仮定しない）。"""
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        n = doc.page_count
+        texts = [doc[i].get_text() for i in range(n)]
+        doc.close()
+    except Exception:  # noqa: BLE001
+        return [{"start": 0, "end": 1, "pages": 1, "label": "物件1"}]
+    if n <= 1:
+        return [{"start": 0, "end": n, "pages": n, "label": "物件1"}]
+
+    def _is_detail(t):   # 物件明細ページ（面積/間取/価格等を含む十分な本文）
+        return len(t) > 250 and (("㎡" in t) or ("専有面積" in t) or ("間取" in t)
+                                 or ("総額" in t) or ("価格" in t) or ("賃料" in t))
+    detail_idx = [i for i in range(n) if _is_detail(texts[i])]
+    if len(detail_idx) <= 1:
+        return [{"start": 0, "end": n, "pages": n, "label": _guess_building_name(
+            "".join(texts)) or "物件1"}]
+    # 各明細ページを1物件の末尾とみなし、直前の非明細（図面/写真）ページを取り込む
+    props, prev_end = [], 0
+    for k, di in enumerate(detail_idx):
+        end = di + 1
+        props.append({"start": prev_end, "end": end, "pages": end - prev_end,
+                      "label": _guess_building_name(texts[di]) or f"物件{k + 1}"})
+        prev_end = end
+    if prev_end < n:                       # 末尾に残った図面等は最後の物件に足す
+        props[-1]["end"] = n
+        props[-1]["pages"] = n - props[-1]["start"]
+    return props
+
+
+def subpdf_bytes(pdf_bytes: bytes, start: int, end: int) -> bytes:
+    """ページ範囲[start,end)だけの新規PDFのbytesを返す（物件1件分に切り出す）。"""
+    import fitz
+    src = fitz.open(stream=pdf_bytes, filetype="pdf")
+    dst = fitz.open()
+    try:
+        end = max(start + 1, min(end, src.page_count))
+        dst.insert_pdf(src, from_page=start, to_page=end - 1)
+        return dst.tobytes()
+    finally:
+        src.close()
+        dst.close()
+
+
+def render_pdf_pages(pdf_bytes: bytes, dpi: int = 150, max_pages: int = 6) -> list:
+    """PDFページを画像(PNG bytes)にレンダリング（Gemini vision入力用）。"""
+    import fitz
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    out = []
+    try:
+        for i in range(min(doc.page_count, max_pages)):
+            out.append(doc[i].get_pixmap(dpi=dpi).tobytes("png"))
+    finally:
+        doc.close()
+    return out
+
+
+def extract_sale_facts_vision(client, pdf_bytes: bytes,
+                              model="gemini-2.5-flash") -> dict:
+    """売買マイソク（レインズ図面）のページ画像を Gemini vision に渡し事実を構造化抽出。
+    返り値: pl_facts 互換 dict（name/address/access(list)/madori/area/built/price/fee/
+    equipment ＋ 売買固有 shuzen/floor/genkyo/note）。取れない項目は入れない（創作しない）。
+    ※例外は握り潰さず上位へ伝播（呼び出し側 app が警告＋リトライする）。
+    ※レインズ一括DLは図面ページと詳細ページが別ユニットで交互に並ぶことがあるため、
+      価格/面積を含む『詳細ページ』だけをvisionに渡す（隣の別物件の図面を拾わないため）。"""
+    import json as _json
+    import fitz
+    _all = render_pdf_pages(pdf_bytes, max_pages=8)
+    if not _all:
+        return {}
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        _detail = [i for i in range(min(doc.page_count, len(_all)))
+                   if any(k in doc[i].get_text()
+                          for k in ("価格", "総額", "専有面積", "㎡"))]
+    finally:
+        doc.close()
+    pages = ([_all[i] for i in _detail][:3] if _detail else _all[:6])
+    parts = [_image_part(b, "image/png") for b in pages]
+    instruction = (
+        "以下は売買物件（中古マンション等）のマイソク／レインズ図面のページ画像です。"
+        "図面に印字されている情報だけを根拠に、次の項目をJSONで抽出してください。\n"
+        "【重要な注意】\n"
+        "・address は『物件の所在地』を書く。図面の隅・下部にある元付会社（不動産会社）の"
+        "住所・支店住所・電話番号・担当者名は住所に絶対に含めない（別物）。\n"
+        "・equipment は『設備』『条件』欄などに明記された設備のみ。リフォーム内容の説明文・"
+        "広告のキャッチコピー・備考の文章から設備を推測して足さない。\n"
+        "・図面に記載が無い項目は空文字にする。推測・創作をしない。\n"
+        "【出力JSON（これのみ・説明文なし・全ての値は文字列）】\n"
+        "{"
+        '"name":"建物名（マンション名）",'
+        '"address":"物件所在地（元付会社住所ではない）",'
+        '"access":["◯◯線◯◯駅 徒歩◯分", ...複数可],'
+        '"madori":"間取り（例 3LDK）",'
+        '"area":"専有面積（例 61.02㎡）",'
+        '"built":"築年月（例 1982年6月）",'
+        '"price":"価格（例 3290万円）",'
+        '"fee":"管理費（円/月）",'
+        '"shuzen":"修繕積立金（円/月）",'
+        '"floor":"所在階・向き（例 4階/南）",'
+        '"genkyo":"現況（例 空家/居住中）",'
+        '"equipment":"設備欄記載の設備を区切りで列挙（記載のみ）",'
+        '"note":"備考・特記の主要点"'
+        "}"
+    )
+    resp = client.models.generate_content(model=model, contents=parts + [instruction])
+    text = (getattr(resp, "text", "") or "").strip()
+    obj = _first_json_object(text)                # 平衡括弧で抽出（散文/フェンス混入に強い）
+    data = _json.loads(obj) if obj else {}
+    if not isinstance(data, dict):
+        data = {}
+    facts = {}
+    for k in ("name", "address", "madori", "area", "built", "price", "fee",
+              "shuzen", "floor", "genkyo", "equipment", "note"):
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            facts[k] = v.strip()
+    acc = data.get("access")
+    if isinstance(acc, list):
+        acc = [str(a).strip() for a in acc if str(a).strip()]
+    elif isinstance(acc, str) and acc.strip():
+        acc = [acc.strip()]
+    else:
+        acc = []
+    if acc:
+        facts["access"] = acc
+    facts["full_text"] = pdf_full_text(pdf_bytes)   # PRコピー/数値バリデータ用
+    return facts
+
+
 # PRコピーの禁止語（景表法：最上級・断定）
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]
@@ -1061,7 +1272,7 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         "厳守事項：\n"
         f"・文字数厳守：title は{_PR_MAX_TITLE}文字以内、subtitle は{_PR_MAX_SUBTITLE}文字以内、"
         f"highlights は各{_PR_MAX_HIGHLIGHT}文字以内。表紙に大きく載るため簡潔に。超過は不可。\n"
-        "・【確定事実】以外の数値（徒歩分・面積・賃料・築年・帖数）や設備を創作しない。事実と一致させる。\n"
+        "・【確定事実】以外の数値（徒歩分・面積・賃料/価格・築年・帖数）や設備を創作しない。事実と一致させる。\n"
         "・角部屋/採光良好/通風良好/南向き/日当たり/最上階/新築/築浅/オートロック 等の属性は、"
         "【確定事実】か【マイソク全文】に明記がある場合のみ書く。無ければ書かない。\n"
         "・役割分担（重複排除）：title・subtitle には 間取り(2LDK等)・面積(◯㎡)・徒歩◯分 を書かない"

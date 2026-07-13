@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: uploadfix-v55 (分類失敗を警告＋リトライ・取り込み解除で状態一掃・再アップ修正)")
+    st.caption("build: baibai-v56 (売買マイソク対応：複数物件分割・種別判定・売買facts vision抽出・確認UI)")
 
 
 # ======================================================================
@@ -975,9 +975,14 @@ _PL_PROPERTY_EXACT = (
     "pl_src_sig", "pl_items", "pl_rooms", "pl_floorplan", "pl_summary",
     "pl_facts", "pl_prcopy", "pl_flash_text", "pl_v_tag", "pl_title_edit",
     "pl_sub_edit", "pl_title_idx", "pl_cover_title", "pl_cover_sub",
-    "pl_cover_src", "pl_cover_png", "pl_gap_targets", "pl_persp_png")
+    "pl_cover_src", "pl_cover_png", "pl_gap_targets", "pl_persp_png",
+    # 売買マイソク対応（物件固有）：種別・facts抽出ゲート・確認状態・物件選択
+    "pl_ptype", "pl_ptype_sig", "pl_facts_key", "pl_facts_confirmed",
+    "pl_facts_confirm_chk", "pl_prop_pick", "pl_prop_manual_start",
+    "pl_prop_manual_end", "pl_prop_manual_on")
 _PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
-                       "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_")
+                       "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
+                       "pl_facts_edit_")
 
 
 def _pl_clear_property_keys():
@@ -1032,6 +1037,130 @@ def _pl_classify_with_retry(raw_srcs):
     return (codes or default), warn
 
 
+# 売買factsの編集フィールド（賃貸/売買共通＋売買固有）。key接頭辞は pl_facts_edit_
+_PL_FACTS_COMMON = ("name", "address", "madori", "area", "built", "fee", "equipment")
+_PL_FACTS_SALE_EXTRA = ("shuzen", "floor", "genkyo", "note")
+_PL_FACTS_LABEL = {
+    "name": "建物名", "address": "所在地", "madori": "間取り", "area": "専有面積",
+    "built": "築年月", "fee": "管理費", "equipment": "設備（設備欄記載のみ）",
+    "rent": "賃料", "price": "価格", "shuzen": "修繕積立金", "floor": "所在階・向き",
+    "genkyo": "現況", "note": "備考・特記",
+}
+
+
+def _pl_extract_sale_facts_with_retry(pdf_bytes):
+    """売買factsを Gemini vision で抽出。例外は握り潰さず、失敗時は2.5秒待って1回だけ再試行。
+    返り値 (facts, warn|None)。落とさず必ず facts を返す（失敗時は {}）。"""
+    import time as _time
+
+    def _run():
+        return core.extract_sale_facts_vision(make_client(), pdf_bytes)
+
+    try:
+        return _run(), None
+    except Exception as e:  # noqa: BLE001  黙って握り潰さない
+        warn = f"{type(e).__name__}: {str(e)[:120]}"
+    _time.sleep(2.5)
+    try:
+        return _run(), None
+    except Exception as e:  # noqa: BLE001
+        return {}, f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def _pl_effective_facts():
+    """事実ガード・PRコピーが使う『有効facts』。売買で未確認なら設備を空に倒す（フェイルセーフ）。
+    ＝未確認の売買では equipment を事実として使わず、持ち込み小物のみ許可に寄せる。"""
+    f = dict(st.session_state.get("pl_facts", {}))
+    if f.get("_ptype") == "sale" and not st.session_state.get("pl_facts_confirmed"):
+        f["equipment"] = ""
+    return f
+
+
+def _pl_apply_facts_edit():
+    """facts編集フォームの確定（on_click）。編集値を pl_facts に反映し確認状態も更新する。
+    ※session_state書き換えはコールバック内で行う（地雷①）。"""
+    f = dict(st.session_state.get("pl_facts", {}))
+    ptype = f.get("_ptype", "rent")
+    fields = list(_PL_FACTS_COMMON) + [("price" if ptype == "sale" else "rent")]
+    if ptype == "sale":
+        fields += list(_PL_FACTS_SALE_EXTRA)
+    for k in fields:
+        v = st.session_state.get(f"pl_facts_edit_{k}", "")
+        v = v.strip() if isinstance(v, str) else v
+        if v:
+            f[k] = v
+        else:
+            f.pop(k, None)
+    acc = [a.strip() for a in st.session_state.get("pl_facts_edit_access", "").split("\n")
+           if a.strip()]
+    if acc:
+        f["access"] = acc
+    else:
+        f.pop("access", None)
+    f["_ptype"] = ptype
+    st.session_state["pl_facts"] = f
+    # 賃貸は常に確認済み扱い。売買は確認チェックの値に従う
+    st.session_state["pl_facts_confirmed"] = (
+        True if ptype == "rent" else bool(st.session_state.get("pl_facts_confirm_chk")))
+
+
+def _pl_seed_facts_edit(facts):
+    """抽出/再抽出したfactsを編集フォームの各キーに種付け（取り込み時1回）。"""
+    ptype = facts.get("_ptype", "rent")
+    fields = list(_PL_FACTS_COMMON) + [("price" if ptype == "sale" else "rent")]
+    if ptype == "sale":
+        fields += list(_PL_FACTS_SALE_EXTRA)
+    for k in fields:
+        st.session_state[f"pl_facts_edit_{k}"] = str(facts.get(k, "") or "")
+    acc = facts.get("access") or []
+    st.session_state["pl_facts_edit_access"] = "\n".join(acc) if isinstance(acc, list) else str(acc)
+
+
+def _pl_render_facts_form(items):
+    """B3: factsの確認・修正UI（賃貸/売買共通）。売買は『確認済み』にするまで設備を事実に使わない
+    （フェイルセーフ＝持ち込み小物のみ許可）。種別ラジオは form の外＝変更で即再抽出される。"""
+    if not st.session_state.get("pl_items"):
+        return
+    ptype = st.session_state.get("pl_ptype", "rent")
+    with st.expander("📋 物件情報（マイソク/AI抽出）を確認・修正", expanded=(ptype == "sale")):
+        st.radio("種別", ["rent", "sale"], horizontal=True, key="pl_ptype",
+                 format_func=lambda x: {"rent": "賃貸", "sale": "売買"}.get(x, x))
+        if ptype == "sale":
+            st.caption("売買図面はAI抽出のため誤りが混じり得ます。**内容を確認し、必要なら修正**して"
+                       "『確認済み』にチェック→『この内容で確定』を押してください。未確認の間は"
+                       "設備を事実として使いません（持ち込み小物のみ許可のフェイルセーフ）。")
+        _money = "price" if ptype == "sale" else "rent"
+        with st.form("pl_facts_form"):
+            f1, f2 = st.columns(2)
+            f1.text_input(_PL_FACTS_LABEL["name"], key="pl_facts_edit_name")
+            f2.text_input(_PL_FACTS_LABEL["address"], key="pl_facts_edit_address")
+            f3, f4 = st.columns(2)
+            f3.text_input(_PL_FACTS_LABEL["madori"], key="pl_facts_edit_madori")
+            f4.text_input(_PL_FACTS_LABEL["area"], key="pl_facts_edit_area")
+            f5, f6 = st.columns(2)
+            f5.text_input(_PL_FACTS_LABEL["built"], key="pl_facts_edit_built")
+            f6.text_input(_PL_FACTS_LABEL[_money], key=f"pl_facts_edit_{_money}")
+            st.text_area("交通（1行に1つ・例『◯◯線◯◯駅 徒歩5分』）",
+                         key="pl_facts_edit_access", height=70)
+            f7, f8 = st.columns(2)
+            f7.text_input(_PL_FACTS_LABEL["fee"], key="pl_facts_edit_fee")
+            if ptype == "sale":
+                f8.text_input(_PL_FACTS_LABEL["shuzen"], key="pl_facts_edit_shuzen")
+                s1, s2 = st.columns(2)
+                s1.text_input(_PL_FACTS_LABEL["floor"], key="pl_facts_edit_floor")
+                s2.text_input(_PL_FACTS_LABEL["genkyo"], key="pl_facts_edit_genkyo")
+                st.text_input(_PL_FACTS_LABEL["note"], key="pl_facts_edit_note")
+            st.text_input(_PL_FACTS_LABEL["equipment"], key="pl_facts_edit_equipment",
+                          help="設備欄に明記された設備のみ。広告文・リフォーム説明からの推測は入れない。")
+            if ptype == "sale":
+                st.checkbox("この内容を確認済みにする（STEP2以降の事実ガード・PRコピーに使う）",
+                            key="pl_facts_confirm_chk")
+            st.form_submit_button("この内容で確定", on_click=_pl_apply_facts_edit)
+        if ptype == "sale" and not st.session_state.get("pl_facts_confirmed"):
+            st.info("未確認：設備は事実ガードに使いません（持ち込み小物のみ許可）。"
+                    "確認できたら上のチェックを入れて『この内容で確定』を押してください。")
+
+
 def _pl_stage_input():
     import hashlib as _hashlib
     st.markdown("#### ① 取り込み・種別わけ")
@@ -1043,11 +1172,35 @@ def _pl_stage_input():
     photos_up = c2.file_uploader("手持ち写真（複数可）",
                                  type=["png", "jpg", "jpeg", "webp"],
                                  accept_multiple_files=True, key=f"pl_photos_{_un}")
+    # B1: 複数物件が連結された一括PDF（レインズDL）を物件ごとに分割→1件だけ選んで取り込む。
+    # 自動分割が合わない場合の手動ページ範囲指定フォールバックを必ず用意する。
+    active_pdf_bytes = None
+    if pdf is not None:
+        _full = pdf.getvalue()
+        _props = core.split_pdf_properties(_full)
+        _npg = core.pdf_page_count(_full)
+        if len(_props) > 1:
+            st.caption(f"この一括PDFには **{len(_props)}物件** が含まれます。取り込む1件を選んでください"
+                       "（複数物件の同時処理はできません）。")
+            _labels = [f"{i+1}. {p['label']}（p{p['start']+1}〜{p['end']}）"
+                       for i, p in enumerate(_props)]
+            _sel = st.selectbox("取り込む物件", list(range(len(_props))),
+                                format_func=lambda i: _labels[i], key="pl_prop_pick")
+            _s, _e = _props[_sel]["start"], _props[_sel]["end"]
+        else:
+            _s, _e = 0, _npg
+        with st.expander("ページ範囲を手動指定（自動分割が合わない場合）"):
+            mc1, mc2 = st.columns(2)
+            _ms = mc1.number_input("開始ページ", 1, _npg, _s + 1, key="pl_prop_manual_start")
+            _me = mc2.number_input("終了ページ", 1, _npg, min(_e, _npg), key="pl_prop_manual_end")
+            if st.checkbox("手動範囲を使う", key="pl_prop_manual_on"):
+                _s, _e = int(_ms) - 1, int(_me)
+        active_pdf_bytes = core.subpdf_bytes(_full, _s, _e) if (_s, _e) != (0, _npg) else _full
     raw_srcs = []
     pdf_imgs = []
     if pdf is not None:
         try:
-            pdf_imgs = [b for (b, _w, _h) in core.extract_pdf_photos(pdf.getvalue(), min_px=250)]
+            pdf_imgs = [b for (b, _w, _h) in core.extract_pdf_photos(active_pdf_bytes, min_px=250)]
         except Exception as e:  # noqa: BLE001
             st.error(f"PDF抽出に失敗: {e}")
         # 中身ゼロの白い枠（マイソク枠）を除外＝空行防止＋classify配列ズレ防止
@@ -1081,7 +1234,7 @@ def _pl_stage_input():
         if _classify_warn:
             st.warning(f"AIによる部屋種別の判定に失敗しました（{_classify_warn}）。"
                        "部屋種別を手動で選んでください。")
-        parsed = _pl_parse_maisoku(pdf.getvalue()) if pdf is not None else {"rooms": [], "summary": ""}
+        parsed = _pl_parse_maisoku(active_pdf_bytes) if pdf is not None else {"rooms": [], "summary": ""}
         _mode = st.session_state.get("pl_mode", PL_MODES[0])
         # 間取り図はローカル画像判定で選ぶ（LLM誤タグ対策・決定的）。候補はPDF抽出画像のみ
         floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)])
@@ -1130,9 +1283,8 @@ def _pl_stage_input():
         st.session_state["pl_src_sig"] = sig
         st.session_state["pl_floorplan"] = floor_plan
         st.session_state["pl_summary"] = parsed["summary"]
-        # 事実抽出（PRコピー下書き用・Geminiは呼ばない）。取り込み時1回
-        st.session_state["pl_facts"] = (
-            core.parse_maisoku_facts(pdf.getvalue()) if pdf is not None else {})
+        # ※ 事実抽出（pl_facts）は種別（賃貸/売買）に依存するため、この直後の
+        #   (sig, 種別) ゲートの独立ブロックで行う（種別切替で再抽出できるようにするため）。
         # 新規取り込みで物件固有の値を一掃（別物件の建物名・帖数・コピーの焼き込み防止）
         # 完全一致（物件固有）：下書き・フラッシュ文言・上部タグ・タイトル/サブ編集・選択・表紙
         for k in ("pl_prcopy", "pl_flash_text", "pl_v_tag",
@@ -1141,10 +1293,12 @@ def _pl_stage_input():
                   "pl_gap_targets"):   # 補完生成の対象選択（物件固有）。生成結果はpl_items再構築で自動リセット
             st.session_state.pop(k, None)
         # 接頭辞（物件固有・写真ごと）：部屋/処理/間取り図選択＋テロップ本文・個別スタイル
+        #   ＋売買facts編集フォーム（pl_facts_edit_）。
         # ※ pl_room_ は pl_room_lang（ユーザー設定）と前方一致するため残すキーは除外
         for k in [k for k in list(st.session_state)
                   if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
-                                   "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_"))
+                                   "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
+                                   "pl_facts_edit_"))
                   and k not in _PL_KEEP_ON_IMPORT]:
             del st.session_state[k]
         # ウィジェットの値は session_state で管理（変更コールバックが上書きするため）
@@ -1155,10 +1309,53 @@ def _pl_stage_input():
                 st.session_state[f"pl_room_{it['id']}"] = it["room"]
             st.session_state[f"pl_treat_{it['id']}"] = it["treatment"]
 
+    # B2: 種別（賃貸/売買）判定＋facts抽出。種別に依存するため (sig, 種別) でゲート。
+    #   賃貸 → 既存 parse_maisoku_facts（不変）。売買 → Gemini vision（握り潰さず警告＋リトライ）。
+    if pdf is not None:
+        # 新規PDF：種別を自動検出して既定に（前物件の上書きは破棄）。売買は用途既定を事業Bに。
+        if st.session_state.get("pl_ptype_sig") != sig:
+            _det = core.detect_property_type(core.pdf_full_text(active_pdf_bytes))
+            if _det == "unknown":     # 物件単体で不明なら一括PDF全体で補強（バッチは同種）
+                _det = core.detect_property_type(core.pdf_full_text(pdf.getvalue()))
+            st.session_state["pl_ptype"] = _det if _det in ("rent", "sale") else "rent"
+            if st.session_state["pl_ptype"] == "sale":
+                st.session_state["pl_mode"] = "リノベ提案（事業B）"   # 変更は可能
+            st.session_state["pl_ptype_sig"] = sig
+        _ptype = st.session_state.get("pl_ptype", "rent")
+        _facts_key = f"{sig}:{_ptype}"
+        if st.session_state.get("pl_facts_key") != _facts_key:
+            if _ptype == "sale":
+                with st.spinner("売買図面から情報をAIで抽出中…（Gemini vision）"):
+                    _facts, _sale_warn = _pl_extract_sale_facts_with_retry(active_pdf_bytes)
+                if _sale_warn:
+                    st.warning(f"売買図面のAI抽出に失敗しました（{_sale_warn}）。"
+                               "下のフォームに手入力で補ってください。")
+                st.session_state["pl_facts_confirmed"] = False   # 売買は要確認（フェイルセーフ）
+                st.session_state["pl_facts_confirm_chk"] = False  # 確認チェックの初期値
+            else:
+                _facts = core.parse_maisoku_facts(active_pdf_bytes)   # 賃貸は従来どおり
+                st.session_state["pl_facts_confirmed"] = True
+            _facts["_ptype"] = _ptype
+            st.session_state["pl_facts"] = _facts
+            _pl_seed_facts_edit(_facts)
+            st.session_state["pl_facts_key"] = _facts_key
+    else:
+        st.session_state.setdefault("pl_facts", {})
+
     items = st.session_state.get("pl_items", [])
 
-    if st.session_state.get("pl_summary"):
+    # 物件サマリ：賃貸は間取タイプparse由来（従来）。売買は同parseが誤検出するので
+    #   vision抽出facts（間取り/面積）から組み立てる（誤った面積の誇大表示＝優良誤認を防ぐ）。
+    if st.session_state.get("pl_ptype") == "sale":
+        _sf = st.session_state.get("pl_facts", {})
+        _ssum = " ／ ".join(x for x in (_sf.get("madori", ""), _sf.get("area", ""),
+                                        _sf.get("price", "")) if x)
+        if _ssum:
+            st.info(f"この物件（売買）：{_ssum}")
+    elif st.session_state.get("pl_summary"):
         st.info(f"この物件：{st.session_state['pl_summary']}")
+
+    _pl_render_facts_form(items)
 
     st.markdown("**何をつくる？**（用途を選ぶと各画像の処理が部屋種別から自動で決まります）")
     st.radio("用途", PL_MODES, horizontal=True, key="pl_mode",
@@ -1319,7 +1516,7 @@ def _pl_stage_facts_for(it, req):
     t = it.get("treatment")
     if t not in ("リノベ後イメージ", "家具ステージング", "水回り・玄関を演出"):
         return ""
-    facts = st.session_state.get("pl_facts", {})
+    facts = _pl_effective_facts()   # 売買未確認は設備を空に倒す（フェイルセーフ）
     raw = it.get("_raw_codes") or []
     pan = "WASHER_PAN" in raw
     user_washer = bool(re.search(r"洗濯機|室内洗濯", req or ""))
@@ -1334,7 +1531,7 @@ def _pl_pending_absorb_items(items, pl_rooms):
     """選択に基づく補完/3Dパースの pending item（gen_bytes=None）を作る。生成はしない。"""
     pending = []
     floorplan = st.session_state.get("pl_floorplan")
-    facts_block = _pl_gap_facts_block(st.session_state.get("pl_facts", {}))  # 事実ガード
+    facts_block = _pl_gap_facts_block(_pl_effective_facts())  # 事実ガード（売買未確認は設備空）
     base = floorplan or next(
         (it.get("src_bytes") for it in items if it.get("_origin", "photo") == "photo"), None)
     if base is not None:                      # 補完生成（間取り図/実写真を土台）
@@ -1668,7 +1865,7 @@ def _pl_stage_video():
                    "Gemini未設定/失敗でも簡易テンプレで続行します。")
         if st.button("PRコピーを下書き（AI・1回）", key="pl_prcopy_btn",
                      on_click=_pl_reset_title_choice):
-            _facts = st.session_state.get("pl_facts", {})
+            _facts = _pl_effective_facts()   # 売買未確認は設備を空に倒す（フェイルセーフ）
             try:
                 _client = make_client()
             except RuntimeError:
@@ -1980,4 +2177,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: uploadfix-v55 (分類失敗を警告＋リトライ・取り込み解除で状態一掃・再アップ修正)")
+    st.caption("build: baibai-v56 (売買マイソク対応：複数物件分割・種別判定・売買facts vision抽出・確認UI)")
