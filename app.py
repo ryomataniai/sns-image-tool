@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: baibai-v56 (売買マイソク対応：複数物件分割・種別判定・売買facts vision抽出・確認UI)")
+    st.caption("build: rentsplit-fix-v57 (賃貸2ページの誤分割修正：分割は売買判定時のみ)")
 
 
 # ======================================================================
@@ -1177,24 +1177,27 @@ def _pl_stage_input():
     active_pdf_bytes = None
     if pdf is not None:
         _full = pdf.getvalue()
-        _props = core.split_pdf_properties(_full)
         _npg = core.pdf_page_count(_full)
-        if len(_props) > 1:
-            st.caption(f"この一括PDFには **{len(_props)}物件** が含まれます。取り込む1件を選んでください"
-                       "（複数物件の同時処理はできません）。")
-            _labels = [f"{i+1}. {p['label']}（p{p['start']+1}〜{p['end']}）"
-                       for i, p in enumerate(_props)]
-            _sel = st.selectbox("取り込む物件", list(range(len(_props))),
-                                format_func=lambda i: _labels[i], key="pl_prop_pick")
-            _s, _e = _props[_sel]["start"], _props[_sel]["end"]
-        else:
-            _s, _e = 0, _npg
-        with st.expander("ページ範囲を手動指定（自動分割が合わない場合）"):
-            mc1, mc2 = st.columns(2)
-            _ms = mc1.number_input("開始ページ", 1, _npg, _s + 1, key="pl_prop_manual_start")
-            _me = mc2.number_input("終了ページ", 1, _npg, min(_e, _npg), key="pl_prop_manual_end")
-            if st.checkbox("手動範囲を使う", key="pl_prop_manual_on"):
-                _s, _e = int(_ms) - 1, int(_me)
+        _s, _e = 0, _npg
+        # 賃貸の複数物件一括DLは運用上存在しないため、賃貸/不明は分割せず全ページ=1物件とする。
+        # （2ページ構成の賃貸マイソクが2物件に誤分割される回帰を防ぐ。判定はPDF全体テキストで。）
+        # 分割UI（物件選択・手動範囲）は売買判定時のみ表示する。
+        if core.detect_property_type(core.pdf_full_text(_full)) == "sale":
+            _props = core.split_pdf_properties(_full)
+            if len(_props) > 1:
+                st.caption(f"この一括PDFには **{len(_props)}物件** が含まれます。取り込む1件を選んでください"
+                           "（複数物件の同時処理はできません）。")
+                _labels = [f"{i+1}. {p['label']}（p{p['start']+1}〜{p['end']}）"
+                           for i, p in enumerate(_props)]
+                _sel = st.selectbox("取り込む物件", list(range(len(_props))),
+                                    format_func=lambda i: _labels[i], key="pl_prop_pick")
+                _s, _e = _props[_sel]["start"], _props[_sel]["end"]
+            with st.expander("ページ範囲を手動指定（自動分割が合わない場合）"):
+                mc1, mc2 = st.columns(2)
+                _ms = mc1.number_input("開始ページ", 1, _npg, _s + 1, key="pl_prop_manual_start")
+                _me = mc2.number_input("終了ページ", 1, _npg, min(_e, _npg), key="pl_prop_manual_end")
+                if st.checkbox("手動範囲を使う", key="pl_prop_manual_on"):
+                    _s, _e = int(_ms) - 1, int(_me)
         active_pdf_bytes = core.subpdf_bytes(_full, _s, _e) if (_s, _e) != (0, _npg) else _full
     raw_srcs = []
     pdf_imgs = []
@@ -2177,4 +2180,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: baibai-v56 (売買マイソク対応：複数物件分割・種別判定・売買facts vision抽出・確認UI)")
+    st.caption("build: rentsplit-fix-v57 (賃貸2ページの誤分割修正：分割は売買判定時のみ)")
