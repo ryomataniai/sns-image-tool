@@ -123,7 +123,28 @@ def render_settings():
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
-    st.caption("build: flashfix-v65 (カット境界の白フラッシュ極短0.2秒＝境界xfade機構を流用・fadewhite・全結合非回帰)")
+    _render_video_env_diagnostics()
+    st.caption("build: titlefix-v66 (冒頭タイトルの真因確定＝空文言stickyを撲滅＋描画失敗の非致命化/可視化＋描画環境診断)")
+
+
+def _render_video_env_diagnostics():
+    """動画エンジンの描画環境（ffmpegのdrawtext対応・日本語フォント解決）を自己診断。
+    Cloud Reboot後、谷合さん操作なしで容疑者(c)フォント/drawtext欠如を即確認できる。"""
+    with st.expander("🩺 動画エンジン診断（フォント・drawtext）", expanded=False):
+        try:
+            import room_tour_video as rtv          # rtv はモジュール全体では未import（関数内ローカル運用）
+            d = rtv.env_diagnostics()
+        except Exception as e:  # noqa: BLE001
+            st.error(f"診断に失敗: {type(e).__name__}: {str(e)[:120]}")
+            return
+        st.write(f"- ffmpeg: `{d['ffmpeg']}`")
+        (st.success if d["drawtext"] else st.error)(
+            f"drawtext フィルタ: {'利用可' if d['drawtext'] else '★利用不可（テロップ・冒頭タイトルが焼けません）'}")
+        (st.success if d["font_ok"] else st.error)(
+            f"日本語フォント: {d['font'] or '(未解決＝fontconfig名フォールバック)'}"
+            f"{'（存在）' if d['font_ok'] else ' ★存在せず（同梱fonts/やfonts-noto-cjkを確認）'}")
+        if not (d["drawtext"] and d["font_ok"]):
+            st.warning("⚠ 冒頭タイトル・テロップが本番で出ない場合、上記の赤項目が原因の可能性が高いです。")
 
 
 def _tpl_tags_to_text(tags):
@@ -1979,7 +2000,9 @@ def _pl_stage_video():
         _madori = (_f.get("madori", "").split("[")[0]).strip()
         _fdef = (f"{_f['name']} ｜ {_madori}" if _f.get("name") and _madori
                  else f"{_madori} ｜ {_f['area']}" if _madori and _f.get("area") else "")
-        if "pl_flash_text" not in st.session_state:   # 生成前seed（未設定時のみ・既定=物件名｜間取り）
+        # 生成前seed。未設定 or 空（facts未ロード時に空でstickyになる導線）のとき既定を再投入。
+        #   ※widget生成前なので session_state 代入は安全。ユーザが別文言を入れれば非空で上書きされない。
+        if _fdef and not str(st.session_state.get("pl_flash_text", "")).strip():
             st.session_state["pl_flash_text"] = _fdef
         v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳・短く）",
                                 key="pl_flash_text", placeholder="例: ニューモート204 ｜ 2LDK")
@@ -2250,8 +2273,19 @@ def _pl_stage_video():
             "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
             "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit})
         _images.append((_nm, it["gen_bytes"]))
-    if _scenes and v_flash:
-        _scenes[0]["flash"] = v_flash                       # 冒頭フラッシュは先頭のみ
+    if _scenes and st.session_state.get("pl_open_title") == "flash":
+        # 冒頭タイトルON。文言が空なら facts から既定を再導出（＝空のまま無タイトルになる嘘UIを撲滅）。
+        _title = (v_flash or "").strip()
+        if not _title:
+            _ff = st.session_state.get("pl_facts", {})
+            _mad = (_ff.get("madori", "") or "").split("[")[0].strip()
+            _title = (f"{_ff['name']} ｜ {_mad}" if _ff.get("name") and _mad
+                      else f"{_mad} ｜ {_ff['area']}" if _mad and _ff.get("area") else "")
+        if _title:
+            _scenes[0]["flash"] = _title                    # 冒頭フラッシュは先頭のみ
+        else:
+            st.warning("⚠ 冒頭タイトルがONですが文言が空で、物件名・間取りからも作れませんでした。"
+                       "タイトルは付きません（『フラッシュ文言』を入力してください）。")
     _fp = st.session_state.get("pl_floorplan")               # 間取り図カット（実物・静止・fal課金なし）
     if st.session_state.get("pl_include_fp") and _fp is not None:
         _f = st.session_state.get("pl_facts", {})
@@ -2428,4 +2462,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: flashfix-v65 (カット境界の白フラッシュ極短0.2秒＝境界xfade機構を流用・fadewhite・全結合非回帰)")
+    st.caption("build: titlefix-v66 (冒頭タイトルの真因確定＝空文言stickyを撲滅＋描画失敗の非致命化/可視化＋描画環境診断)")

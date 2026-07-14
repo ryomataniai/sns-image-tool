@@ -81,6 +81,23 @@ def _font() -> str:
     return ""
 
 
+def env_diagnostics() -> dict:
+    """描画環境の自己診断（Cloudでのフォント/drawtext欠如を可視化）。設定画面で表示。
+    冒頭タイトル・テロップは drawtext と日本語フォントの両方が要る。どちらか欠けると文字が出ない。
+    返り値: {ffmpeg, drawtext(bool), font(path or ''), font_ok(bool)}。"""
+    ff = _ffmpeg()
+    drawtext = False
+    try:
+        h = subprocess.run([ff, "-hide_banner", "-filters"],
+                           capture_output=True, text=True, timeout=30)
+        drawtext = (" drawtext " in h.stdout) or ("drawtext" in h.stdout)
+    except Exception:  # noqa: BLE001
+        drawtext = False
+    font = _font()
+    return {"ffmpeg": ff, "drawtext": bool(drawtext),
+            "font": font, "font_ok": bool(font and os.path.exists(font))}
+
+
 def _dur(path: str) -> float:
     """クリップ長を取得（ffprobe→失敗時 5.0）。"""
     fp = _ffprobe()
@@ -369,21 +386,40 @@ def _normalize_clip(in_path: str, out_path: str, caption: str = "",
     if note:
         draws.append(f"drawtext={fontref}:text='{_esc(note)}':fontcolor=white@0.85:fontsize=26:"
                      f"box=1:boxcolor=black@0.35:boxborderw=10:x=w-text_w-40:y=h-70")
+    flash_draw = None
     if flash:                                     # 冒頭極短フラッシュ（0.5秒・中央・フェードイン/アウト）
         fa = ("alpha='if(lt(t\\,0.15)\\,t/0.15\\,if(lt(t\\,0.35)\\,1\\,"
               "if(lt(t\\,0.5)\\,(0.5-t)/0.15\\,0)))'")
-        draws.append(f"drawtext={fontref}:text='{_esc(flash)}':fontcolor=white:fontsize=76:"
-                     f"shadowcolor=black@0.6:shadowx=3:shadowy=3:"
-                     f"x=(w-text_w)/2:y=(h-text_h)/2:{fa}")
-    chain = base + ";[base]" + (",".join(draws) + "," if draws else "") + "fps=30,format=yuv420p,setsar=1[v]"
+        flash_draw = (f"drawtext={fontref}:text='{_esc(flash)}':fontcolor=white:fontsize=76:"
+                      f"shadowcolor=black@0.6:shadowx=3:shadowy=3:"
+                      f"x=(w-text_w)/2:y=(h-text_h)/2:{fa}")
+
     # -threads 1：エンコードのフレームバッファ多重化を抑えピークRSSを下げる（Cloud 1GB制限向け）。
     #   ※ threads は圧縮の並列度のみに影響し、drawtext（テロップ/注記/SynthID経路）の
     #     描画結果は不変＝テロップ回帰なし。filter_complex(chain) は一切変更していない。
-    subprocess.run([ff, "-y", "-loglevel", "error", "-i", in_path,
-                    "-filter_complex", chain, "-map", "[v]", "-an",
-                    "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast", "-threads", "1", out_path],
-                   check=True, timeout=300)
+    def _encode(draw_list):
+        chain = base + ";[base]" + (",".join(draw_list) + "," if draw_list else "") \
+            + "fps=30,format=yuv420p,setsar=1[v]"
+        subprocess.run([ff, "-y", "-loglevel", "error", "-i", in_path,
+                        "-filter_complex", chain, "-map", "[v]", "-an",
+                        "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+                        "-preset", "veryfast", "-threads", "1", out_path],
+                       check=True, timeout=300)
+
+    try:
+        _encode(draws + ([flash_draw] if flash_draw else []))
+    except subprocess.CalledProcessError as e:
+        # 冒頭タイトル(flash)固有の失敗はシーンを脱落させず、タイトル無しで継続（logger/stderrに可視化）。
+        #   ＝「タイトルが出ない」を「シーンが丸ごと消える」に悪化させない＝嘘UIの二次被害を防ぐ。
+        # ベース（テロップ/注記）まで失敗する場合はフォント/ffmpeg欠如の可能性が高く、
+        #   そのまま送出して Phase B で state.json/UI に顕在化させる（握りつぶさない）。
+        if flash_draw:
+            _log.warning("[room_tour_video] 冒頭タイトル描画に失敗→タイトル無しでシーン継続: %s: %s",
+                         type(e).__name__, e)
+            _sys.stderr.write(f"[room_tour_video] 冒頭タイトル描画失敗（タイトル無しで継続）: {e}\n")
+            _encode(draws)
+        else:
+            raise
     return out_path
 
 
