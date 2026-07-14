@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: videofix-v58 (動画連結のメモリ超過修正：xfade→逐次クロスフェード・パス返し・threads制限)")
+    st.caption("build: jobsafe-v59 (接続断に強いジョブ：fal queue+state.json・続きから再開・二重課金防止)")
 
 
 # ======================================================================
@@ -2063,94 +2063,109 @@ def _pl_stage_video():
         st.warning("⚠️ 採用カットが多いほど生成に時間がかかります（1本あたり約1〜1.5分）。"
                    "急ぐ場合や不安なときは3〜4カットに絞るのがおすすめです。")
 
+    # ── ジョブ組み立て（接続断に強いqueue+state.json）。job_idは入力＋設定から決定的に導出 ──
+    #    毎render組み立て→同一入力なら同一job_dir＝再入場時に「続きから再開」を検出できる。
+    _scenes, _images = [], []
+    for it in adopted:
+        _nm = it.get("caption") or it["room"]
+        _note = v_note or (it.get("disc") or "※AI加工のイメージ")   # 全体注記優先→個別→既定
+        _sub_raw = st.session_state.get(f"pl_capsub_{it['id']}", "") if v_caps else ""
+        _scenes.append({
+            "name": _nm, "still": it.get("_origin") == "persp",
+            "caption": (st.session_state.get(f"pl_capmain_{it['id']}")
+                        or _pl_caption_main(it, v_lang)) if v_caps else "",
+            "subs": [s for s in _sub_raw.split("\n") if s.strip()][:2],
+            "note": _note, "taste": _pl_resolve_taste(it, v_taste),
+            "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
+            "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit})
+        _images.append((_nm, it["gen_bytes"]))
+    if _scenes and v_flash:
+        _scenes[0]["flash"] = v_flash                       # 冒頭フラッシュは先頭のみ
+    _fp = st.session_state.get("pl_floorplan")               # 間取り図カット（実物・静止・fal課金なし）
+    if st.session_state.get("pl_include_fp") and _fp is not None:
+        _f = st.session_state.get("pl_facts", {})
+        _mad = (_f.get("madori", "") or "").split("[")[0].strip()
+        _ar = (_f.get("area", "") or "").strip()
+        _fp_cap = " ".join(x for x in (_mad, _ar) if x) or "間取り図"
+        _scenes.append({"name": _fp_cap, "still": True, "caption": _fp_cap if v_caps else "",
+                        "subs": [], "note": v_note, "taste": v_taste, "pos": "下中央",
+                        "top_tag": v_tag if v_caps else "", "room_type": "generic",
+                        "flash": "", "fit": "contain"})
+        _images.append((_fp_cap, _fp))
+    _ow, _oh = rtv.ASPECT_DIMS.get(v_aspect, (1080, 1920))
+    _glob = {"out_w": _ow, "out_h": _oh, "duration": v_dur, "model_key": v_model,
+             "with_bgm": v_bgm, "also_silent": True,
+             "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None}
+    import tempfile as _tf
+    _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
+    _job_dir = _os.path.join(_tf.gettempdir(), f"tour_{_job_id}")
+    _state = rtv.read_job_state(_job_dir)
+    _resumable = bool(_state) and _state.get("phase") != "done"
+
+    if _resumable:   # #2 再開バナー（接続断/タブ閉じ後の再入場）
+        _d, _t, _fl = rtv.job_progress(_state)
+        st.info(f"前回の生成の途中です：**{_d}/{_t} 完了**"
+                + (f"（{_fl}本失敗）" if _fl else "")
+                + "。『続きから再開』で残りだけ生成します（**完了・投入済みは fal 再課金なし**で回収）。")
+
     bcol, gcol = st.columns([1, 2])
     if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
         st.session_state["pl_stage"] = "review"; st.rerun()
-    if gcol.button("🎬 ルームツアーを生成", type="primary", key="pl_v_gen",
-                   use_container_width=True):
+    _gen_label = "▶ 続きから再開" if _resumable else "🎬 ルームツアーを生成"
+    if gcol.button(_gen_label, type="primary", key="pl_v_gen", use_container_width=True):
         if not get_secret("FAL_KEY", ""):
             st.error("FAL_KEY が未設定です。")
             return
-        imgs = [(it.get("caption") or it["room"], it["gen_bytes"]) for it in adopted]
-        room_types = [_pl_video_room_type(it["room"]) for it in adopted]
-        # テロップ：編集済みがあれば優先、無ければ自動下書き
-        captions = [st.session_state.get(f"pl_capmain_{it['id']}") or _pl_caption_main(it, v_lang)
-                    for it in adopted]
-        sub_captions = [st.session_state.get(f"pl_capsub_{it['id']}", "") for it in adopted]
-        # スタイル/配置：画像ごと上書き→部屋種別自動→全体既定 の順で解決
-        tastes = [_pl_resolve_taste(it, v_taste) for it in adopted]
-        positions = [_pl_resolve_pos(it, v_pos) for it in adopted]
-        # 注記：画面注記(v_note)が空でも必ず注記を焼く（法令）。個別は it["disc"]（リノベ/
-        # ステージングで文言が異なる）→ 無ければ既定。build_tourで v_note があれば全体優先。
-        notes = [it.get("disc") or "※AI加工のイメージ" for it in adopted]
-        # 3Dパースは fal/Klingを通さず静止クリップ（俯瞰画像はmorphするため）
-        still_flags = [it.get("_origin") == "persp" for it in adopted]
-        # 間取り図カット：実物のまま末尾に静止クリップで追加（morphなし・fal課金なし）
-        _fp = st.session_state.get("pl_floorplan")
-        if st.session_state.get("pl_include_fp") and _fp is not None:
-            _f = st.session_state.get("pl_facts", {})
-            _mad = (_f.get("madori", "") or "").split("[")[0].strip()
-            _ar = (_f.get("area", "") or "").strip()
-            _fp_cap = " ".join(x for x in (_mad, _ar) if x) or "間取り図"
-            imgs.append((_fp_cap, _fp)); captions.append(_fp_cap); sub_captions.append("")
-            room_types.append("generic"); tastes.append(v_taste); positions.append("下中央")
-            notes.append(""); still_flags.append(True)   # 実物＝注記なし・静止
         bar = st.progress(0.0)
         status = st.empty()
 
         def _pg(step, total, msg):
             bar.progress(min((step + 1) / (total + 1), 1.0))
-            if step < total:
-                status.write(f"全{total}枚中 {step+1}枚目を生成中…（1枚あたり約1〜1.5分）")
-            else:
-                status.write("連結中…（クロスフェード＋BGM）")
+            status.write(msg)
 
         try:
-            # 直前の生成物（tempファイル）を掃除してから生成（tmpにmp4を溜めない）
-            _prev = st.session_state.get("pl_video_out")
-            if _prev and _prev.get("outdir"):
-                import shutil as _sh
-                _sh.rmtree(_prev["outdir"], ignore_errors=True)
-            out = rtv.build_tour(
-                imgs, captions=captions if v_caps else [""] * len(imgs),
-                sub_captions=sub_captions if v_caps else None,
-                top_tag=v_tag, with_captions=v_caps, with_bgm=v_bgm,
-                also_silent=True, model_key=v_model, duration=v_dur,
-                room_types=room_types, image_note=v_note, notes=notes,
-                still_flags=still_flags,
-                taste=v_taste, tastes=tastes if v_caps else None,
-                positions=positions if v_caps else None,
-                flash_text=v_flash, aspect=v_aspect,
-                fit_mode=v_fit, progress=_pg)
-            bar.progress(1.0)
-            status.write("完成")
-            # mp4は bytes ではなく **パス** で session_state に保持（メモリに mp4 を載せない）
+            if not rtv.read_job_state(_job_dir):   # 新規（または再起動で/tmp消失）→初期化
+                rtv.init_job(_job_dir, _images, _scenes, _glob)
+            out = rtv.run_tour_job(_job_dir, progress=_pg)   # done skip/submitted回収/pendingのみ投入
+            bar.progress(1.0); status.write("完成")
             st.session_state["pl_video_out"] = {
                 "silent": out.get("silent"), "bgm": out.get("bgm"),
-                "outdir": out.get("outdir")}
+                "outdir": out.get("outdir"), "job_dir": _job_dir}
             st.rerun()
         except Exception as e:  # noqa: BLE001
             _msg = str(e)
             if "403" in _msg or "insufficient" in _msg.lower() or "credit" in _msg.lower():
-                st.error("生成に失敗しました：falのクレジット残高を確認してください（403）。")
+                st.error("生成に失敗しました：falのクレジット残高を確認してください（403）。"
+                         "チャージ後『続きから再開』で投入済み分を再課金なしで回収できます。")
             elif "429" in _msg:
-                st.error("生成に失敗しました：falのレート上限です（429）。時間をおいて再試行してください。")
+                st.error("生成に失敗しました：falのレート上限です（429）。時間をおいて『続きから再開』を。")
             else:
-                st.error(f"生成に失敗しました: {_msg}")
+                st.error(f"生成に失敗しました: {_msg}（『続きから再開』で投入済み分を回収できます）")
 
     # 生成済み動画（パス）を再rerun後も表示。download_button は open(path) で逐次＝mp4を変数に持たない
     _vout = st.session_state.get("pl_video_out")
     if _vout:
-        import os as _os2
         _sp, _bp = _vout.get("silent"), _vout.get("bgm")
-        if (_sp and _os2.path.exists(_sp)) or (_bp and _os2.path.exists(_bp)):
+        _missing = not ((_sp and _os.path.exists(_sp)) or (_bp and _os.path.exists(_bp)))
+        if _missing and not _resumable:
+            # ②/tmp消失（再起動等）を明示＝黙って二重課金しない。再開できるなら上のバナーに従う
+            st.warning("前回の動画データが見つかりません（アプリ再起動などで一時ファイルが消去された可能性）。"
+                       "お手数ですが最初から生成してください。")
+        if (_sp and _os.path.exists(_sp)) or (_bp and _os.path.exists(_bp)):
             st.success("ルームツアーが完成しました。")
-        if _sp and _os2.path.exists(_sp):
-            st.video(_sp)   # Streamlitはローカルmp4パスをそのまま再生できる
+        # #3 1シーン失敗の隔離：失敗があれば提示（『続きから再開』で失敗分のみ再投入できる）
+        _jd = _vout.get("job_dir")
+        _jst = rtv.read_job_state(_jd) if _jd else None
+        if _jst and _jst.get("n_failed"):
+            _dd, _tt, _ff = rtv.job_progress(_jst)
+            st.warning(f"⚠️ {_tt - _ff}本成功 / {_ff}本失敗。失敗分は上の『続きから再開』で再試行できます"
+                       "（成功分は再課金なし）。")
+        if _sp and _os.path.exists(_sp):
+            st.video(_sp)   # Streamlit 1.50 はローカルmp4パスをそのまま再生できる（bytes不要）
             st.download_button("⬇️ 無音版 mp4", data=open(_sp, "rb"),
                                file_name="room_tour_silent.mp4",
                                mime="video/mp4", key="pl_dl_silent")
-        if _bp and _os2.path.exists(_bp):
+        if _bp and _os.path.exists(_bp):
             st.video(_bp)
             st.download_button("⬇️ BGM版 mp4", data=open(_bp, "rb"),
                                file_name="room_tour_bgm.mp4",
@@ -2208,4 +2223,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: videofix-v58 (動画連結のメモリ超過修正：xfade→逐次クロスフェード・パス返し・threads制限)")
+    st.caption("build: jobsafe-v59 (接続断に強いジョブ：fal queue+state.json・続きから再開・二重課金防止)")

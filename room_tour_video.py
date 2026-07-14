@@ -808,3 +808,245 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
         return out
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ======================================================================
+# 接続断に強いジョブ実行（Phase2: fal queue submit + poll + state.json 再開）
+#   ブラウザ/スクリプトが死んでも fal 側でジョブは走り続け、request_id さえ残っていれば
+#   結果を再課金なしで回収できる。state.json で進捗を永続化し「続きから再開」する。
+#   ※ /tmp が消える再起動後は復元不可（呼び出し側が明示）＝黙って二重課金しないための土台。
+# ======================================================================
+import json as _json
+import hashlib as _hashlib
+import time as _time
+
+
+def _download_stream(url: str, out_path: str, timeout: int = 300) -> None:
+    """URLの動画をストリーミングで out_path へ chunk 書き込み（mp4を変数に載せない）。"""
+    if requests is None:
+        raise RuntimeError("requests が未導入です。")
+    with requests.get(url, stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+
+
+def _fal_args(image_url, prompt, duration, model_key, negative_prompt, cfg_scale, silent=True):
+    cfg = FAL_MODELS.get(model_key, FAL_MODELS["kling2.6_pro"])
+    args = {"prompt": prompt, cfg["image_key"]: image_url, "duration": str(duration)}
+    if silent:
+        args.update(cfg.get("audio_off", {}))
+    if cfg.get("supports_negative"):
+        if negative_prompt:
+            args["negative_prompt"] = negative_prompt
+        if cfg_scale is not None:
+            args["cfg_scale"] = cfg_scale
+    return cfg["endpoint"], args
+
+
+def fal_submit_clip(image_bytes, prompt, duration=5, model_key="kling2.6_pro",
+                    negative_prompt="", cfg_scale=None) -> str:
+    """1シーンを fal queue へ submit し request_id を返す（結果は待たない）。要 FAL_KEY。
+    submit 直後に呼び出し側が request_id を state.json へ書けば、以後死んでも回収できる。"""
+    import fal_client
+    if not os.environ.get("FAL_KEY"):
+        raise RuntimeError("FAL_KEY が未設定です。")
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(image_bytes)
+        img_path = f.name
+    try:
+        image_url = fal_client.upload_file(img_path)
+        endpoint, args = _fal_args(image_url, prompt, duration, model_key,
+                                   negative_prompt, cfg_scale)
+        handle = fal_client.submit(endpoint, arguments=args)
+        return handle.request_id
+    finally:
+        try:
+            os.unlink(img_path)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def fal_poll_clip(model_key, request_id, out_path) -> str:
+    """submit済み request_id の状態を確認。完了なら結果動画を out_path へストリーミングDLして
+    'done' を返す。未完了なら 'pending'。失敗（またはfal側で見つからない）なら例外。要 FAL_KEY。"""
+    import fal_client
+    cfg = FAL_MODELS.get(model_key, FAL_MODELS["kling2.6_pro"])
+    endpoint = cfg["endpoint"]
+    status = fal_client.status(endpoint, request_id, with_logs=False)
+    if not isinstance(status, fal_client.Completed):
+        return "pending"
+    result = fal_client.result(endpoint, request_id)
+    url = (result or {}).get("video", {}).get("url")
+    if not url:
+        raise RuntimeError(f"完了したが動画URLが取得できません: {result}")
+    _download_stream(url, out_path)
+    return "done"
+
+
+def job_id_for(images, meta) -> str:
+    """入力（画像内容＋全設定）から決定的な job_id を導出。同一入力→同一id・変更→別id。"""
+    h = _hashlib.md5()
+    for item in images:
+        img = item[1] if isinstance(item, (tuple, list)) else item
+        h.update(_hashlib.md5(img).digest())
+    h.update(_json.dumps(meta, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _job_state_path(job_dir):
+    return os.path.join(job_dir, "state.json")
+
+
+def read_job_state(job_dir):
+    """job_dir の state.json を読む（無ければ None）。"""
+    p = _job_state_path(job_dir)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _save_job_state(job_dir, state):
+    """state.json を原子的に保存（temp→rename）＝書込中に死んでも壊れない。"""
+    p = _job_state_path(job_dir)
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        _json.dump(state, f, ensure_ascii=False)
+    os.replace(tmp, p)
+
+
+def init_job(job_dir, images, scenes, glob) -> dict:
+    """新規ジョブを初期化：画像を保存し state.json を書く。scenes は各シーンのメタ dict の list。"""
+    os.makedirs(job_dir, exist_ok=True)
+    scene_list = []
+    for i, (item, sc) in enumerate(zip(images, scenes)):
+        img = item[1] if isinstance(item, (tuple, list)) else item
+        img_name = f"img_{i}.png"
+        with open(os.path.join(job_dir, img_name), "wb") as f:
+            f.write(img)
+        d = dict(sc)
+        d.update({"i": i, "img": img_name, "raw": f"raw_{i}.mp4", "seg": f"seg_{i}.mp4",
+                  "status": "pending", "request_id": None, "error": ""})
+        scene_list.append(d)
+    state = {"version": 1, "phase": "generating", "glob": glob,
+             "scenes": scene_list, "outputs": {}}
+    _save_job_state(job_dir, state)
+    return state
+
+
+def job_progress(state):
+    """(done, total, failed) を返す（UI表示用）。"""
+    scs = state.get("scenes", [])
+    done = sum(1 for s in scs if s.get("status") == "done")
+    failed = sum(1 for s in scs if s.get("status") == "failed")
+    return done, len(scs), failed
+
+
+def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict:
+    """接続断に強いジョブ実行。done はスキップ／submitted は request_id で回収（★再課金なし）／
+    pending・failed のみ新規 submit。全 done 後に連結。冪等（何度呼んでも続きから）。返り値=出力パス。"""
+    state = read_job_state(job_dir)
+    if state is None:
+        raise RuntimeError("state.json がありません（ジョブ未初期化 or /tmp が消去されました）。")
+    # 既に完成していれば即返す（連結の二度手間を避ける）
+    if state.get("phase") == "done":
+        o = state.get("outputs", {})
+        if (o.get("silent") and os.path.exists(o["silent"])) or \
+           (o.get("bgm") and os.path.exists(o["bgm"])):
+            return {"outdir": job_dir, "silent": o.get("silent"), "bgm": o.get("bgm")}
+    glob = state["glob"]
+    scenes = state["scenes"]
+    n = len(scenes)
+    out_w, out_h = glob["out_w"], glob["out_h"]
+
+    def _jp(path):
+        return os.path.join(job_dir, path)
+
+    def _make_seg(sc):   # raw → seg（テロップ・注記込み normalize）。冪等
+        _normalize_clip(_jp(sc["raw"]), _jp(sc["seg"]),
+                        caption=sc.get("caption", ""), sub_lines=sc.get("subs"),
+                        top_tag=sc.get("top_tag", ""), note=sc.get("note", ""),
+                        taste=sc.get("taste", "clean"), pos=sc.get("pos", "下中央"),
+                        flash=sc.get("flash", ""), out_w=out_w, out_h=out_h,
+                        fit_mode=sc.get("fit", "fill"))
+
+    # ── フェーズA：still はローカル生成、fal pending/failed は submit（request_id を即保存）──
+    for sc in scenes:
+        if sc.get("status") == "done" and os.path.exists(_jp(sc["seg"])):
+            continue
+        if progress:
+            progress(sc["i"], n, f"{sc.get('name', '')}: 準備中…")
+        img_bytes = open(_jp(sc["img"]), "rb").read()
+        if sc.get("still"):
+            _still_clip(img_bytes, glob["duration"], _jp(sc["raw"]))
+            _make_seg(sc)
+            sc["status"] = "done"
+            _save_job_state(job_dir, state)
+        elif sc.get("status") in ("pending", "failed"):
+            rt = sc.get("room_type", "generic")
+            prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
+            try:
+                rid = fal_submit_clip(img_bytes, prompt, glob["duration"], glob["model_key"],
+                                      glob.get("negative_prompt", ""), glob.get("cfg_scale"))
+                sc["request_id"] = rid
+                sc["status"] = "submitted"
+                sc["error"] = ""
+            except Exception as e:  # noqa: BLE001  1本失敗は隔離（全体を殺さない）
+                sc["status"] = "failed"
+                sc["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+            _save_job_state(job_dir, state)   # ★submit直後に永続化（死んでも回収可）
+
+    # ── フェーズB：submitted を poll → 完了で回収DL→normalize→done ──
+    waited = 0
+    while any(sc.get("status") == "submitted" for sc in scenes):
+        for sc in [s for s in scenes if s.get("status") == "submitted"]:
+            try:
+                if fal_poll_clip(glob["model_key"], sc["request_id"], _jp(sc["raw"])) == "done":
+                    _make_seg(sc)
+                    sc["status"] = "done"
+                    _save_job_state(job_dir, state)
+            except Exception as e:  # noqa: BLE001
+                sc["status"] = "failed"
+                sc["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+                _save_job_state(job_dir, state)
+        d, _, _ = job_progress(state)
+        if progress:
+            progress(d, n, f"生成待ち… {d}/{n} 完了（fal処理中）")
+        if not any(sc.get("status") == "submitted" for sc in scenes):
+            break
+        waited += poll_interval
+        if waited > max_wait:
+            raise RuntimeError("生成がタイムアウトしました（あとで『続きから再開』で回収できます）。")
+        _time.sleep(poll_interval)
+
+    # ── フェーズC：連結（冪等・seg があるものだけ順番に）──
+    if progress:
+        progress(n, n, "連結中…")
+    ordered = [sc for sc in scenes if sc.get("status") == "done" and os.path.exists(_jp(sc["seg"]))]
+    if not ordered:
+        raise RuntimeError("成功したシーンがありません（全シーン失敗）。")
+    state["phase"] = "concatenating"
+    _save_job_state(job_dir, state)
+    silent = _jp("room_tour_silent.mp4")
+    _xfade_concat([_jp(sc["seg"]) for sc in ordered], silent)
+    out = {"outdir": job_dir}
+    if glob.get("also_silent", True):
+        out["silent"] = silent
+    if glob.get("with_bgm", True):
+        total = _dur(silent)
+        bgm_wav = _jp("bgm.wav")
+        synth_bgm(bgm_wav, seconds=total + 2.0)
+        withbgm = _jp("room_tour_bgm.mp4")
+        _mux_bgm(silent, bgm_wav, withbgm)
+        out["bgm"] = withbgm
+    state["phase"] = "done"
+    state["outputs"] = {"silent": out.get("silent"), "bgm": out.get("bgm")}
+    state["n_failed"] = sum(1 for sc in scenes if sc.get("status") == "failed")
+    _save_job_state(job_dir, state)
+    return out
