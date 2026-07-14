@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: jobsafe-diag-v60 (動画失敗の可視化：logger+state.json+UIに理由表示・エラー後も続きから再開)")
+    st.caption("build: resumeui-v61 (完成＋一部失敗でも『続きから再開』を独立ボタンで表示・状態網羅で整合)")
 
 
 # ======================================================================
@@ -2100,35 +2100,16 @@ def _pl_stage_video():
     _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
     _job_dir = _os.path.join(_tf.gettempdir(), f"tour_{_job_id}")
     _state = rtv.read_job_state(_job_dir)
-    _resumable = bool(_state) and _state.get("phase") != "done"
+    _scst = _state.get("scenes", []) if _state else []
+    _n_notdone = sum(1 for s in _scst if s.get("status") != "done")        # 失敗+未submit+投入済み未回収
+    _n_failed = sum(1 for s in _scst if s.get("status") == "failed")
+    _n_charge = sum(1 for s in _scst if s.get("status") in ("pending", "failed"))  # 再開で新規fal課金する分
+    # ★状態とUIの整合を機械保証：done でないシーンが残る／連結未完（phase!=done）なら再開可能。
+    #   ＝「完成(phase=done)＋一部失敗」も拾う（v60で漏れていたセル）。
+    _resumable = bool(_state) and (_n_notdone > 0 or _state.get("phase") != "done")
+    _resume_cost = 0.35 * (v_dur / 5) * _n_charge
 
-    if _resumable:   # #2 再開バナー（接続断/タブ閉じ後の再入場）
-        _d, _t, _fl = rtv.job_progress(_state)
-        st.info(f"前回の生成の途中です：**{_d}/{_t} 完了**"
-                + (f"（{_fl}本失敗）" if _fl else "")
-                + "。『続きから再開』で残りだけ生成します（**完了・投入済みは fal 再課金なし**で回収）。")
-
-    # 直近の生成失敗を可視化（logger/state.jsonに加えUIの三箇所目）。rerun後も残す
-    _err = st.session_state.get("pl_video_err")
-    if _err:
-        _b = _err.get("base", "")
-        if "403" in _b or "insufficient" in _b.lower() or "credit" in _b.lower() or "balance" in _b.lower():
-            st.error("生成に失敗しました：**falのクレジット残高を確認してください**（残高不足の可能性）。"
-                     "チャージ後、下の『続きから再開』で投入済み分を再課金なしで回収できます。")
-        elif "429" in _b:
-            st.error("生成に失敗しました：falのレート上限（429）。時間をおいて『続きから再開』を。")
-        else:
-            st.error(f"生成に失敗しました: {_b}")
-        if _err.get("scenes"):
-            st.error("**失敗理由（シーン別）**：\n" + "\n".join(f"・{x}" for x in _err["scenes"]))
-        st.caption("※原因を直したら、下の『続きから再開』を押すと失敗分だけ再試行します"
-                   "（成功・投入済み分は再課金なし）。")
-
-    bcol, gcol = st.columns([1, 2])
-    if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
-        st.session_state["pl_stage"] = "review"; st.rerun()
-    _gen_label = "▶ 続きから再開" if _resumable else "🎬 ルームツアーを生成"
-    if gcol.button(_gen_label, type="primary", key="pl_v_gen", use_container_width=True):
+    def _run_video_job():
         if not get_secret("FAL_KEY", ""):
             st.error("FAL_KEY が未設定です。")
             return
@@ -2138,7 +2119,6 @@ def _pl_stage_video():
         def _pg(step, total, msg):
             bar.progress(min((step + 1) / (total + 1), 1.0))
             status.write(msg)
-
         try:
             if not rtv.read_job_state(_job_dir):   # 新規（または再起動で/tmp消失）→初期化
                 rtv.init_job(_job_dir, _images, _scenes, _glob)
@@ -2149,13 +2129,50 @@ def _pl_stage_video():
                 "silent": out.get("silent"), "bgm": out.get("bgm"),
                 "outdir": out.get("outdir"), "job_dir": _job_dir}
             st.rerun()
-        except Exception as e:  # noqa: BLE001  失敗理由をstate.jsonから拾いUIへ（三箇所目）＋rerunで再開ボタンを出す
+        except Exception as e:  # noqa: BLE001  失敗理由をstate.jsonから拾いUIへ（三箇所目）＋rerun
             _st = rtv.read_job_state(_job_dir)
             _scene_errs = sorted({sc.get("error", "") for sc in (_st.get("scenes", []) if _st else [])
                                   if sc.get("error")})
             st.session_state["pl_video_err"] = {
                 "base": f"{type(e).__name__}: {str(e)[:300]}", "scenes": _scene_errs}
             st.rerun()
+
+    def _resume_button(key):   # 独立ボタン（ラベル切替でなく分離＝気づかれやすく）
+        _cost = (f"・fal課金≈${_resume_cost:.2f}" if _n_charge else "・再課金なし")
+        _lbl = (f"▶ 続きから再開（失敗{_n_failed}本を再試行{_cost}）" if _n_failed
+                else f"▶ 続きから再開（残り{_n_notdone}本を回収{_cost}）")
+        if st.button(_lbl, type="primary", key=key, use_container_width=True):
+            _run_video_job()
+
+    if _resumable:   # 再開バナー＋独立の再開ボタン（生成ボタンとは分離）
+        _d, _t, _fl = rtv.job_progress(_state)
+        st.info(f"前回の生成に未完了/失敗が残っています：**{_d}/{_t} 完了**"
+                + (f"（{_fl}本失敗）" if _fl else "")
+                + "。下の『続きから再開』で残り（失敗・未完了）分だけ生成します"
+                "（**完了・投入済みは fal 再課金なし**で回収）。")
+        _resume_button("pl_v_resume_top")
+
+    # 直近の生成失敗を可視化（logger/state.jsonに加えUIの三箇所目）。rerun後も残す
+    _err = st.session_state.get("pl_video_err")
+    if _err:
+        _b = _err.get("base", "")
+        if "403" in _b or "insufficient" in _b.lower() or "credit" in _b.lower() or "balance" in _b.lower():
+            st.error("生成に失敗しました：**falのクレジット残高を確認してください**（残高不足の可能性）。"
+                     "チャージ後、上の『続きから再開』で投入済み分を再課金なしで回収できます。")
+        elif "429" in _b:
+            st.error("生成に失敗しました：falのレート上限（429）。時間をおいて『続きから再開』を。")
+        else:
+            st.error(f"生成に失敗しました: {_b}")
+        if _err.get("scenes"):
+            st.error("**失敗理由（シーン別）**：\n" + "\n".join(f"・{x}" for x in _err["scenes"]))
+
+    bcol, gcol = st.columns([1, 2])
+    if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
+        st.session_state["pl_stage"] = "review"; st.rerun()
+    if not _resumable:   # 新規生成（再開は上の独立ボタン。全成功/未生成はこちら）
+        if gcol.button("🎬 ルームツアーを生成", type="primary", key="pl_v_gen",
+                       use_container_width=True):
+            _run_video_job()
 
     # 生成済み動画（パス）を再rerun後も表示。download_button は open(path) で逐次＝mp4を変数に持たない
     _vout = st.session_state.get("pl_video_out")
@@ -2168,13 +2185,15 @@ def _pl_stage_video():
                        "お手数ですが最初から生成してください。")
         if (_sp and _os.path.exists(_sp)) or (_bp and _os.path.exists(_bp)):
             st.success("ルームツアーが完成しました。")
-        # #3 1シーン失敗の隔離：失敗があれば提示（『続きから再開』で失敗分のみ再投入できる）
+        # #3 1シーン失敗の隔離：完成＋一部失敗でも警告バナー直下に独立の『続きから再開』を出す
         _jd = _vout.get("job_dir")
         _jst = rtv.read_job_state(_jd) if _jd else None
         if _jst and _jst.get("n_failed"):
             _dd, _tt, _ff = rtv.job_progress(_jst)
-            st.warning(f"⚠️ {_tt - _ff}本成功 / {_ff}本失敗。失敗分は上の『続きから再開』で再試行できます"
+            st.warning(f"⚠️ {_tt - _ff}本成功 / {_ff}本失敗。下の『続きから再開』で失敗分のみ再試行できます"
                        "（成功分は再課金なし）。")
+            if _resumable:
+                _resume_button("pl_v_resume_bottom")
         if _sp and _os.path.exists(_sp):
             st.video(_sp)   # Streamlit 1.50 はローカルmp4パスをそのまま再生できる（bytes不要）
             st.download_button("⬇️ 無音版 mp4", data=open(_sp, "rb"),
@@ -2238,4 +2257,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: jobsafe-diag-v60 (動画失敗の可視化：logger+state.json+UIに理由表示・エラー後も続きから再開)")
+    st.caption("build: resumeui-v61 (完成＋一部失敗でも『続きから再開』を独立ボタンで表示・状態網羅で整合)")
