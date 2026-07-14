@@ -1363,6 +1363,64 @@ _SNS_DM_TEMPLATE = (
 # 追加ban（公取協2025 SNS調査の対象語）。既存 _PR_BANNED（最高・破格・激安 等）に足す
 _SNS_BAN_EXTRA = ["格安", "希少", "超お得", "家賃保証", "掘り出し物", "破格", "激安", "最高", "駅チカ"]
 
+# ── 投稿文テンプレ（設定画面で編集可・caption_templates.json がデフォルト）──────────
+# footer は{date}を含む複数行。生成時にJST当日へ置換（Geminiに書かせない＝法務注記の改変防止）。
+_DEFAULT_CAPTION_TEMPLATES = {
+    "footer": ("※家具・小物はAI生成のイメージです\n"
+               "※賃料等は掲載時点の情報です\n"
+               "※取引態様: 仲介\n"
+               "※{date}時点で募集中の物件です。タイミングにより成約済みの場合があります"),
+    "cta": "気になる方はコメントに「詳細」とどうぞ📩",
+    "area_hashtags": ["#大阪賃貸", "#大阪お部屋探し", "#関西賃貸", "#大阪1LDK", "#賃貸暮らし"],
+    "reply": _SNS_REPLY,
+    "dm": _SNS_DM_TEMPLATE,
+}
+# フッター必須要素（編集で法務注記が消える事故を構造的に防ぐ）。(検査トークン, 説明)
+_CAPTION_FOOTER_REQUIRED = [
+    ("AI生成", "「AI生成」を含む注記（例：家具・小物はAI生成のイメージです）"),
+    ("取引態様", "「取引態様」の表示（例：取引態様: 仲介）"),
+    ("{date}", "時点注記のプレースホルダ {date}（例：{date}時点で募集中の物件です）"),
+]
+
+
+def jst_date_str(d=None) -> str:
+    """キャプション生成日をJSTで『YYYY年M月D日』。時点注記の {date} 置換用（サーバー側自動挿入）。"""
+    import datetime as _dt
+    if d is None:
+        d = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9)))
+    return f"{d.year}年{d.month}月{d.day}日"
+
+
+def default_caption_templates() -> dict:
+    """caption_templates.json（リポジトリ）を読み、無ければ内蔵デフォルト。欠けたキーは内蔵で補完。"""
+    import json as _json
+    try:
+        p = Path(__file__).parent / "caption_templates.json"
+        if p.exists():
+            d = _json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(d, dict):
+                return {**_DEFAULT_CAPTION_TEMPLATES, **d}
+    except Exception:  # noqa: BLE001  壊れたJSONでも既定で動作継続
+        pass
+    return dict(_DEFAULT_CAPTION_TEMPLATES)
+
+
+def validate_caption_templates(tpl: dict):
+    """テンプレ編集値を検査。返り値 (errors, warnings)。errors が非空なら保存不可。
+    errors: フッター必須要素（AI生成/取引態様/{date}）の欠落。
+    warnings: フッター/CTA に混入した ban 語（景表法・公取協）。"""
+    errors, warnings = [], []
+    footer = str((tpl or {}).get("footer") or "")
+    cta = str((tpl or {}).get("cta") or "")
+    for token, desc in _CAPTION_FOOTER_REQUIRED:
+        if token not in footer:
+            errors.append(f"必須要素が不足：{desc}")
+    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA
+    hit = sorted({w for w in ban if w and (w in footer or w in cta)})
+    if hit:
+        warnings.append("フッター/CTAに誇大・ban語：" + "／".join(hit))
+    return errors, warnings
+
 
 def _sns_access_pick(access):
     """access から代表1駅（駅への直接徒歩・最短。バス便は除外）を (station, walk_min) で返す。無ければ (None,None)。
@@ -1388,13 +1446,23 @@ def _sns_access_pick(access):
     return best_st, best_min
 
 
-def draft_sns_captions(client, facts: dict, model="gemini-2.5-flash") -> dict:
+def draft_sns_captions(client, facts: dict, templates: dict = None,
+                       gen_date: str = None, model="gemini-2.5-flash") -> dict:
     """マイソク事実から Instagram×2 / TikTok×2 / コメント返信テンプレ を生成。
     ★数値（賃料・管理費・㎡・徒歩分）・設備は facts 由来をコードで固定し改変させない。
-      Gemini はフック文・エリアぼかし・設備の選定・ハッシュタグの創作のみ。固定フッターはコード（Gemini非経由）。
+      Gemini はフック文・エリアぼかし・設備の選定・ハッシュタグの創作のみ。フッター/CTA/エリア大ハッシュタグ/
+      返信・DMは templates（設定画面で編集可・既定は caption_templates.json）から取得しコード側で固定（Gemini非経由）。
+      footer 内 {date} は gen_date（無指定ならJST当日）へサーバー側で置換＝時点注記。
       誇大/ban語は生成後にコードで除去し warnings に記録。徒歩8分超は『駅近』等も禁止。
     返り値: {ig_a, ig_b, tt_a, tt_b, reply, dm, warnings}。事実が皆無なら None。"""
     import json as _json
+    tpl = templates or default_caption_templates()
+    date_str = gen_date or jst_date_str()
+    footer = str(tpl.get("footer") or _DEFAULT_CAPTION_TEMPLATES["footer"]).replace("{date}", date_str)
+    cta = str(tpl.get("cta") or _DEFAULT_CAPTION_TEMPLATES["cta"])
+    area_tags = list(tpl.get("area_hashtags") or _DEFAULT_CAPTION_TEMPLATES["area_hashtags"])
+    reply = str(tpl.get("reply") or _DEFAULT_CAPTION_TEMPLATES["reply"])
+    dm = str(tpl.get("dm") or _DEFAULT_CAPTION_TEMPLATES["dm"])
     rent = (facts.get("rent") or "").strip()
     price = (facts.get("price") or "").strip()
     fee = (facts.get("fee") or "").strip()
@@ -1424,7 +1492,8 @@ def draft_sns_captions(client, facts: dict, model="gemini-2.5-flash") -> dict:
         "・物件名・番地は出さない。area_blur は駅名は出してよいが街をぼかす（例『大阪市内・環状線沿線』）。\n"
         "・equip は【物件事実】の equipment 欄に書かれている設備の語だけを、そのままの表記で最大3つ選ぶ"
         "（欄に無い設備は絶対に足さない）。\n"
-        "・hook は1行・数字は事実のみ。フックA=数字/コスパ訴求、フックB=特徴/内装訴求。\n"
+        "・hook は1行・数字は事実のみ。フックA=数字/コスパ訴求（必ず具体的な金額または数字を含める）、"
+        "フックB=特徴/内装訴求。\n"
         "・hashtags(IG)は15〜20個：エリア大5・エリア小4・属性5・ニッチ4の配分。TikTokは4個。\n"
         "出力JSON（これのみ・説明なし）：\n"
         '{"ig_a":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
@@ -1475,8 +1544,10 @@ def draft_sns_captions(client, facts: dict, model="gemini-2.5-flash") -> dict:
     def _ig(d):
         body = [_clean(d.get("hook", "")), "", _clean(d.get("area_blur", ""))]
         body += [x for x in (ma_line, money_line, walk_line, _equip_line(d.get("equip"))) if x]
-        body += ["", "気になる方はコメントに「詳細」とどうぞ📩", "",
-                 _SNS_FOOTER, "", " ".join(_tags(d.get("hashtags"), 20))]
+        # ハッシュタグ = テンプレのエリア大（固定・先頭）＋ Gemini の残り（重複除去・最大20）
+        tags = _tags(list(area_tags) + list(d.get("hashtags") or []), 20)
+        # footer/CTA はテンプレ確定値をそのまま（編集時に必須要素ガード＋ban検査済み＝ここでは無改変）
+        body += ["", cta, "", footer, "", " ".join(tags)]
         return "\n".join(body)
 
     def _tt(d):
@@ -1488,7 +1559,7 @@ def draft_sns_captions(client, facts: dict, model="gemini-2.5-flash") -> dict:
     return {
         "ig_a": _ig(data.get("ig_a", {})), "ig_b": _ig(data.get("ig_b", {})),
         "tt_a": _tt(data.get("tt_a", {})), "tt_b": _tt(data.get("tt_b", {})),
-        "reply": _SNS_REPLY, "dm": _SNS_DM_TEMPLATE, "warnings": sorted(set(warnings)),
+        "reply": reply, "dm": dm, "warnings": sorted(set(warnings)),
     }
 
 

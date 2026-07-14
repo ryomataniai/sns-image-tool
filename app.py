@@ -122,7 +122,114 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: caption-v62 (IG/TikTok投稿文の同時生成：事実固定＋固定フッター＋ban自動除去)")
+    _render_caption_template_editor()
+    st.caption("build: captmpl-v63 (時点注記＋投稿文テンプレの設定画面編集：必須要素ガード＋JSONエクスポート/インポート)")
+
+
+def _tpl_tags_to_text(tags):
+    """area_hashtags(list) → 編集用テキスト（1行1タグ）。"""
+    return "\n".join(str(t) for t in (tags or []))
+
+
+def _tpl_text_to_tags(text):
+    """編集テキスト → area_hashtags(list)。改行/カンマ/空白区切り・先頭#補完・重複除去。"""
+    import re as _re
+    out = []
+    for t in _re.split(r"[\s,、　]+", str(text or "")):
+        t = t.strip()
+        if not t:
+            continue
+        if not t.startswith("#"):
+            t = "#" + t
+        if t not in out:
+            out.append(t)
+    return out
+
+
+def _render_caption_template_editor():
+    """投稿文テンプレ（フッター/CTA/エリア大ハッシュタグ/返信・DM）を設定画面で編集。
+    永続化は session_state ＋ JSONエクスポート/インポート（Cloud再起動で消える点をUI明記）。
+    フッター必須要素（AI生成/取引態様/{date}）が欠けたら保存拒否＝法務注記の消失を構造的に防ぐ。"""
+    import json as _json
+    with st.expander("📝 投稿文テンプレ（フッター・CTA・ハッシュタグ）を編集", expanded=False):
+        st.caption("④動画化ページの「投稿文生成」が使うテンプレです。数値・設備・徒歩分は"
+                   "マイソク事実から自動固定され、ここでは編集できません（誤記防止）。")
+        st.warning("⚠ この時点注記は成約後の掲載継続を許容するものではありません。"
+                   "成約判明後は投稿のアーカイブ/削除が必要です（おとり広告規制）。", icon="⚠️")
+        st.info("編集値はブラウザセッション内のみ保持され、Streamlit Cloud再起動で既定に戻ります。"
+                "恒久運用は下部の「エクスポート」でJSON保存→次回「インポート」してください。", icon="💾")
+
+        # ── インポート（widget生成前に処理し、各入力欄へ反映）──
+        up = st.file_uploader("インポート（JSON）", type="json", key="tpl_import_file")
+        if up is not None and st.session_state.get("_tpl_import_id") != up.file_id:
+            try:
+                d = _json.loads(up.getvalue().decode("utf-8"))
+                if not isinstance(d, dict):
+                    raise ValueError("JSONオブジェクトではありません")
+                if "footer" in d:
+                    st.session_state["tpl_footer_in"] = str(d["footer"])
+                if "cta" in d:
+                    st.session_state["tpl_cta_in"] = str(d["cta"])
+                if "area_hashtags" in d:
+                    st.session_state["tpl_tags_in"] = _tpl_tags_to_text(d["area_hashtags"])
+                if "reply" in d:
+                    st.session_state["tpl_reply_in"] = str(d["reply"])
+                if "dm" in d:
+                    st.session_state["tpl_dm_in"] = str(d["dm"])
+                st.session_state["_tpl_import_id"] = up.file_id
+                st.success("インポートしました。内容を確認し「保存」を押してください。")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"インポート失敗: {type(e).__name__}: {str(e)[:120]}")
+
+        # ── 入力欄の初期値（既定 or 保存済み編集値）を一度だけ種付け ──
+        eff = _pl_effective_templates()
+        st.session_state.setdefault("tpl_footer_in", eff["footer"])
+        st.session_state.setdefault("tpl_cta_in", eff["cta"])
+        st.session_state.setdefault("tpl_tags_in", _tpl_tags_to_text(eff["area_hashtags"]))
+        st.session_state.setdefault("tpl_reply_in", eff["reply"])
+        st.session_state.setdefault("tpl_dm_in", eff["dm"])
+
+        st.text_area("固定フッター（必須：『AI生成』注記・『取引態様』・時点注記 {date} を含めること）",
+                     key="tpl_footer_in", height=120,
+                     help="{date} は投稿文生成日のJST日付（例: 2026年7月14日）に自動置換されます。")
+        st.text_input("CTA行", key="tpl_cta_in")
+        st.text_area("エリア大ハッシュタグ（5個目安・1行1タグ／カンマ可・#は自動補完）",
+                     key="tpl_tags_in", height=90,
+                     help="ここはGeminiに書かせず固定します。エリア小・属性タグはGeminiが自動生成。")
+        st.text_input("コメント返信テンプレ", key="tpl_reply_in")
+        st.text_area("DM誘導テンプレ（{LINE_URL} プレースホルダは残すこと）",
+                     key="tpl_dm_in", height=120)
+
+        # 保存前プレビュー検証（赤=保存不可 / 黄=警告）
+        _draft = {
+            "footer": st.session_state["tpl_footer_in"], "cta": st.session_state["tpl_cta_in"],
+            "area_hashtags": _tpl_text_to_tags(st.session_state["tpl_tags_in"]),
+            "reply": st.session_state["tpl_reply_in"], "dm": st.session_state["tpl_dm_in"],
+        }
+        _errs, _warns = core.validate_caption_templates(_draft)
+        if "{LINE_URL}" not in _draft["dm"]:
+            _warns.append("DMに {LINE_URL} が無い（誘導リンクが入りません）。")
+        for w in _warns:
+            st.warning(w)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("💾 保存", key="tpl_save", type="primary", use_container_width=True):
+                errs, _ = core.validate_caption_templates(_draft)
+                if errs:
+                    for e in errs:
+                        st.error("保存できません — " + e)
+                else:
+                    st.session_state["pl_caption_tpl"] = _draft
+                    st.success("保存しました（このセッション内で有効）。")
+        with c2:
+            st.download_button(
+                "⬇ エクスポート（JSON）",
+                data=_json.dumps(_draft, ensure_ascii=False, indent=2).encode("utf-8"),
+                file_name="caption_templates.json", mime="application/json",
+                key="tpl_export", use_container_width=True)
+        if _errs:
+            st.error("現在の入力は必須要素が不足しています（このままでは保存不可）：\n- " + "\n- ".join(_errs))
 
 
 # ======================================================================
@@ -1078,6 +1185,12 @@ def _pl_effective_facts():
     return f
 
 
+def _pl_effective_templates():
+    """投稿文の有効テンプレ＝リポジトリ既定（caption_templates.json）に設定画面の編集値を上書き。
+    編集値は session_state（Cloud再起動で消える＝設定画面でエクスポート推奨をUI明記）。"""
+    return {**core.default_caption_templates(), **st.session_state.get("pl_caption_tpl", {})}
+
+
 def _pl_apply_facts_edit():
     """facts編集フォームの確定（on_click）。編集値を pl_facts に反映し確認状態も更新する。
     ※session_state書き換えはコールバック内で行う（地雷①）。"""
@@ -1944,7 +2057,8 @@ def _pl_stage_video():
             else:
                 with st.spinner("投稿文を生成中…"):
                     try:
-                        _sns = core.draft_sns_captions(_sclient, _sfacts)
+                        _sns = core.draft_sns_captions(_sclient, _sfacts,
+                                                       templates=_pl_effective_templates())
                     except Exception as e:  # noqa: BLE001
                         _sns = None
                         st.error(f"投稿文の生成に失敗しました: {type(e).__name__}: {str(e)[:120]}")
@@ -2300,4 +2414,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: caption-v62 (IG/TikTok投稿文の同時生成：事実固定＋固定フッター＋ban自動除去)")
+    st.caption("build: captmpl-v63 (時点注記＋投稿文テンプレの設定画面編集：必須要素ガード＋JSONエクスポート/インポート)")
