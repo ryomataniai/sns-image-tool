@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: resumeui-v61 (完成＋一部失敗でも『続きから再開』を独立ボタンで表示・状態網羅で整合)")
+    st.caption("build: caption-v62 (IG/TikTok投稿文の同時生成：事実固定＋固定フッター＋ban自動除去)")
 
 
 # ======================================================================
@@ -980,7 +980,8 @@ _PL_PROPERTY_EXACT = (
     "pl_ptype", "pl_ptype_sig", "pl_facts_key", "pl_facts_confirmed",
     "pl_facts_confirm_chk", "pl_prop_pick", "pl_prop_manual_start",
     "pl_prop_manual_end", "pl_prop_manual_on",
-    "pl_video_out", "pl_video_err")   # 生成済み動画のパス/失敗表示（物件固有・新規取り込みでクリア）
+    "pl_video_out", "pl_video_err",   # 生成済み動画のパス/失敗表示（物件固有・新規取り込みでクリア）
+    "pl_sns")                          # SNS投稿文（物件固有）
 _PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
                        "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
                        "pl_facts_edit_")
@@ -1927,6 +1928,48 @@ def _pl_stage_video():
                 st.caption("表紙特大（P1b-2）＝タイトル大見出し＋サブ補足。冒頭フラッシュ＝短いタイトルのみ"
                            "（0.5秒では読めないためサブは載せません）。情感2行は各シーンに反映済み。")
 
+    # ── SNS投稿文（IG/TikTok）を生成（Gemini flash 1回・押下時のみ）─────────────
+    with st.expander("📝 投稿文（Instagram / TikTok）を生成", expanded=False):
+        st.caption("マイソクの事実から、そのまま貼れる投稿文を生成します。数値（家賃・管理費・㎡・徒歩分）と"
+                   "設備は事実そのまま・固定フッター（AI生成イメージ／取引態様）はテンプレ。誇大・ban語は自動除去。"
+                   "⚠️ 投稿前に宅建・広告の型承認（専門家確認）を通してください。")
+        if st.button("📝 投稿文を生成（AI・1回）", key="pl_sns_btn"):
+            _sfacts = _pl_effective_facts()
+            try:
+                _sclient = make_client()
+            except RuntimeError:
+                _sclient = None
+            if _sclient is None:
+                st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
+            else:
+                with st.spinner("投稿文を生成中…"):
+                    try:
+                        _sns = core.draft_sns_captions(_sclient, _sfacts)
+                    except Exception as e:  # noqa: BLE001
+                        _sns = None
+                        st.error(f"投稿文の生成に失敗しました: {type(e).__name__}: {str(e)[:120]}")
+                if _sns is None:
+                    st.warning("投稿文を作れませんでした（マイソクの事実が不足している可能性）。")
+                else:
+                    st.session_state["pl_sns"] = _sns
+                    st.rerun()
+        _sns = st.session_state.get("pl_sns")
+        if _sns:
+            if _sns.get("warnings"):
+                st.warning("⚠️ 誇大・ban語を自動除去しました（要確認）：" + "、".join(_sns["warnings"]))
+            st.markdown("**Instagram — フックA（数字/コスパ訴求）**")
+            st.code(_sns["ig_a"], language=None)
+            st.markdown("**Instagram — フックB（特徴/内装訴求）**")
+            st.code(_sns["ig_b"], language=None)
+            st.markdown("**TikTok — フックA**")
+            st.code(_sns["tt_a"], language=None)
+            st.markdown("**TikTok — フックB**")
+            st.code(_sns["tt_b"], language=None)
+            st.markdown("**コメント返信 ＋ DM本文テンプレ**（`{LINE_URL}` を差し替え）")
+            st.code(_sns["reply"] + "\n\n" + _sns["dm"], language=None)
+            st.caption("各ブロック右上のコピーボタンでそのまま貼れます。"
+                       "※投稿は型承認（宅建・広告専門家の事前確認）後に。")
+
     # ── 表紙特大（P1b-2）：リールカバー/カルーセル1枚目のPNG（動画本編には挿入しない）──
     with st.expander("🖼️ 表紙特大（リールカバー / カルーセル1枚目）を生成", expanded=False):
         st.caption("タイトル大見出し＋サブ＋◎魅力ポイント＋駅徒歩＋間取り/面積の1枚。"
@@ -2257,4 +2300,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: resumeui-v61 (完成＋一部失敗でも『続きから再開』を独立ボタンで表示・状態網羅で整合)")
+    st.caption("build: caption-v62 (IG/TikTok投稿文の同時生成：事実固定＋固定フッター＋ban自動除去)")

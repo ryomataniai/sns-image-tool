@@ -1351,6 +1351,147 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
             "fallback": is_fallback}
 
 
+# ── SNS投稿文（Instagram / TikTok）生成 ─────────────────────────────
+# 固定フッター/返信は Gemini に生成させずコードで焼く（法令の型を機械保証）。
+_SNS_FOOTER = "※家具・小物はAI生成のイメージです／賃料等は掲載時点の情報です／取引態様: 仲介"
+_SNS_REPLY = "コメントありがとうございます！DMに詳細をお送りしました📩"
+_SNS_DM_TEMPLATE = (
+    "はじめまして、お問い合わせありがとうございます！\n"
+    "こちらのお部屋の詳細（空室状況・内見のご予約）はLINEでご案内しています👇\n"
+    "{LINE_URL}\n"
+    "お気軽にどうぞ😊")
+# 追加ban（公取協2025 SNS調査の対象語）。既存 _PR_BANNED（最高・破格・激安 等）に足す
+_SNS_BAN_EXTRA = ["格安", "希少", "超お得", "家賃保証", "掘り出し物", "破格", "激安", "最高", "駅チカ"]
+
+
+def _sns_access_pick(access):
+    """access から代表1駅（駅への直接徒歩・最短。バス便は除外）を (station, walk_min) で返す。無ければ (None,None)。
+    駅表記は『◯◯駅 徒歩N分』も『「福島」徒歩N分』（賃貸マイソクの括弧表記）も拾う。"""
+    import re as _re
+    best_st, best_min = None, None
+    for a in (access or []):
+        if "バス" in a:
+            continue
+        m = _re.search(r"徒歩\s*(\d+)\s*分", a)
+        if not m:
+            continue
+        mn = int(m.group(1))
+        head = a[:m.start()]
+        b = _re.search(r"[「『]([^」』]+)[」』]", head)      # 「福島」→ 福島駅
+        if b:
+            st = b.group(1) + "駅"
+        else:
+            d = _re.search(r"([^\s、,]+駅)", head)           # ◯◯駅
+            st = d.group(1) if d else (head.strip().split()[-1] if head.strip() else "最寄駅")
+        if best_min is None or mn < best_min:
+            best_min, best_st = mn, st
+    return best_st, best_min
+
+
+def draft_sns_captions(client, facts: dict, model="gemini-2.5-flash") -> dict:
+    """マイソク事実から Instagram×2 / TikTok×2 / コメント返信テンプレ を生成。
+    ★数値（賃料・管理費・㎡・徒歩分）・設備は facts 由来をコードで固定し改変させない。
+      Gemini はフック文・エリアぼかし・設備の選定・ハッシュタグの創作のみ。固定フッターはコード（Gemini非経由）。
+      誇大/ban語は生成後にコードで除去し warnings に記録。徒歩8分超は『駅近』等も禁止。
+    返り値: {ig_a, ig_b, tt_a, tt_b, reply, dm, warnings}。事実が皆無なら None。"""
+    import json as _json
+    rent = (facts.get("rent") or "").strip()
+    price = (facts.get("price") or "").strip()
+    fee = (facts.get("fee") or "").strip()
+    madori = (facts.get("madori") or "").split("[")[0].strip()
+    area = (facts.get("area") or "").replace("㎡", "").strip()
+    equip_raw = (facts.get("equipment") or "").strip()
+    station, walk = _sns_access_pick(facts.get("access"))
+    if not (rent or price or madori or area):
+        return None
+    # 構造化した事実行（コードで固定＝賃料には管理費を必ず併記／徒歩分は facts 値のみ）
+    ma_line = f"▷ {madori}／{area}㎡" if (madori or area) else ""
+    if rent:
+        money_line = f"▷ 家賃{rent}＋管理費{fee}" if fee else f"▷ 家賃{rent}（管理費は要確認）"
+    elif price:
+        money_line = f"▷ 価格{price}"
+    else:
+        money_line = ""
+    walk_line = f"▷ {station} 徒歩{walk}分" if (station and walk is not None) else ""
+
+    # ── Gemini creative（フック/ぼかし/設備選定/ハッシュタグ）。1コール・temperature低め ──
+    facts_json = _json.dumps({k: v for k, v in facts.items() if k != "full_text"}, ensure_ascii=False)
+    instr = (
+        "あなたは賃貸物件のSNS運用者です。以下の【物件事実】だけを根拠に、Instagram/TikTok投稿の"
+        "『創作パート』をJSONで出力してください（数値や設備は創作しない）。\n"
+        "厳守：\n"
+        "・誇大/最上級（最高・完璧・絶対・日本一・最安・激安・破格・格安・希少 等）を使わない（景表法）。\n"
+        "・物件名・番地は出さない。area_blur は駅名は出してよいが街をぼかす（例『大阪市内・環状線沿線』）。\n"
+        "・equip は【物件事実】の equipment 欄に書かれている設備の語だけを、そのままの表記で最大3つ選ぶ"
+        "（欄に無い設備は絶対に足さない）。\n"
+        "・hook は1行・数字は事実のみ。フックA=数字/コスパ訴求、フックB=特徴/内装訴求。\n"
+        "・hashtags(IG)は15〜20個：エリア大5・エリア小4・属性5・ニッチ4の配分。TikTokは4個。\n"
+        "出力JSON（これのみ・説明なし）：\n"
+        '{"ig_a":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
+        '"ig_b":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
+        '"tt_a":{"text":"全角60字以内","hashtags":[]},'
+        '"tt_b":{"text":"全角60字以内","hashtags":[]}}\n'
+        "【物件事実】"
+    )
+    warnings = []
+    data = {}
+    try:
+        resp = client.models.generate_content(model=model, contents=[instr + facts_json])
+        obj = _first_json_object(getattr(resp, "text", "") or "")
+        data = _json.loads(obj) if obj else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception as e:  # noqa: BLE001  握り潰さず記録（事実部分だけでも返す＝実運用を止めない）
+        warnings.append(f"AIによるフック/ハッシュタグ生成に失敗（{type(e).__name__}）。事実部分のみで出力します。")
+
+    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA
+    if walk is None or walk > 8:                     # 徒歩8分超/不明→立地訴求語も禁止
+        ban += _PR_LOCATION_WORDS
+
+    def _clean(s):
+        s = str(s or "")
+        for w in [w for w in ban if w and w in s]:
+            s = s.replace(w, "")
+            warnings.append(w)
+        return s.strip()
+
+    def _tags(raw, n_max):
+        out = []
+        for t in (raw or []):
+            t = _clean(t).replace(" ", "").replace("　", "")
+            if not t:
+                continue
+            if not t.startswith("#"):
+                t = "#" + t
+            if t not in out:
+                out.append(t)
+        return out[:n_max]
+
+    def _equip_line(raw):   # ★設備欄に実在する語だけ（欄外・広告文からの創作を防ぐ）
+        eq = [e.strip() for e in (raw or []) if isinstance(e, str) and e.strip()
+              and e.strip() in equip_raw][:3]
+        return "▷ " + "／".join(eq) if eq else ""
+
+    def _ig(d):
+        body = [_clean(d.get("hook", "")), "", _clean(d.get("area_blur", ""))]
+        body += [x for x in (ma_line, money_line, walk_line, _equip_line(d.get("equip"))) if x]
+        body += ["", "気になる方はコメントに「詳細」とどうぞ📩", "",
+                 _SNS_FOOTER, "", " ".join(_tags(d.get("hashtags"), 20))]
+        return "\n".join(body)
+
+    def _tt(d):
+        txt = _clean(d.get("text", ""))
+        if len(txt) > 60:
+            txt = txt[:59] + "…"
+        return f"{txt}\n" + " ".join(_tags(d.get("hashtags"), 4))
+
+    return {
+        "ig_a": _ig(data.get("ig_a", {})), "ig_b": _ig(data.get("ig_b", {})),
+        "tt_a": _tt(data.get("tt_a", {})), "tt_b": _tt(data.get("tt_b", {})),
+        "reply": _SNS_REPLY, "dm": _SNS_DM_TEMPLATE, "warnings": sorted(set(warnings)),
+    }
+
+
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
     """マイソクPDF → 実写真ベースのルームツアー計画を作る。
 
