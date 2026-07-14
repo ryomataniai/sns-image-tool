@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: titlefix-v66 (冒頭タイトルの真因確定＝空文言stickyを撲滅＋描画失敗の非致命化/可視化＋描画環境診断)")
+    st.caption("build: guardfix-v67 (テンプレ保存ガードをon_clickコールバック化＝実ブラウザのwidget競合で保存が通る不具合を修正)")
 
 
 def _render_video_env_diagnostics():
@@ -167,12 +167,40 @@ def _tpl_text_to_tags(text):
     return out
 
 
+def _tpl_current_draft():
+    """編集欄（widget key）から現在のテンプレ dict を組み立てる。
+    ※on_click コールバックから呼ぶこと＝全widget値がsession_stateにコミット済みの状態で読める。"""
+    return {
+        "footer": st.session_state.get("tpl_footer_in", ""),
+        "cta": st.session_state.get("tpl_cta_in", ""),
+        "area_hashtags": _tpl_text_to_tags(st.session_state.get("tpl_tags_in", "")),
+        "reply": st.session_state.get("tpl_reply_in", ""),
+        "dm": st.session_state.get("tpl_dm_in", ""),
+    }
+
+
+def _tpl_save_cb():
+    """保存ボタンの on_click。必須要素validateを通し、不合格なら保存せずエラーメッセージを残す。
+    ★body-flow（if st.button():）では実ブラウザでwidget commitと競合し、旧値のまま保存が通る
+      不具合があった（guardfix-v67）。on_click は全widget値コミット後に実行される保証があり競合しない。"""
+    draft = _tpl_current_draft()
+    errs, warns = core.validate_caption_templates(draft)
+    st.session_state["_tpl_kept_open"] = True          # 保存操作後はエディタを開いたまま結果を見せる
+    if errs:
+        st.session_state["_tpl_save_msg"] = ("error", "保存できません — " + "／".join(errs))
+    else:
+        st.session_state["pl_caption_tpl"] = draft
+        _note = ("（注意：" + "／".join(warns) + "）") if warns else ""
+        st.session_state["_tpl_save_msg"] = ("success", "保存しました（このセッション内で有効）。" + _note)
+
+
 def _render_caption_template_editor():
     """投稿文テンプレ（フッター/CTA/エリア大ハッシュタグ/返信・DM）を設定画面で編集。
     永続化は session_state ＋ JSONエクスポート/インポート（Cloud再起動で消える点をUI明記）。
     フッター必須要素（AI生成/取引態様/{date}）が欠けたら保存拒否＝法務注記の消失を構造的に防ぐ。"""
     import json as _json
-    with st.expander("📝 投稿文テンプレ（フッター・CTA・ハッシュタグ）を編集", expanded=False):
+    with st.expander("📝 投稿文テンプレ（フッター・CTA・ハッシュタグ）を編集",
+                     expanded=bool(st.session_state.get("_tpl_kept_open", False))):
         st.caption("④動画化ページの「投稿文生成」が使うテンプレです。数値・設備・徒歩分は"
                    "マイソク事実から自動固定され、ここでは編集できません（誤記防止）。")
         st.warning("⚠ この時点注記は成約後の掲載継続を許容するものではありません。"
@@ -232,28 +260,26 @@ def _render_caption_template_editor():
         st.text_area("DM誘導テンプレ（{LINE_URL} プレースホルダは残すこと）",
                      key="tpl_dm_in", height=120)
 
-        # 保存前プレビュー検証（赤=保存不可 / 黄=警告）
-        _draft = {
-            "footer": st.session_state["tpl_footer_in"], "cta": st.session_state["tpl_cta_in"],
-            "area_hashtags": _tpl_text_to_tags(st.session_state["tpl_tags_in"]),
-            "reply": st.session_state["tpl_reply_in"], "dm": st.session_state["tpl_dm_in"],
-        }
+        # 保存前プレビュー検証（赤=保存不可 / 黄=警告）。表示用（enforcementは on_click 側）。
+        _draft = _tpl_current_draft()
         _errs, _warns = core.validate_caption_templates(_draft)
         if "{LINE_URL}" not in _draft["dm"]:
             _warns.append("DMに {LINE_URL} が無い（誘導リンクが入りません）。")
         for w in _warns:
             st.warning(w)
 
+        # 直近の保存操作の結果（on_click コールバックが session_state に残す）を表示
+        _msg = st.session_state.get("_tpl_save_msg")
+        if _msg:
+            (st.error if _msg[0] == "error" else st.success)(_msg[1])
+
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("💾 保存", key="tpl_save", type="primary", use_container_width=True):
-                errs, _ = core.validate_caption_templates(_draft)
-                if errs:
-                    for e in errs:
-                        st.error("保存できません — " + e)
-                else:
-                    st.session_state["pl_caption_tpl"] = _draft
-                    st.success("保存しました（このセッション内で有効）。")
+            # ★enforcementは on_click コールバックで実施（body-flowは実ブラウザでwidget commitと
+            #   競合し旧値のまま保存が通る不具合があった＝guardfix-v67）。コールバックは全widget値
+            #   コミット後に走る保証があり、必ず最新の編集値でvalidateする。
+            st.button("💾 保存", key="tpl_save", type="primary", use_container_width=True,
+                      on_click=_tpl_save_cb)
         with c2:
             st.download_button(
                 "⬇ エクスポート（JSON）",
@@ -2462,4 +2488,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: titlefix-v66 (冒頭タイトルの真因確定＝空文言stickyを撲滅＋描画失敗の非致命化/可視化＋描画環境診断)")
+    st.caption("build: guardfix-v67 (テンプレ保存ガードをon_clickコールバック化＝実ブラウザのwidget競合で保存が通る不具合を修正)")
