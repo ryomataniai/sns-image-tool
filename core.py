@@ -1563,6 +1563,88 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     }
 
 
+# ── AIナレーション原稿（narration-v68）──────────────────────────────────────────
+# 失敗構造の教訓：後処理の速度圧縮で辻褄合わせをしない＝「シーン尺に収まる原稿」を生成段階で作る。
+_NARR_CPS = 4.2   # 低い声の男性ナレーターの目安：約4.2字/秒
+
+
+def narration_char_limit(dur_sec) -> int:
+    """1シーンのナレ字数上限。4.2字/秒 ×(尺−1秒の安全マージン)。5秒→約17字。読み＋間で収める。"""
+    try:
+        d = float(dur_sec)
+    except (TypeError, ValueError):
+        d = 5.0
+    return max(6, int(round(_NARR_CPS * (d - 1.0))))
+
+
+def _narr_clip(s: str, limit: int) -> str:
+    """1行をban語除去のうえ字数上限にハード収束（超過は打ち切り）。改行・前後空白は潰す。"""
+    s = re.sub(r"\s+", "", str(s or ""))
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA:
+        if w:
+            s = s.replace(w, "")
+    return s[:limit]
+
+
+def draft_narration(client, facts: dict, scene_labels, dur_sec=5,
+                    model="gemini-2.5-flash") -> dict:
+    """各シーン1文のナレ原稿を生成。★字数上限を各行にハード適用（超過は打ち切り＝尺に収まる保証）。
+    構成: 先頭=フック（賃料等の数字を含む・ban語なし）／中間=各部屋の一言／末尾=CTA。
+    トーン: 低い声の男性ナレーター向け・言い切り・短文・煽らない（モテ部屋トーン）。
+    返り値: {lines:[str], limit:int, warnings:[str]}。scene_labels 空/事実皆無なら None。"""
+    import json as _json
+    labels = [str(x or "").strip() for x in (scene_labels or [])]
+    if not labels:
+        return None
+    limit = narration_char_limit(dur_sec)
+    rent = (facts.get("rent") or "").strip()
+    price = (facts.get("price") or "").strip()
+    madori = (facts.get("madori") or "").split("[")[0].strip()
+    money = f"家賃{rent}" if rent else (f"価格{price}" if price else "")
+    n = len(labels)
+    facts_json = _json.dumps({k: v for k, v in facts.items()
+                              if k in ("madori", "area", "rent", "price", "fee", "equipment")},
+                             ensure_ascii=False)
+    instr = (
+        f"あなたは不動産ルームツアー動画の男性ナレーター（低い声・落ち着き・言い切り・煽らない）です。\n"
+        f"{n}シーンぶんのナレを、各シーン1文・**各{limit}字以内**で作ってください（厳守）。\n"
+        "・先頭シーンはフック（可能なら家賃/価格の数字を1つ入れる・誇大語や最上級は使わない）。\n"
+        "・中間シーンは各部屋の魅力を体言止め/言い切りで一言。\n"
+        f"・末尾シーンはCTA（例『気になったら、コメントで。』）。\n"
+        "・敬語は最小限、短く。数字は事実のみ。絵文字・記号・改行を使わない。\n"
+        f"出力はJSON配列のみ（説明なし・要素数={n}）：[\"…\",\"…\",…]\n"
+        f"シーン構成（順番・部屋名）：{_json.dumps(labels, ensure_ascii=False)}\n"
+        f"物件事実：{facts_json}\n参考の数字：{money or '（数字なし）'}"
+    )
+    warnings = []
+    lines = []
+    try:
+        resp = client.models.generate_content(model=model, contents=[instr])
+        txt = getattr(resp, "text", "") or ""
+        m = re.search(r"\[.*\]", txt, re.S)          # JSON配列を抽出（_first_json_objectは{}専用）
+        arr = _json.loads(m.group(0)) if m else []
+        if isinstance(arr, list):
+            lines = [str(x) for x in arr]
+    except Exception as e:  # noqa: BLE001  握り潰さず記録（簡易テンプレで続行）
+        warnings.append(f"AIナレ原稿の生成に失敗（{type(e).__name__}）。簡易テンプレで出力します。")
+
+    # 行数を n に整える（不足はテンプレ補完・過剰は切り詰め）
+    def _fallback(i):
+        if i == 0:
+            return (money + "、この立地。") if money else "この部屋、見てほしい。"
+        if i == n - 1:
+            return "気になったら、コメントで。"
+        return f"{labels[i]}、ここが効く。"
+    out = []
+    for i in range(n):
+        raw = lines[i] if i < len(lines) and str(lines[i]).strip() else _fallback(i)
+        clipped = _narr_clip(raw, limit)
+        if len(re.sub(r"\s+", "", str(raw))) > limit:
+            warnings.append(f"シーン{i+1}: {limit}字超のため打ち切り。")
+        out.append(clipped or _narr_clip(_fallback(i), limit))
+    return {"lines": out, "limit": limit, "warnings": sorted(set(warnings))}
+
+
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
     """マイソクPDF → 実写真ベースのルームツアー計画を作る。
 

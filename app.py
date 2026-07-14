@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: guardfix-v67 (テンプレ保存ガードをon_clickコールバック化＝実ブラウザのwidget競合で保存が通る不具合を修正)")
+    st.caption("build: narration-v68 (AIナレーション：原稿字数制約＋ElevenLabs TTS＋シーン同期adelay合成・速度変更なし＋冒頭表紙挿入)")
 
 
 def _render_video_env_diagnostics():
@@ -145,6 +145,12 @@ def _render_video_env_diagnostics():
             f"{'（存在）' if d['font_ok'] else ' ★存在せず（同梱fonts/やfonts-noto-cjkを確認）'}")
         if not (d["drawtext"] and d["font_ok"]):
             st.warning("⚠ 冒頭タイトル・テロップが本番で出ない場合、上記の赤項目が原因の可能性が高いです。")
+        # ナレーション（ElevenLabs）— ★キー値は表示しない（存在有無のみ）
+        _ek, _ev = d.get("eleven_key"), d.get("eleven_voice")
+        (st.success if (_ek and _ev) else st.info)(
+            f"AIナレーション（ElevenLabs）: APIキー{'✓' if _ek else '未設定'} / "
+            f"ボイスID{'✓' if _ev else '未設定'}"
+            + ("" if (_ek and _ev) else "（Secretsに ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID を追加で有効化）"))
 
 
 def _tpl_tags_to_text(tags):
@@ -1976,6 +1982,11 @@ def _pl_stage_video():
     import os as _os
     import room_tour_video as rtv
     _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
+    # ナレーション用（★キー値はここで env に載せるのみ・UI/ログには一切出さない）
+    _os.environ["ELEVENLABS_API_KEY"] = get_secret("ELEVENLABS_API_KEY",
+                                                   _os.environ.get("ELEVENLABS_API_KEY", ""))
+    _os.environ["ELEVENLABS_VOICE_ID"] = get_secret("ELEVENLABS_VOICE_ID",
+                                                    _os.environ.get("ELEVENLABS_VOICE_ID", ""))
     st.markdown("#### ④ 動画化（ルームツアー）")
     items = st.session_state.get("pl_items", [])
     adopted = [it for it in items if it.get("gen_bytes") and it.get("_adopt", True)]
@@ -2039,6 +2050,60 @@ def _pl_stage_video():
     v_flashcut = st.checkbox("カット境界に白フラッシュ（極短・0.2秒）", key="pl_v_flashcut",
                              help="OFF＝従来のクロスフェード0.6秒。ON＝各カットの境界を0.2秒の"
                                   "白フラッシュに（メモリ特性は従来と同一・全結合には戻しません）。")
+
+    # ── 冒頭に表紙を挿入（narration-v68）──
+    _cov_ready = bool(st.session_state.get("pl_cover_png"))
+    v_cover_on = st.checkbox("表紙を冒頭に挿入", value=False, key="pl_v_cover_on",
+                             disabled=not _cov_ready,
+                             help="下の「🖼️ 表紙特大」で生成した表紙を動画冒頭に静止挿入します。")
+    if not _cov_ready:
+        st.caption("↑ 先に下の「🖼️ 表紙特大」で表紙を生成すると有効になります。")
+    v_cover_sec = 1.5
+    if v_cover_on and _cov_ready:
+        v_cover_sec = st.slider("表紙の表示秒数", 1.0, 3.0, 1.5, 0.5, key="pl_v_cover_sec")
+        if st.session_state.get("pl_open_title") == "flash":
+            st.caption("※ 表紙挿入中は冒頭の極短フラッシュ（タイトル文字）を自動でOFFにします（冒頭の重複回避）。")
+
+    # ── 🎙️ AIナレーション（narration-v68）──
+    _narr_env = rtv.narration_env_ready()
+    _narr_ok = _narr_env["key"] and _narr_env["voice"]
+    v_narr_on = False
+    with st.expander("🎙️ AIナレーション（男性ナレーター・シーン同期）", expanded=False):
+        _nlimit = core.narration_char_limit(v_dur)
+        st.caption(f"各シーン1文・**{_nlimit}字以内**（{v_dur}秒尺に収める・後処理の速度変更はしません）。"
+                   "コスト目安：約60〜80字/本＝無料枠で月100本以上。")
+        if not _narr_ok:
+            st.info("ElevenLabs の APIキー／ボイスIDが未設定です。Secrets に "
+                    "ELEVENLABS_API_KEY と ELEVENLABS_VOICE_ID を追加すると有効化されます。", icon="🔒")
+        v_narr_on = st.checkbox("ナレーションを付ける", value=False, key="pl_v_narr_on",
+                                disabled=not _narr_ok)
+        _nlabels = [it.get("room") or f"シーン{i+1}" for i, it in enumerate(adopted)]
+        if st.button("原稿を生成（AI・1回）", key="pl_narr_btn", disabled=not _narr_ok):
+            try:
+                _nclient = make_client()
+            except RuntimeError:
+                _nclient = None
+            if _nclient is None:
+                st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
+            else:
+                with st.spinner("ナレ原稿を生成中…"):
+                    _nd = core.draft_narration(_nclient, _pl_effective_facts(), _nlabels, v_dur)
+                if _nd:
+                    for _i, _ln in enumerate(_nd["lines"]):
+                        st.session_state[f"pl_narr_{_i}"] = _ln
+                    for _w in _nd.get("warnings", []):
+                        st.warning(_w)
+                    st.rerun()
+                else:
+                    st.warning("原稿を作れませんでした（採用シーンが不足している可能性）。")
+        if v_narr_on:
+            for _i, _lab in enumerate(_nlabels):
+                _nkey = f"pl_narr_{_i}"
+                st.session_state.setdefault(_nkey, "")
+                _ntxt = st.text_input(f"シーン{_i+1}（{_lab}）", key=_nkey)
+                _nlen = len("".join((_ntxt or "").split()))
+                if _nlen > _nlimit:
+                    st.warning(f"シーン{_i+1}: {_nlen}字（上限{_nlimit}字を超過）。短縮するか再生成を。")
 
     # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
@@ -2286,7 +2351,7 @@ def _pl_stage_video():
     # ── ジョブ組み立て（接続断に強いqueue+state.json）。job_idは入力＋設定から決定的に導出 ──
     #    毎render組み立て→同一入力なら同一job_dir＝再入場時に「続きから再開」を検出できる。
     _scenes, _images = [], []
-    for it in adopted:
+    for _k, it in enumerate(adopted):
         _nm = it.get("caption") or it["room"]
         _note = v_note or (it.get("disc") or "※AI加工のイメージ")   # 全体注記優先→個別→既定
         _sub_raw = st.session_state.get(f"pl_capsub_{it['id']}", "") if v_caps else ""
@@ -2297,9 +2362,11 @@ def _pl_stage_video():
             "subs": [s for s in _sub_raw.split("\n") if s.strip()][:2],
             "note": _note, "taste": _pl_resolve_taste(it, v_taste),
             "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
-            "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit})
+            "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit,
+            "narration": (st.session_state.get(f"pl_narr_{_k}", "") if v_narr_on else "")})
         _images.append((_nm, it["gen_bytes"]))
-    if _scenes and st.session_state.get("pl_open_title") == "flash":
+    # 表紙挿入ON時は冒頭極短フラッシュを自動OFF（冒頭の重複回避）
+    if _scenes and st.session_state.get("pl_open_title") == "flash" and not v_cover_on:
         # 冒頭タイトルON。文言が空なら facts から既定を再導出（＝空のまま無タイトルになる嘘UIを撲滅）。
         _title = (v_flash or "").strip()
         if not _title:
@@ -2324,8 +2391,13 @@ def _pl_stage_video():
                         "flash": "", "fit": "contain"})
         _images.append((_fp_cap, _fp))
     _ow, _oh = rtv.ASPECT_DIMS.get(v_aspect, (1080, 1920))
+    _cov_bytes = None
+    if v_cover_on and st.session_state.get("pl_cover_png"):
+        _cov_bytes = st.session_state["pl_cover_png"].get("bytes")
     _glob = {"out_w": _ow, "out_h": _oh, "duration": v_dur, "model_key": v_model,
              "with_bgm": v_bgm, "also_silent": True, "flash_cut": bool(v_flashcut),
+             "narration_on": bool(v_narr_on),
+             "cover_on": bool(v_cover_on and _cov_bytes), "cover_sec": float(v_cover_sec),
              "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None}
     import tempfile as _tf
     _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
@@ -2352,12 +2424,15 @@ def _pl_stage_video():
             status.write(msg)
         try:
             if not rtv.read_job_state(_job_dir):   # 新規（または再起動で/tmp消失）→初期化
-                rtv.init_job(_job_dir, _images, _scenes, _glob)
+                rtv.init_job(_job_dir, _images, _scenes, _glob, cover=_cov_bytes)
             out = rtv.run_tour_job(_job_dir, progress=_pg)   # done skip/submitted回収/pendingのみ投入
             bar.progress(1.0); status.write("完成")
             st.session_state.pop("pl_video_err", None)        # 成功したので失敗表示を消す
+            _st_done = rtv.read_job_state(_job_dir)
             st.session_state["pl_video_out"] = {
                 "silent": out.get("silent"), "bgm": out.get("bgm"),
+                "narrated": out.get("narrated"), "narrated_bgm": out.get("narrated_bgm"),
+                "narr_warn": (_st_done or {}).get("narration_warnings", []),
                 "outdir": out.get("outdir"), "job_dir": _job_dir}
             st.rerun()
         except Exception as e:  # noqa: BLE001  失敗理由をstate.jsonから拾いUIへ（三箇所目）＋rerun
@@ -2435,6 +2510,21 @@ def _pl_stage_video():
             st.download_button("⬇️ BGM版 mp4", data=open(_bp, "rb"),
                                file_name="room_tour_bgm.mp4",
                                mime="video/mp4", key="pl_dl_bgm")
+        # ── ナレーション版（生成された場合のみ）──
+        for _w in (_vout.get("narr_warn") or []):
+            st.warning("🎙️ " + str(_w))
+        _np, _nbp = _vout.get("narrated"), _vout.get("narrated_bgm")
+        if _np and _os.path.exists(_np):
+            st.caption("🎙️ ナレーション版（各シーン頭に音声・速度調整なし）")
+            st.video(_np)
+            st.download_button("⬇️ ナレ版 mp4", data=open(_np, "rb"),
+                               file_name="room_tour_narrated.mp4",
+                               mime="video/mp4", key="pl_dl_narr")
+        if _nbp and _os.path.exists(_nbp):
+            st.video(_nbp)
+            st.download_button("⬇️ ナレ＋BGM版 mp4", data=open(_nbp, "rb"),
+                               file_name="room_tour_narrated_bgm.mp4",
+                               mime="video/mp4", key="pl_dl_narr_bgm")
 
 
 def render_pipeline():
@@ -2488,4 +2578,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: guardfix-v67 (テンプレ保存ガードをon_clickコールバック化＝実ブラウザのwidget競合で保存が通る不具合を修正)")
+    st.caption("build: narration-v68 (AIナレーション：原稿字数制約＋ElevenLabs TTS＋シーン同期adelay合成・速度変更なし＋冒頭表紙挿入)")

@@ -95,7 +95,10 @@ def env_diagnostics() -> dict:
         drawtext = False
     font = _font()
     return {"ffmpeg": ff, "drawtext": bool(drawtext),
-            "font": font, "font_ok": bool(font and os.path.exists(font))}
+            "font": font, "font_ok": bool(font and os.path.exists(font)),
+            # ★キー/ボイスIDの値は返さない（存在有無のみ）＝UI/ログに秘匿情報を出さない
+            "eleven_key": bool(os.environ.get("ELEVENLABS_API_KEY")),
+            "eleven_voice": bool(os.environ.get("ELEVENLABS_VOICE_ID"))}
 
 
 def _dur(path: str) -> float:
@@ -515,6 +518,135 @@ def _mux_bgm(video_path: str, bgm_wav: str, out_path: str) -> str:
     ff = _ffmpeg()
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", video_path, "-i", bgm_wav,
                     "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac",
+                    "-b:a", "192k", "-shortest", "-movflags", "+faststart", out_path],
+                   check=True, timeout=300)
+    return out_path
+
+
+# ======================================================================
+# AIナレーション（narration-v68）：ElevenLabs TTS ＋ シーン同期合成 ＋ 冒頭表紙
+#   設計思想：後処理の速度調整（atempo等）で辻褄を合わせない。原稿側で尺に収める。
+#   ★ATEMPO/SPEED変更は本ファイルに一切書かない（受入基準の禁止事項）。
+# ======================================================================
+_ELEVEN_ENDPOINT = "https://api.elevenlabs.io/v1/text-to-speech/{voice}"
+_ELEVEN_MODEL = "eleven_multilingual_v2"
+
+
+def narration_env_ready() -> dict:
+    """ElevenLabs のキー/ボイスIDが env に在るか（値は返さない＝UI/ログに秘匿情報を出さない）。"""
+    return {"key": bool(os.environ.get("ELEVENLABS_API_KEY")),
+            "voice": bool(os.environ.get("ELEVENLABS_VOICE_ID"))}
+
+
+def tts_elevenlabs(text: str, out_path: str, timeout: int = 60) -> str:
+    """1シーンぶんのテキストを ElevenLabs で音声化して out_path(mp3) に保存。
+    キー/ボイスIDは env からのみ取得し、例外やログに載せない（秘匿情報保護）。"""
+    if requests is None:
+        raise RuntimeError("requests が利用できません。")
+    key = os.environ.get("ELEVENLABS_API_KEY")
+    voice = os.environ.get("ELEVENLABS_VOICE_ID")
+    if not key or not voice:
+        raise RuntimeError("ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID が未設定です。")
+    try:
+        resp = requests.post(
+            _ELEVEN_ENDPOINT.format(voice=voice),
+            headers={"xi-api-key": key, "accept": "audio/mpeg", "content-type": "application/json"},
+            json={"text": text, "model_id": _ELEVEN_MODEL,
+                  "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
+            timeout=timeout)
+    except Exception as e:  # noqa: BLE001  ★キーを含みうる例外詳細は握って型のみ露出
+        raise RuntimeError(f"TTSリクエスト失敗（{type(e).__name__}）") from None
+    if resp.status_code != 200:
+        # ★レスポンス本文にキーは出ないが、URL等の巻き込みを避け status のみ通知
+        raise RuntimeError(f"TTS失敗 HTTP {resp.status_code}")
+    with open(out_path, "wb") as f:
+        f.write(resp.content)
+    return out_path
+
+
+def _scene_start_times(durs, t, cover_sec=0.0, flash_delay=0.0):
+    """メモリ安全連結タイムライン上での各シーン可視開始時刻(秒)。
+      body内: start_i = Σ(durs[:i]) − i×t （i=0→0）。
+      表紙cover_sec>0: シーン0のナレは表紙の上から（=0）、i>=1 は cover_sec だけ後ろへ。
+      冒頭極短フラッシュ使用時（表紙なし）: シーン0を flash_delay だけ遅らせる。"""
+    starts = []
+    for i in range(len(durs)):
+        body = sum(durs[:i]) - i * t
+        if cover_sec > 0:
+            starts.append(0.0 if i == 0 else cover_sec + body)
+        else:
+            starts.append((flash_delay if i == 0 else 0.0) + body)
+    return starts
+
+
+def _cover_clip(cover_bytes: bytes, seconds: float, out_w: int, out_h: int, out_path: str) -> str:
+    """表紙PNGを seconds 秒の静止クリップに（本編セグメントと同一パラメータ＝30fps/yuv420p/sar=1/同寸）。
+    concat demuxer(-c copy)で本編前に安全に連結できるよう _ENC で揃える。"""
+    ff = _ffmpeg()
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+        f.write(cover_bytes)
+        img = f.name
+    try:
+        subprocess.run([ff, "-y", "-loglevel", "error", "-loop", "1", "-i", img,
+                        "-t", f"{max(seconds, 0.5):g}", "-filter_complex",
+                        (f"[0:v]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                         f"crop={out_w}:{out_h},fps=30,format=yuv420p,setsar=1[v]"),
+                        "-map", "[v]", "-an", *_ENC, out_path], check=True, timeout=120)
+    finally:
+        try:
+            os.unlink(img)
+        except Exception:  # noqa: BLE001
+            pass
+    return out_path
+
+
+def _prepend_clip(head_path: str, body_path: str, out_path: str) -> str:
+    """head_path を body_path の前に連結（concat demuxer・-c copy・同一パラメータ前提）。"""
+    ff = _ffmpeg()
+    workdir = tempfile.mkdtemp(prefix="pre_")
+    try:
+        listfile = os.path.join(workdir, "list.txt")
+        with open(listfile, "w") as lf:
+            for p in (head_path, body_path):
+                lf.write("file '%s'\n" % p.replace("'", "'\\''"))
+        subprocess.run([ff, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                        "-i", listfile, "-c", "copy", "-movflags", "+faststart", out_path],
+                       check=True, timeout=300)
+        return out_path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _mux_narration(video_path: str, audio_starts, out_path: str,
+                   bgm_wav: str = None, bgm_db: float = -20.0) -> str:
+    """各シーン音声を開始時刻に adelay で配置→amix して動画に付ける。★速度変更（atempo）は使わない。
+    audio_starts: [(audio_path, start_sec), ...]。bgm_wav 指定時は BGM を bgm_db で下げて混ぜる。"""
+    ff = _ffmpeg()
+    vdur = _dur(video_path)
+    inputs = ["-i", video_path]
+    parts = []          # amix入力ラベル
+    filt = []
+    idx = 1             # 0=video
+    for apath, start in audio_starts:
+        inputs += ["-i", apath]
+        ms = max(0, int(round(float(start) * 1000)))
+        # ステレオ両ch遅延。amix前に音量素通し（正規化は amix 側で無効化）
+        filt.append(f"[{idx}:a]adelay={ms}|{ms},aformat=channel_layouts=stereo[a{idx}]")
+        parts.append(f"[a{idx}]")
+        idx += 1
+    if bgm_wav:
+        inputs += ["-i", bgm_wav]
+        filt.append(f"[{idx}:a]volume={bgm_db}dB,aformat=channel_layouts=stereo[bg]")
+        parts.append("[bg]")
+        idx += 1
+    # duration=longest で全ナレを保持し、apad→atrim で音声トラックを動画尺ちょうどに揃える
+    #   （first だと最初の1本の長さに切り詰められる／BGMが動画より長い場合はここでトリム）。
+    filt.append("".join(parts)
+                + f"amix=inputs={len(parts)}:normalize=0:duration=longest,"
+                + f"apad,atrim=0:{vdur:.3f}[mix]")
+    subprocess.run([ff, "-y", "-loglevel", "error", *inputs,
+                    "-filter_complex", ";".join(filt),
+                    "-map", "0:v", "-map", "[mix]", "-c:v", "copy", "-c:a", "aac",
                     "-b:a", "192k", "-shortest", "-movflags", "+faststart", out_path],
                    check=True, timeout=300)
     return out_path
@@ -984,8 +1116,9 @@ def _save_job_state(job_dir, state):
     os.replace(tmp, p)
 
 
-def init_job(job_dir, images, scenes, glob) -> dict:
-    """新規ジョブを初期化：画像を保存し state.json を書く。scenes は各シーンのメタ dict の list。"""
+def init_job(job_dir, images, scenes, glob, cover: bytes = None) -> dict:
+    """新規ジョブを初期化：画像を保存し state.json を書く。scenes は各シーンのメタ dict の list。
+    cover: 冒頭挿入する表紙PNG（任意）。あれば cover.png として保存（glob["cover_on"] と併用）。"""
     os.makedirs(job_dir, exist_ok=True)
     scene_list = []
     for i, (item, sc) in enumerate(zip(images, scenes)):
@@ -997,6 +1130,9 @@ def init_job(job_dir, images, scenes, glob) -> dict:
         d.update({"i": i, "img": img_name, "raw": f"raw_{i}.mp4", "seg": f"seg_{i}.mp4",
                   "status": "pending", "request_id": None, "error": ""})
         scene_list.append(d)
+    if cover:
+        with open(os.path.join(job_dir, "cover.png"), "wb") as f:
+            f.write(cover)
     state = {"version": 1, "phase": "generating", "glob": glob,
              "scenes": scene_list, "outputs": {}}
     _save_job_state(job_dir, state)
@@ -1022,7 +1158,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         o = state.get("outputs", {})
         if (o.get("silent") and os.path.exists(o["silent"])) or \
            (o.get("bgm") and os.path.exists(o["bgm"])):
-            return {"outdir": job_dir, "silent": o.get("silent"), "bgm": o.get("bgm")}
+            return {"outdir": job_dir, "silent": o.get("silent"), "bgm": o.get("bgm"),
+                    "narrated": o.get("narrated"), "narrated_bgm": o.get("narrated_bgm")}
     glob = state["glob"]
     scenes = state["scenes"]
     n = len(scenes)
@@ -1102,21 +1239,71 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         raise RuntimeError(f"全シーン失敗: {_detail}")
     state["phase"] = "concatenating"
     _save_job_state(job_dir, state)
-    silent = _jp("room_tour_silent.mp4")
-    _xfade_concat([_jp(sc["seg"]) for sc in ordered], silent,
+    body = _jp("room_tour_silent.mp4")
+    _xfade_concat([_jp(sc["seg"]) for sc in ordered], body,
                   flash_cut=bool(glob.get("flash_cut", False)))
+
+    # ── 冒頭表紙の挿入（本編前に静止クリップを連結・全出力版に反映）──
+    t = 0.2 if glob.get("flash_cut") else 0.6
+    cover_sec = float(glob.get("cover_sec", 0) or 0)
+    cover_on = (bool(glob.get("cover_on")) and cover_sec > 0
+                and os.path.exists(_jp("cover.png")))
+    if cover_on:
+        cov = _jp("cover_clip.mp4")
+        _cover_clip(open(_jp("cover.png"), "rb").read(), cover_sec, out_w, out_h, cov)
+        covered = _jp("room_tour_silent.mp4")   # 無音版そのものを表紙入りに置換
+        _prepend_clip(cov, body, _jp("_tmp_covered.mp4"))
+        shutil.move(_jp("_tmp_covered.mp4"), covered)
+        body = covered
+
     out = {"outdir": job_dir}
     if glob.get("also_silent", True):
-        out["silent"] = silent
+        out["silent"] = body
+    bgm_wav = _jp("bgm.wav")
     if glob.get("with_bgm", True):
-        total = _dur(silent)
-        bgm_wav = _jp("bgm.wav")
-        synth_bgm(bgm_wav, seconds=total + 2.0)
+        synth_bgm(bgm_wav, seconds=_dur(body) + 2.0)
         withbgm = _jp("room_tour_bgm.mp4")
-        _mux_bgm(silent, bgm_wav, withbgm)
+        _mux_bgm(body, bgm_wav, withbgm)
         out["bgm"] = withbgm
+
+    # ── AIナレーション（各シーン頭に音声を配置・★速度変更しない）──
+    narr_warn = []
+    if bool(glob.get("narration_on")):
+        durs = [_dur(_jp(sc["seg"])) for sc in ordered]
+        flash_title = bool(ordered and ordered[0].get("flash"))
+        flash_delay = 0.3 if (flash_title and not cover_on) else 0.0
+        starts = _scene_start_times(durs, t, cover_sec if cover_on else 0.0, flash_delay)
+        audio_starts = []
+        for k, sc in enumerate(ordered):
+            txt = (sc.get("narration") or "").strip()
+            if not txt:
+                continue
+            apath = _jp(f"narr_{sc['i']}.mp3")
+            try:
+                if not os.path.exists(apath):
+                    tts_elevenlabs(txt, apath)      # ★キーは env のみ・例外に載せない
+            except Exception as e:  # noqa: BLE001  1本失敗は隔離＝logger/stateへ
+                narr_warn.append(_log_failure(f"tts(scene {sc['i']})", e))
+                continue
+            over = _dur(apath) - durs[k]
+            if over > 0.3:                          # 0.3s超過は原稿短縮を促す（自動速度変更しない）
+                narr_warn.append(f"シーン{sc['i']+1}: ナレ音声が尺を{over:.1f}s超過（原稿を短縮して再生成を）")
+            audio_starts.append((apath, starts[k]))
+        if audio_starts:
+            narrated = _jp("room_tour_narrated.mp4")
+            _mux_narration(body, audio_starts, narrated)
+            out["narrated"] = narrated
+            if glob.get("with_bgm", True):
+                if not os.path.exists(bgm_wav):
+                    synth_bgm(bgm_wav, seconds=_dur(body) + 2.0)
+                narrated_bgm = _jp("room_tour_narrated_bgm.mp4")
+                _mux_narration(body, audio_starts, narrated_bgm, bgm_wav=bgm_wav)
+                out["narrated_bgm"] = narrated_bgm
+
     state["phase"] = "done"
-    state["outputs"] = {"silent": out.get("silent"), "bgm": out.get("bgm")}
+    state["outputs"] = {"silent": out.get("silent"), "bgm": out.get("bgm"),
+                        "narrated": out.get("narrated"), "narrated_bgm": out.get("narrated_bgm")}
+    state["narration_warnings"] = narr_warn
     state["n_failed"] = sum(1 for sc in scenes if sc.get("status") == "failed")
     _save_job_state(job_dir, state)
     return out
