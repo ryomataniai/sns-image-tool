@@ -819,6 +819,23 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
 import json as _json
 import hashlib as _hashlib
 import time as _time
+import logging as _logging
+import sys as _sys
+import traceback as _traceback
+
+_log = _logging.getLogger("room_tour_video")
+
+
+def _log_failure(where: str, err: Exception) -> str:
+    """失敗を logger と stderr の両方に出す（Streamlit Cloud のログに必ず残す）。返り値=保存用の理由文字列。"""
+    detail = f"{type(err).__name__}: {err}"
+    try:
+        _log.error("[room_tour_video] %s 失敗: %s", where, detail)
+        print(f"[room_tour_video] {where} 失敗: {detail}", file=_sys.stderr, flush=True)
+        _traceback.print_exc(file=_sys.stderr)
+    except Exception:  # noqa: BLE001
+        pass
+    return detail[:300]
 
 
 def _download_stream(url: str, out_path: str, timeout: int = 300) -> None:
@@ -997,9 +1014,9 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 sc["request_id"] = rid
                 sc["status"] = "submitted"
                 sc["error"] = ""
-            except Exception as e:  # noqa: BLE001  1本失敗は隔離（全体を殺さない）
+            except Exception as e:  # noqa: BLE001  1本失敗は隔離（全体を殺さない）＝logger/state/UIへ
                 sc["status"] = "failed"
-                sc["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+                sc["error"] = _log_failure(f"submit(scene {sc['i']})", e)
             _save_job_state(job_dir, state)   # ★submit直後に永続化（死んでも回収可）
 
     # ── フェーズB：submitted を poll → 完了で回収DL→normalize→done ──
@@ -1011,9 +1028,9 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                     _make_seg(sc)
                     sc["status"] = "done"
                     _save_job_state(job_dir, state)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001  logger/state/UIへ
                 sc["status"] = "failed"
-                sc["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+                sc["error"] = _log_failure(f"poll(scene {sc['i']})", e)
                 _save_job_state(job_dir, state)
         d, _, _ = job_progress(state)
         if progress:
@@ -1030,7 +1047,13 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         progress(n, n, "連結中…")
     ordered = [sc for sc in scenes if sc.get("status") == "done" and os.path.exists(_jp(sc["seg"]))]
     if not ordered:
-        raise RuntimeError("成功したシーンがありません（全シーン失敗）。")
+        # 全シーン失敗：理由（シーン別・重複除去）を例外文にも載せて診断可能にする
+        _errs = sorted({sc.get("error", "") for sc in scenes if sc.get("error")})
+        state["phase"] = "failed"
+        state["n_failed"] = sum(1 for sc in scenes if sc.get("status") == "failed")
+        _save_job_state(job_dir, state)
+        _detail = " / ".join(_errs) if _errs else "理由不明（各シーンにエラーが記録されていません）"
+        raise RuntimeError(f"全シーン失敗: {_detail}")
     state["phase"] = "concatenating"
     _save_job_state(job_dir, state)
     silent = _jp("room_tour_silent.mp4")

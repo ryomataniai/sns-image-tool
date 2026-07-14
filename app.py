@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: jobsafe-v59 (接続断に強いジョブ：fal queue+state.json・続きから再開・二重課金防止)")
+    st.caption("build: jobsafe-diag-v60 (動画失敗の可視化：logger+state.json+UIに理由表示・エラー後も続きから再開)")
 
 
 # ======================================================================
@@ -980,7 +980,7 @@ _PL_PROPERTY_EXACT = (
     "pl_ptype", "pl_ptype_sig", "pl_facts_key", "pl_facts_confirmed",
     "pl_facts_confirm_chk", "pl_prop_pick", "pl_prop_manual_start",
     "pl_prop_manual_end", "pl_prop_manual_on",
-    "pl_video_out")   # 生成済み動画のパス（物件固有・新規取り込みでクリア）
+    "pl_video_out", "pl_video_err")   # 生成済み動画のパス/失敗表示（物件固有・新規取り込みでクリア）
 _PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
                        "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
                        "pl_facts_edit_")
@@ -2108,6 +2108,22 @@ def _pl_stage_video():
                 + (f"（{_fl}本失敗）" if _fl else "")
                 + "。『続きから再開』で残りだけ生成します（**完了・投入済みは fal 再課金なし**で回収）。")
 
+    # 直近の生成失敗を可視化（logger/state.jsonに加えUIの三箇所目）。rerun後も残す
+    _err = st.session_state.get("pl_video_err")
+    if _err:
+        _b = _err.get("base", "")
+        if "403" in _b or "insufficient" in _b.lower() or "credit" in _b.lower() or "balance" in _b.lower():
+            st.error("生成に失敗しました：**falのクレジット残高を確認してください**（残高不足の可能性）。"
+                     "チャージ後、下の『続きから再開』で投入済み分を再課金なしで回収できます。")
+        elif "429" in _b:
+            st.error("生成に失敗しました：falのレート上限（429）。時間をおいて『続きから再開』を。")
+        else:
+            st.error(f"生成に失敗しました: {_b}")
+        if _err.get("scenes"):
+            st.error("**失敗理由（シーン別）**：\n" + "\n".join(f"・{x}" for x in _err["scenes"]))
+        st.caption("※原因を直したら、下の『続きから再開』を押すと失敗分だけ再試行します"
+                   "（成功・投入済み分は再課金なし）。")
+
     bcol, gcol = st.columns([1, 2])
     if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
         st.session_state["pl_stage"] = "review"; st.rerun()
@@ -2128,19 +2144,18 @@ def _pl_stage_video():
                 rtv.init_job(_job_dir, _images, _scenes, _glob)
             out = rtv.run_tour_job(_job_dir, progress=_pg)   # done skip/submitted回収/pendingのみ投入
             bar.progress(1.0); status.write("完成")
+            st.session_state.pop("pl_video_err", None)        # 成功したので失敗表示を消す
             st.session_state["pl_video_out"] = {
                 "silent": out.get("silent"), "bgm": out.get("bgm"),
                 "outdir": out.get("outdir"), "job_dir": _job_dir}
             st.rerun()
-        except Exception as e:  # noqa: BLE001
-            _msg = str(e)
-            if "403" in _msg or "insufficient" in _msg.lower() or "credit" in _msg.lower():
-                st.error("生成に失敗しました：falのクレジット残高を確認してください（403）。"
-                         "チャージ後『続きから再開』で投入済み分を再課金なしで回収できます。")
-            elif "429" in _msg:
-                st.error("生成に失敗しました：falのレート上限です（429）。時間をおいて『続きから再開』を。")
-            else:
-                st.error(f"生成に失敗しました: {_msg}（『続きから再開』で投入済み分を回収できます）")
+        except Exception as e:  # noqa: BLE001  失敗理由をstate.jsonから拾いUIへ（三箇所目）＋rerunで再開ボタンを出す
+            _st = rtv.read_job_state(_job_dir)
+            _scene_errs = sorted({sc.get("error", "") for sc in (_st.get("scenes", []) if _st else [])
+                                  if sc.get("error")})
+            st.session_state["pl_video_err"] = {
+                "base": f"{type(e).__name__}: {str(e)[:300]}", "scenes": _scene_errs}
+            st.rerun()
 
     # 生成済み動画（パス）を再rerun後も表示。download_button は open(path) で逐次＝mp4を変数に持たない
     _vout = st.session_state.get("pl_video_out")
@@ -2223,4 +2238,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: jobsafe-v59 (接続断に強いジョブ：fal queue+state.json・続きから再開・二重課金防止)")
+    st.caption("build: jobsafe-diag-v60 (動画失敗の可視化：logger+state.json+UIに理由表示・エラー後も続きから再開)")
