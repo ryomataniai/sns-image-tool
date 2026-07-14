@@ -123,7 +123,7 @@ def render_settings():
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
-    st.caption("build: importguard-v64 (投稿文テンプレのJSONインポートにも必須要素validateを適用＝不正テンプレを取込拒否)")
+    st.caption("build: flashfix-v65 (カット境界の白フラッシュ極短0.2秒＝境界xfade機構を流用・fadewhite・全結合非回帰)")
 
 
 def _tpl_tags_to_text(tags):
@@ -1987,6 +1987,9 @@ def _pl_stage_video():
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
     v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="pl_v_note",
                            placeholder="例: ※画像はイメージです")
+    v_flashcut = st.checkbox("カット境界に白フラッシュ（極短・0.2秒）", key="pl_v_flashcut",
+                             help="OFF＝従来のクロスフェード0.6秒。ON＝各カットの境界を0.2秒の"
+                                  "白フラッシュに（メモリ特性は従来と同一・全結合には戻しません）。")
 
     # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
@@ -2262,7 +2265,7 @@ def _pl_stage_video():
         _images.append((_fp_cap, _fp))
     _ow, _oh = rtv.ASPECT_DIMS.get(v_aspect, (1080, 1920))
     _glob = {"out_w": _ow, "out_h": _oh, "duration": v_dur, "model_key": v_model,
-             "with_bgm": v_bgm, "also_silent": True,
+             "with_bgm": v_bgm, "also_silent": True, "flash_cut": bool(v_flashcut),
              "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None}
     import tempfile as _tf
     _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
@@ -2425,4 +2428,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: importguard-v64 (投稿文テンプレのJSONインポートにも必須要素validateを適用＝不正テンプレを取込拒否)")
+    st.caption("build: flashfix-v65 (カット境界の白フラッシュ極短0.2秒＝境界xfade機構を流用・fadewhite・全結合非回帰)")

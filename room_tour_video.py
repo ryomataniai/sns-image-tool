@@ -400,14 +400,23 @@ def _reencode_piece(src: str, dst: str, vf: str) -> None:
                     "-map", "[v]", "-an", *_ENC, dst], check=True, timeout=300)
 
 
-def _xfade_concat(seg_paths: list[str], out_path: str, t: float = 0.6) -> str:
+def _xfade_concat(seg_paths: list[str], out_path: str, t: float = 0.6,
+                  flash_cut: bool = False) -> str:
     """メモリ安全なクロスフェード連結。
     旧方式（N本を全入力で同時デコードする xfade フィルタグラフ）は N が増えると
     ffmpeg のピークRSSが 1GB超（実測 9本=1.7GB）となり Streamlit Cloud を落とす。
     そこで各境界の t 秒だけを xfade した『極小トランジションclip』を作り、本編は
     トリムして concat demuxer（-c copy・逐次・デコードなし）で連結する。各 ffmpeg 呼び出しは
-    最大2本しか開かないためピークは1本分（数十MB）で済む。見た目のクロスフェードは維持。"""
+    最大2本しか開かないためピークは1本分（数十MB）で済む。見た目のクロスフェードは維持。
+
+    flash_cut=False（既定）: transition=fade・境界0.6秒（現行どおり・回帰なし）。
+    flash_cut=True         : transition=fadewhite・境界0.2秒（極短の白フラッシュ）。
+      機構は同一（境界前後の短い区間のみ2本デコード）。全結合filter_complexには回帰せず、
+      フレーム全量をメモリに載せないためメモリ特性は現行(fade)と同一クラス。"""
     ff = _ffmpeg()
+    trans = "fadewhite" if flash_cut else "fade"
+    if flash_cut:
+        t = 0.2   # 白フラッシュは極短。オーバーラップも0.2に縮め、演出・尺整合・低メモリを両立
     n = len(seg_paths)
     if n == 0:
         raise ValueError("連結するセグメントがありません。")
@@ -439,7 +448,7 @@ def _xfade_concat(seg_paths: list[str], out_path: str, t: float = 0.6) -> str:
                       "setpts=PTS-STARTPTS,fps=30,format=yuv420p,setsar=1[a];"
                       f"[1:v]trim=start=0:end={t:.3f},"
                       "setpts=PTS-STARTPTS,fps=30,format=yuv420p,setsar=1[b];"
-                      f"[a][b]xfade=transition=fade:duration={t}:offset=0,"
+                      f"[a][b]xfade=transition={trans}:duration={t}:offset=0,"
                       "format=yuv420p,setsar=1[v]"),
                      "-map", "[v]", "-an", *_ENC, tr], check=True, timeout=300)
                 parts.append(tr)
@@ -720,7 +729,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                taste: str = "clean", tastes: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
                negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
-               aspect: str = "9:16", fit_mode: str = "fill", progress=None) -> dict:
+               aspect: str = "9:16", fit_mode: str = "fill", flash_cut: bool = False,
+               progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
     captions: 各クリップ下部の文言（None かつ with_captions=True なら name を使用）
@@ -787,7 +797,7 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
         if progress:
             progress(n, n, "連結中…")
         silent = os.path.join(workdir, "tour_silent.mp4")
-        _xfade_concat(seg_paths, silent)
+        _xfade_concat(seg_paths, silent, flash_cut=flash_cut)
 
         # 完成mp4は bytes ではなくファイルパスで返す（session_state/変数に mp4 を載せない）。
         # workdir は finally で消えるため、返す成果物だけ永続 outdir へ移す。
@@ -1057,7 +1067,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     state["phase"] = "concatenating"
     _save_job_state(job_dir, state)
     silent = _jp("room_tour_silent.mp4")
-    _xfade_concat([_jp(sc["seg"]) for sc in ordered], silent)
+    _xfade_concat([_jp(sc["seg"]) for sc in ordered], silent,
+                  flash_cut=bool(glob.get("flash_cut", False)))
     out = {"outdir": job_dir}
     if glob.get("also_silent", True):
         out["silent"] = silent
