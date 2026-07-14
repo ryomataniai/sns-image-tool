@@ -122,7 +122,7 @@ def render_settings():
                       help="https://aistudio.google.com/apikey で取得")
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: rentsplit-fix-v57 (賃貸2ページの誤分割修正：分割は売買判定時のみ)")
+    st.caption("build: videofix-v58 (動画連結のメモリ超過修正：xfade→逐次クロスフェード・パス返し・threads制限)")
 
 
 # ======================================================================
@@ -979,7 +979,8 @@ _PL_PROPERTY_EXACT = (
     # 売買マイソク対応（物件固有）：種別・facts抽出ゲート・確認状態・物件選択
     "pl_ptype", "pl_ptype_sig", "pl_facts_key", "pl_facts_confirmed",
     "pl_facts_confirm_chk", "pl_prop_pick", "pl_prop_manual_start",
-    "pl_prop_manual_end", "pl_prop_manual_on")
+    "pl_prop_manual_end", "pl_prop_manual_on",
+    "pl_video_out")   # 生成済み動画のパス（物件固有・新規取り込みでクリア）
 _PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
                        "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
                        "pl_facts_edit_")
@@ -2058,6 +2059,10 @@ def _pl_stage_video():
                + (f"（{'・'.join(_still_msg)}は静止クリップ＝fal課金なし）" if _still_msg else "")
                + "。")
 
+    if n_fal >= 5:   # #4 ガード：カット数が多いと時間がかかる（メモリ超過はv58で解消済）
+        st.warning("⚠️ 採用カットが多いほど生成に時間がかかります（1本あたり約1〜1.5分）。"
+                   "急ぐ場合や不安なときは3〜4カットに絞るのがおすすめです。")
+
     bcol, gcol = st.columns([1, 2])
     if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
         st.session_state["pl_stage"] = "review"; st.rerun()
@@ -2101,6 +2106,11 @@ def _pl_stage_video():
                 status.write("連結中…（クロスフェード＋BGM）")
 
         try:
+            # 直前の生成物（tempファイル）を掃除してから生成（tmpにmp4を溜めない）
+            _prev = st.session_state.get("pl_video_out")
+            if _prev and _prev.get("outdir"):
+                import shutil as _sh
+                _sh.rmtree(_prev["outdir"], ignore_errors=True)
             out = rtv.build_tour(
                 imgs, captions=captions if v_caps else [""] * len(imgs),
                 sub_captions=sub_captions if v_caps else None,
@@ -2114,19 +2124,37 @@ def _pl_stage_video():
                 fit_mode=v_fit, progress=_pg)
             bar.progress(1.0)
             status.write("完成")
-            st.success("ルームツアーを生成しました。")
-            if out.get("silent"):
-                st.video(out["silent"])
-                st.download_button("⬇️ 無音版 mp4", out["silent"],
-                                   file_name="room_tour_silent.mp4",
-                                   mime="video/mp4", key="pl_dl_silent")
-            if out.get("bgm"):
-                st.video(out["bgm"])
-                st.download_button("⬇️ BGM版 mp4", out["bgm"],
-                                   file_name="room_tour_bgm.mp4",
-                                   mime="video/mp4", key="pl_dl_bgm")
+            # mp4は bytes ではなく **パス** で session_state に保持（メモリに mp4 を載せない）
+            st.session_state["pl_video_out"] = {
+                "silent": out.get("silent"), "bgm": out.get("bgm"),
+                "outdir": out.get("outdir")}
+            st.rerun()
         except Exception as e:  # noqa: BLE001
-            st.error(f"生成に失敗しました: {e}")
+            _msg = str(e)
+            if "403" in _msg or "insufficient" in _msg.lower() or "credit" in _msg.lower():
+                st.error("生成に失敗しました：falのクレジット残高を確認してください（403）。")
+            elif "429" in _msg:
+                st.error("生成に失敗しました：falのレート上限です（429）。時間をおいて再試行してください。")
+            else:
+                st.error(f"生成に失敗しました: {_msg}")
+
+    # 生成済み動画（パス）を再rerun後も表示。download_button は open(path) で逐次＝mp4を変数に持たない
+    _vout = st.session_state.get("pl_video_out")
+    if _vout:
+        import os as _os2
+        _sp, _bp = _vout.get("silent"), _vout.get("bgm")
+        if (_sp and _os2.path.exists(_sp)) or (_bp and _os2.path.exists(_bp)):
+            st.success("ルームツアーが完成しました。")
+        if _sp and _os2.path.exists(_sp):
+            st.video(_sp)   # Streamlitはローカルmp4パスをそのまま再生できる
+            st.download_button("⬇️ 無音版 mp4", data=open(_sp, "rb"),
+                               file_name="room_tour_silent.mp4",
+                               mime="video/mp4", key="pl_dl_silent")
+        if _bp and _os2.path.exists(_bp):
+            st.video(_bp)
+            st.download_button("⬇️ BGM版 mp4", data=open(_bp, "rb"),
+                               file_name="room_tour_bgm.mp4",
+                               mime="video/mp4", key="pl_dl_bgm")
 
 
 def render_pipeline():
@@ -2180,4 +2208,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: rentsplit-fix-v57 (賃貸2ページの誤分割修正：分割は売買判定時のみ)")
+    st.caption("build: videofix-v58 (動画連結のメモリ超過修正：xfade→逐次クロスフェード・パス返し・threads制限)")

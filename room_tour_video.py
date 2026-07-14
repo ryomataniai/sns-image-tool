@@ -206,8 +206,11 @@ DEFAULT_NEGATIVE_PROMPT = (
 
 def generate_clip_fal(image_bytes: bytes, prompt: str, duration: int = 5,
                       model_key: str = "kling2.6_pro", silent: bool = True,
-                      negative_prompt: str = "", cfg_scale: Optional[float] = None) -> bytes:
-    """1枚の画像を image-to-video で動画化し mp4 バイト列を返す。要 FAL_KEY。
+                      negative_prompt: str = "", cfg_scale: Optional[float] = None,
+                      out_path: Optional[str] = None):
+    """1枚の画像を image-to-video で動画化。要 FAL_KEY。
+    out_path 指定時は動画を **ストリーミングでディスクへ chunk 書き込み** し out_path を返す
+    （mp4全体をメモリ＝変数に載せない＝Cloud OOM対策）。未指定時は従来どおり bytes を返す。
     negative_prompt/cfg_scale は supports_negative なモデルのみ送る（非対応は無害スキップ）。"""
     import fal_client  # 遅延import（未導入環境でモジュール自体は読める）
 
@@ -245,6 +248,15 @@ def generate_clip_fal(image_bytes: bytes, prompt: str, duration: int = 5,
         raise RuntimeError(f"動画URLが取得できませんでした: {result}")
     if requests is None:
         raise RuntimeError("requests が未導入です。")
+    if out_path is not None:
+        # ストリーミングでディスクへ（mp4全体を変数に載せない）
+        with requests.get(video_url, stream=True, timeout=300) as r:
+            r.raise_for_status()
+            with open(out_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        return out_path
     r = requests.get(video_url, timeout=180)
     r.raise_for_status()
     return r.content
@@ -364,37 +376,94 @@ def _normalize_clip(in_path: str, out_path: str, caption: str = "",
                      f"shadowcolor=black@0.6:shadowx=3:shadowy=3:"
                      f"x=(w-text_w)/2:y=(h-text_h)/2:{fa}")
     chain = base + ";[base]" + (",".join(draws) + "," if draws else "") + "fps=30,format=yuv420p,setsar=1[v]"
+    # -threads 1：エンコードのフレームバッファ多重化を抑えピークRSSを下げる（Cloud 1GB制限向け）。
+    #   ※ threads は圧縮の並列度のみに影響し、drawtext（テロップ/注記/SynthID経路）の
+    #     描画結果は不変＝テロップ回帰なし。filter_complex(chain) は一切変更していない。
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", in_path,
                     "-filter_complex", chain, "-map", "[v]", "-an",
                     "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast", out_path], check=True, timeout=300)
+                    "-preset", "veryfast", "-threads", "1", out_path],
+                   check=True, timeout=300)
     return out_path
+
+
+# -threads 2：libx264のフレームバッファ多重化を抑えピークRSSを下げる（Cloudの少CPU/1GB制限向け）
+_ENC = ["-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
+        "-preset", "veryfast", "-threads", "1"]
+
+
+def _reencode_piece(src: str, dst: str, vf: str) -> None:
+    """1本のクリップを vf（trim等）で再エンコード。全クリップ同一パラメータに揃える
+    （30fps/yuv420p/sar=1）＝後段の concat demuxer を -c copy で通すため。メモリは1本分。"""
+    subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-i", src,
+                    "-filter_complex", f"{vf},fps=30,format=yuv420p,setsar=1[v]",
+                    "-map", "[v]", "-an", *_ENC, dst], check=True, timeout=300)
 
 
 def _xfade_concat(seg_paths: list[str], out_path: str, t: float = 0.6) -> str:
-    """セグメントをクロスフェード連結（可変長対応・オフセット動的計算）。"""
+    """メモリ安全なクロスフェード連結。
+    旧方式（N本を全入力で同時デコードする xfade フィルタグラフ）は N が増えると
+    ffmpeg のピークRSSが 1GB超（実測 9本=1.7GB）となり Streamlit Cloud を落とす。
+    そこで各境界の t 秒だけを xfade した『極小トランジションclip』を作り、本編は
+    トリムして concat demuxer（-c copy・逐次・デコードなし）で連結する。各 ffmpeg 呼び出しは
+    最大2本しか開かないためピークは1本分（数十MB）で済む。見た目のクロスフェードは維持。"""
     ff = _ffmpeg()
-    inputs = []
-    for p in seg_paths:
-        inputs += ["-i", p]
-    if len(seg_paths) == 1:
+    n = len(seg_paths)
+    if n == 0:
+        raise ValueError("連結するセグメントがありません。")
+    if n == 1:
         shutil.copy(seg_paths[0], out_path)
         return out_path
     durs = [_dur(p) for p in seg_paths]
-    parts, prev, acc = [], "[0]", durs[0]
-    for i in range(1, len(seg_paths)):
-        offset = acc - t
-        label = "[v]" if i == len(seg_paths) - 1 else f"[x{i}]"
-        parts.append(f"{prev}[{i}]xfade=transition=fade:duration={t}:offset={offset:.3f}{label}")
-        prev = label
-        acc = acc + durs[i] - t
-    filt = ";".join(parts)
-    subprocess.run([ff, "-y", "-loglevel", "error", *inputs,
-                    "-filter_complex", filt, "-map", "[v]", "-an",
-                    "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p",
-                    "-preset", "veryfast", "-movflags", "+faststart", out_path],
-                   check=True, timeout=600)
-    return out_path
+    # クリップが t の2倍より短いとトリム区間が破綻するため、その場合はハードカットに退避
+    use_xfade = min(durs) > (2 * t + 0.2)
+    workdir = tempfile.mkdtemp(prefix="xf_")
+    try:
+        parts: list[str] = []
+        if not use_xfade:
+            parts = list(seg_paths)                        # フォールバック＝ハードカット
+        else:
+            # head = clip0[0, D0-t]
+            head = os.path.join(workdir, "p_head.mp4")
+            _reencode_piece(seg_paths[0], head,
+                            f"[0:v]trim=start=0:end={durs[0]-t:.3f},setpts=PTS-STARTPTS")
+            parts.append(head)
+            for i in range(n - 1):
+                # transition[i] = xfade(clip[i]の末尾t秒, clip[i+1]の先頭t秒)＝2本のみ
+                tr = os.path.join(workdir, f"p_tr_{i}.mp4")
+                subprocess.run(
+                    [ff, "-y", "-loglevel", "error", "-i", seg_paths[i], "-i", seg_paths[i + 1],
+                     "-filter_complex",
+                     # xfade は入力がCFR（定フレームレート）である必要があるため各入力に fps=30 を前置
+                     (f"[0:v]trim=start={durs[i]-t:.3f}:end={durs[i]:.3f},"
+                      "setpts=PTS-STARTPTS,fps=30,format=yuv420p,setsar=1[a];"
+                      f"[1:v]trim=start=0:end={t:.3f},"
+                      "setpts=PTS-STARTPTS,fps=30,format=yuv420p,setsar=1[b];"
+                      f"[a][b]xfade=transition=fade:duration={t}:offset=0,"
+                      "format=yuv420p,setsar=1[v]"),
+                     "-map", "[v]", "-an", *_ENC, tr], check=True, timeout=300)
+                parts.append(tr)
+                if i < n - 2:                              # mid[i+1] = clip[i+1][t, D-t]
+                    mid = os.path.join(workdir, f"p_mid_{i+1}.mp4")
+                    _reencode_piece(seg_paths[i + 1], mid,
+                                    f"[0:v]trim=start={t:.3f}:end={durs[i+1]-t:.3f},setpts=PTS-STARTPTS")
+                    parts.append(mid)
+            # tail = clip[N-1][t, D]
+            tail = os.path.join(workdir, "p_tail.mp4")
+            _reencode_piece(seg_paths[n - 1], tail,
+                            f"[0:v]trim=start={t:.3f}:end={durs[n-1]:.3f},setpts=PTS-STARTPTS")
+            parts.append(tail)
+        # concat demuxer（-c copy・逐次・O(1)メモリ）
+        listfile = os.path.join(workdir, "list.txt")
+        with open(listfile, "w") as lf:
+            for p in parts:
+                lf.write("file '%s'\n" % p.replace("'", "'\\''"))
+        subprocess.run([ff, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                        "-i", listfile, "-c", "copy", "-movflags", "+faststart", out_path],
+                       check=True, timeout=600)
+        return out_path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _mux_bgm(video_path: str, bgm_wav: str, out_path: str) -> str:
@@ -664,7 +733,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
     aspect: 動画の向き "9:16"（既定）/ "1:1" / "16:9"
     fit_mode: 余白の扱い "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・余白あり）
     progress: callable(step:int, total:int, msg:str) 進捗コールバック（任意）
-    戻り値: {'silent': bytes, 'bgm': bytes}（生成した版のみ）
+    戻り値: {'silent': path, 'bgm': path, 'outdir': dir}（生成した版のみ・mp4はファイルパスで返す）。
+        ※ 呼び出し側は open(path,'rb') で download_button に渡し、不要になったら outdir を掃除する。
     """
     n = len(images)
     if n == 0:
@@ -690,10 +760,10 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
             else:
                 rt = room_types[i] if i < len(room_types) else "generic"
                 prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
-                clip_bytes = generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
-                                               negative_prompt=negative_prompt, cfg_scale=cfg_scale)
-                with open(raw, "wb") as f:
-                    f.write(clip_bytes)
+                # ストリーミングで raw へ直接書き込み（mp4を変数に載せない＝OOM対策）
+                generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
+                                  negative_prompt=negative_prompt, cfg_scale=cfg_scale,
+                                  out_path=raw)
                 _fit = fit_mode
             seg = os.path.join(workdir, f"seg_{i}.mp4")
             cap = captions[i] if (with_captions and i < len(captions)) else ""
@@ -713,24 +783,28 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                             out_w=out_w, out_h=out_h, fit_mode=_fit)
             seg_paths.append(seg)
 
-        # ③ クロスフェード連結
+        # ③ クロスフェード連結（メモリ安全＝逐次）
         if progress:
             progress(n, n, "連結中…")
         silent = os.path.join(workdir, "tour_silent.mp4")
         _xfade_concat(seg_paths, silent)
 
-        out = {}
+        # 完成mp4は bytes ではなくファイルパスで返す（session_state/変数に mp4 を載せない）。
+        # workdir は finally で消えるため、返す成果物だけ永続 outdir へ移す。
+        outdir = tempfile.mkdtemp(prefix="tour_out_")
+        out = {"outdir": outdir}
         if also_silent:
-            with open(silent, "rb") as f:
-                out["silent"] = f.read()
+            dst = os.path.join(outdir, "room_tour_silent.mp4")
+            shutil.move(silent, dst)
+            out["silent"] = dst
+            silent = dst                             # 以降のBGM合成の入力に使う
         if with_bgm:
             total = _dur(silent)
             bgm = os.path.join(workdir, "bgm.wav")
             synth_bgm(bgm, seconds=total + 2.0)
-            withbgm = os.path.join(workdir, "tour_bgm.mp4")
+            withbgm = os.path.join(outdir, "room_tour_bgm.mp4")
             _mux_bgm(silent, bgm, withbgm)
-            with open(withbgm, "rb") as f:
-                out["bgm"] = f.read()
+            out["bgm"] = withbgm
         return out
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
