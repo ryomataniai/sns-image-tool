@@ -123,7 +123,7 @@ def render_settings():
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
-    st.caption("build: captmpl-v63 (時点注記＋投稿文テンプレの設定画面編集：必須要素ガード＋JSONエクスポート/インポート)")
+    st.caption("build: importguard-v64 (投稿文テンプレのJSONインポートにも必須要素validateを適用＝不正テンプレを取込拒否)")
 
 
 def _tpl_tags_to_text(tags):
@@ -166,18 +166,29 @@ def _render_caption_template_editor():
                 d = _json.loads(up.getvalue().decode("utf-8"))
                 if not isinstance(d, dict):
                     raise ValueError("JSONオブジェクトではありません")
-                if "footer" in d:
-                    st.session_state["tpl_footer_in"] = str(d["footer"])
-                if "cta" in d:
-                    st.session_state["tpl_cta_in"] = str(d["cta"])
-                if "area_hashtags" in d:
-                    st.session_state["tpl_tags_in"] = _tpl_tags_to_text(d["area_hashtags"])
-                if "reply" in d:
-                    st.session_state["tpl_reply_in"] = str(d["reply"])
-                if "dm" in d:
-                    st.session_state["tpl_dm_in"] = str(d["dm"])
-                st.session_state["_tpl_import_id"] = up.file_id
-                st.success("インポートしました。内容を確認し「保存」を押してください。")
+                # 取込前に必須要素を検査。欠けていれば取込拒否（編集欄に反映しない＝法務注記の消失防止）。
+                # 未指定キーは既定で補完した候補を検査し、部分importでも既定が保たれることを保証。
+                _keys = ("footer", "cta", "area_hashtags", "reply", "dm")
+                _cand = {**core.default_caption_templates(),
+                         **{k: d[k] for k in _keys if k in d}}
+                _imp_errs, _ = core.validate_caption_templates(_cand)
+                if _imp_errs:
+                    # _tpl_import_id は更新しない＝取込拒否の理由をrerun後も表示し続ける
+                    st.error("インポートを拒否しました（不正テンプレ・必須要素不足）：\n- "
+                             + "\n- ".join(_imp_errs))
+                else:
+                    if "footer" in d:
+                        st.session_state["tpl_footer_in"] = str(d["footer"])
+                    if "cta" in d:
+                        st.session_state["tpl_cta_in"] = str(d["cta"])
+                    if "area_hashtags" in d:
+                        st.session_state["tpl_tags_in"] = _tpl_tags_to_text(d["area_hashtags"])
+                    if "reply" in d:
+                        st.session_state["tpl_reply_in"] = str(d["reply"])
+                    if "dm" in d:
+                        st.session_state["tpl_dm_in"] = str(d["dm"])
+                    st.session_state["_tpl_import_id"] = up.file_id
+                    st.success("インポートしました。内容を確認し「保存」を押してください。")
             except Exception as e:  # noqa: BLE001
                 st.error(f"インポート失敗: {type(e).__name__}: {str(e)[:120]}")
 
@@ -2414,4 +2425,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: captmpl-v63 (時点注記＋投稿文テンプレの設定画面編集：必須要素ガード＋JSONエクスポート/インポート)")
+    st.caption("build: importguard-v64 (投稿文テンプレのJSONインポートにも必須要素validateを適用＝不正テンプレを取込拒否)")
