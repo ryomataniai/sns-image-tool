@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: concept-v70c-u1b (u1＋コンセプトがスタイル既定を決める style_default＝見た目の単一情報源・pl_style sticky追従/人が変えたら停止・mote=ホテルライク)")
+    st.caption("build: concept-v70c-mote1 (u1b＋mote staging_prompt改稿v1＝夜の気配と艶/光だまりと陰/グラス2つ＋【厳守】造作照明禁止(景表法)・人体不可。文言は往復前提)")
 
 
 def _render_video_env_diagnostics():
@@ -2715,4 +2715,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: concept-v70c-u1b (u1＋コンセプトがスタイル既定を決める style_default＝見た目の単一情報源・pl_style sticky追従/人が変えたら停止・mote=ホテルライク)")
+    st.caption("build: concept-v70c-mote1 (u1b＋mote staging_prompt改稿v1＝夜の気配と艶/光だまりと陰/グラス2つ＋【厳守】造作照明禁止(景表法)・人体不可。文言は往復前提)")
