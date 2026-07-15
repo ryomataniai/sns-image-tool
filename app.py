@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: keynorm-v76 ((A)room_subsキー正規化：Geminiが LDK→リビング/洋室→寝室 と改名してもAIコピーを捨てず正規名で照合。対応取れない時は赤⚠️で人に返す(guard落ち=黄🛡️と区別)。(B)表紙コピーnormal既定を空に(moteは帰りたくない。角部屋。維持))")
+    st.caption("build: narrmeas-v77 (①読み辞書に献立→こんだて/創る→つくる追加(最長一致・貢献/創業は無傷) ②ナレ実測CPS計装：TTS実尺÷実文字数=実測字/秒＋末尾無音を毎シーンUI表示。係数_NARR_CPS=4.2は推測でなく実測を見てから決める(今回は未変更・atempo禁止維持))")
 
 
 def _render_video_env_diagnostics():
@@ -2846,4 +2846,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: keynorm-v76 ((A)room_subsキー正規化：Geminiが LDK→リビング/洋室→寝室 と改名してもAIコピーを捨てず正規名で照合。対応取れない時は赤⚠️で人に返す(guard落ち=黄🛡️と区別)。(B)表紙コピーnormal既定を空に(moteは帰りたくない。角部屋。維持))")
+    st.caption("build: narrmeas-v77 (①読み辞書に献立→こんだて/創る→つくる追加(最長一致・貢献/創業は無傷) ②ナレ実測CPS計装：TTS実尺÷実文字数=実測字/秒＋末尾無音を毎シーンUI表示。係数_NARR_CPS=4.2は推測でなく実測を見てから決める(今回は未変更・atempo禁止維持))")

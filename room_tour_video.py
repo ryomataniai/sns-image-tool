@@ -1468,7 +1468,15 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             except Exception as e:  # noqa: BLE001  1本失敗は隔離＝logger/stateへ
                 narr_warn.append(_log_failure(f"tts(scene {sc['i']})", e))
                 continue
-            over = _dur(apath) - durs[k]
+            # ★実測CPS（係数_NARR_CPSは推測でなく実測で決める・factguard期の教訓）。実尺と無音を毎シーンUIへ。
+            _sec = _dur(apath)
+            _chars = len(re.sub(r"\s+", "", txt))
+            _cps = (_chars / _sec) if _sec > 0 else 0.0
+            _silence = max(0.0, durs[k] - _sec)
+            narr_warn.append(
+                f"📏 シーン{sc['i']+1} 実測: {_chars}字 ÷ 実尺{_sec:.1f}s = {_cps:.1f}字/秒"
+                f"（尺{durs[k]:.0f}s・末尾無音{_silence:.1f}s）")
+            over = _sec - durs[k]
             if over > 0.3:                          # 0.3s超過は原稿短縮を促す（自動速度変更しない）
                 narr_warn.append(f"シーン{sc['i']+1}: ナレ音声が尺を{over:.1f}s超過（原稿を短縮して再生成を）")
             audio_starts.append((apath, starts[k]))
