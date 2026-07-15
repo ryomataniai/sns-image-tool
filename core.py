@@ -308,11 +308,19 @@ def crop_uniform_borders(png_bytes: bytes, min_keep: float = 0.55,
     return out.getvalue()
 
 
+def _concept_line(concept_staging: str) -> str:
+    """コンセプトのステージング方向づけを1行に（空＝ノーマル＝追加なし＝回帰なし）。"""
+    cs = str(concept_staging or "").strip()
+    return f"【コンセプト方向づけ】{cs}\n" if cs else ""
+
+
 def build_staging_prompt(style_desc: str, room_use: str = "",
-                         user_request: str = "") -> str:
+                         user_request: str = "", concept_staging: str = "") -> str:
     """実際の空室写真 → 家具ステージング（構造は維持）。
 
     room_use: "リビング" / "寝室" / "" (おまかせ=広さから自動推定)
+    concept_staging: コンセプト(モテ部屋等)の方向づけ。空＝ノーマル＝追加なし（回帰なし）。
+      ★構造・設備の【厳守】制約は不変。方向づけは家具/小物/色温度/生活感の演出に限る。
     """
     if room_use == "リビング":
         furni = ("この洋室はリビングとして使う想定です。"
@@ -336,6 +344,7 @@ def build_staging_prompt(style_desc: str, room_use: str = "",
         "生活感のある部屋にしてください。"
         "壁・天井・床・建具・キッチン・水回りなどの内装や設備は入力画像のまま一切変更しないでください。\n"
         f"{furni}"
+        f"{_concept_line(concept_staging)}"      # ★コンセプト方向づけ（空=ノーマル=回帰なし）
         f"{_request_line(user_request)}\n"
         "【厳守】実際にない窓・眺望・設備を足さない。部屋を実際より広く見せない。"
         "壁の色・間取り・設備のグレードを変えない。"
@@ -428,8 +437,10 @@ def classify_rooms(client, images, model="gemini-2.5-flash"):
     return out
 
 
-def build_water_staging_prompt(style_desc: str = "", user_request: str = "") -> str:
-    """水回り（キッチン/浴室/洗面/トイレ）・玄関 → 設備は変えず生活小物だけ演出。"""
+def build_water_staging_prompt(style_desc: str = "", user_request: str = "",
+                               concept_staging: str = "") -> str:
+    """水回り（キッチン/浴室/洗面/トイレ）・玄関 → 設備は変えず生活小物だけ演出。
+    concept_staging: コンセプト方向づけ（空＝ノーマル＝回帰なし・小物の演出方向のみ）。"""
     return (
         "入力画像は賃貸物件の水回り（キッチン・浴室・洗面・トイレ）または玄関の実際の写真です。"
         "設備・造作・構造・広さ・グレードは一切変えずに維持したまま高解像度・高精細に整え、"
@@ -443,6 +454,7 @@ def build_water_staging_prompt(style_desc: str = "", user_request: str = "") -> 
         "既存の棚・扉・キャビネット・壁・壁パネル・床・建具などの色・木目・素材・仕上げ・グレードは"
         "一切変えないこと（例：濃い色の棚やアクセント壁を明るい木目に変えない）。"
         "全体は清潔感のある高解像度な仕上がりに整えてください。"
+        f"{_concept_line(concept_staging)}"      # ★コンセプト方向づけ（空=ノーマル=回帰なし）
         f"{_request_line(user_request)}\n"
         "【厳守】実際にない設備（食洗機・浴室乾燥・収納・窓など）を絶対に足さない。"
         "入力画像で壁になっている面に、窓・扉・開口部・別室への抜けを一切新設しない（壁は壁のまま維持）。"
@@ -1127,6 +1139,102 @@ _PR_STATION_WALK_THRESHOLD = 10   # 駅への直接徒歩がこの分数を超�
 _PR_MAX_TITLE = 16       # タイトル
 _PR_MAX_SUBTITLE = 24    # サブタイトル
 _PR_MAX_HIGHLIGHT = 14   # ◎魅力ポイント 各1つ
+
+
+# ── コンセプト・プリセット（concept-v70c）：上流で1択→全工程の既定が追従 ─────────────
+# ★合格条件＝データ駆動：1コンセプト=1行。残り2つ(career_qol/hobby)は表に行を足すだけで動く。
+#   コンセプト名は内部語（顧客向け出力に出さない）。下流は concept_of() だけ参照＝単一の情報源。
+#   voice_id は「設定」なので表に直書き（鍵ではない・漏れても実害ゼロ）。None → 既定 ELEVENLABS_VOICE_ID。
+_MOTE_HARD_NG = [   # モテのハードNG（機械除去＋警告。型承認=宅建/広告専門家は別ゲート）
+    "モテ部屋", "モテる", "モテ",
+    "エロ", "セクシー", "色気", "誘惑", "抱かれ", "夜のお誘い", "お持ち帰り",
+    "可愛い", "かわいい", "美人", "美女", "イケメン", "美脚", "美肌", "スタイル抜群",
+    "彼女が喜ぶ", "彼が喜ぶ", "女子力", "男らしい", "女らしい", "主婦向け",
+]
+
+CONCEPT_PRESETS = {
+    "normal": {
+        "label": "ノーマル", "status": "ready",
+        "staging_prompt": "",                                  # 追加なし＝現行既定（回帰なし）
+        "telop": {"style": "", "few_shot": []},
+        "narration": {"voice_id": None, "tone": ""},
+        "ban_words": [], "caption": {"tone": "", "hashtags": []}, "cover": {"tone": ""},
+    },
+    "mote": {
+        "label": "モテ部屋", "status": "ready",
+        "staging_prompt": (
+            "生活の気配と余白を残す。置きすぎない。間接照明・やわらかい色温度（電球色寄り）、"
+            "読みかけの本・マグ・小さな観葉・畳んだブランケット等『誰かが暮らしている』小物をひかえめに。"
+            "生々しくしすぎない・清潔感は保つ。"),
+        "telop": {
+            "style": ("基準＝『帰りたくない。角部屋。』。これが文体の中心であり上限（これより踏み込まない）。"
+                      "時間の匂わせ（終電/夜/朝）・二人称の気配（呼ぶ/見せる/帰す）・生活の生々しさ（眠る/料理/光）。"
+                      "言い切り・体言止め・句点で切る。短文。"),
+            "few_shot": ["終電を気にしない部屋。", "呼びたくなる、キッチン。", "朝が、悪くない。", "帰りたくない。角部屋。"],
+        },
+        "narration": {"voice_id": None,     # None → 既定 ELEVENLABS_VOICE_ID(=HIRO)。v70cでvoice作業ゼロ
+                      "tone": "低い声・落ち着き・余白。時間の匂わせと言い切り。煽らない。基準『帰りたくない。角部屋。』"},
+        "ban_words": _MOTE_HARD_NG,
+        "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
+                    "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},   # ブランド共通に少量追加
+        "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。"},
+    },
+    # ── 枠のみ（v70cは選ぶと normal挙動＋『準備中』表示）。将来 v70d で中身を書くだけ ──
+    "career_qol": {
+        "label": "キャリア／QOL", "status": "wip",
+        "staging_prompt": "", "telop": {"style": "", "few_shot": []},
+        "narration": {"voice_id": None, "tone": ""},          # 将来: 女性ボイスIDを この行に書く
+        "ban_words": [], "caption": {"tone": "", "hashtags": []}, "cover": {"tone": ""},
+    },
+    "hobby": {
+        "label": "趣味部屋", "status": "wip",
+        "staging_prompt": "", "telop": {"style": "", "few_shot": []},
+        "narration": {"voice_id": None, "tone": ""},
+        "ban_words": [], "caption": {"tone": "", "hashtags": []}, "cover": {"tone": ""},
+    },
+}
+CONCEPT_ORDER = ["normal", "mote", "career_qol", "hobby"]
+
+
+def concept_of(cid):
+    """コンセプト設定を取得。未知は normal。★下流はこの1関数だけ参照＝単一の情報源（分岐を散らさない）。"""
+    return CONCEPT_PRESETS.get(cid) or CONCEPT_PRESETS["normal"]
+
+
+def concept_is_wip(cid):
+    """枠のみ（準備中）か。True なら normal 挙動へ倒す＋UIで『準備中』表示。"""
+    return CONCEPT_PRESETS.get(cid, {}).get("status") == "wip"
+
+
+def concept_eff(cid):
+    """実効コンセプトid。wip は normal に倒す（＝落とさず現行挙動）。"""
+    return "normal" if concept_is_wip(cid) else (cid if cid in CONCEPT_PRESETS else "normal")
+
+
+def concept_voice_id(cid, default_voice=None):
+    """コンセプトの voice_id（表に直書き＝設定）。None → 既定にフォールバック。★鍵はSecrets、設定は表。"""
+    return concept_of(concept_eff(cid)).get("narration", {}).get("voice_id") or default_voice
+
+
+def concept_ban(cid):
+    """そのコンセプトで機械除去する語＝共通ban ＋ コンセプト固有ハードNG。"""
+    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_of(concept_eff(cid)).get("ban_words", []))
+
+
+def concept_scrub(cid, text, facts=None):
+    """顧客向け出力からコンセプトban語・『モテ』・物件名を機械除去。返り値 (clean, removed[])。
+    ★『モテ』の語・物件名は顧客向けに絶対出さない（型承認は別ゲート）。"""
+    s = str(text or "")
+    removed = []
+    for w in concept_ban(cid):
+        if w and w in s:
+            s = s.replace(w, "")
+            removed.append(w)
+    name = ((facts or {}).get("name") or "").strip()
+    if name and name in s:
+        s = s.replace(name, "")
+        removed.append(name)
+    return re.sub(r"\s+", " ", s).strip(), sorted(set(removed))
 
 # 事実照合が必要な非数値の属性（同義グループ）：グループ内のどれかが facts/全文に
 # あれば裏付けありとみなす（表記ゆれで枯れないように）。無ければ その案・その◎ を落とす。

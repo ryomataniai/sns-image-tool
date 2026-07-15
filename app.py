@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: bugfix-v70b (4-2 メイン欄を表記切替にsticky追従＝英/和不整合を解消＋4-1 表紙を毎回自動生成・既定ON・失敗時は表紙なしで続行)")
+    st.caption("build: concept-v70c-u1 (コンセプト上流セレクタ＝単一の情報源pl_concept＋①画像化stagingに追従・データ駆動CONCEPTS表・ノーマル回帰・wipは準備中)")
 
 
 def _render_video_env_diagnostics():
@@ -1048,23 +1048,26 @@ def _pl_generate_one(client, it, style_desc, model, aspect, req):
         return data, err, _PL_PERSP_DISC
     # 事実ガード（3条件）を req 先頭に前置＝記載外設備を描かせない（帖数ヒントと同方式）
     _sreq = "\n".join(x for x in [it.get("_stage_facts", ""), req] if x)
+    # ★コンセプト方向づけ（単一の情報源 pl_concept から）。ノーマル/未設定＝空＝回帰なし
+    _cst = core.concept_of(st.session_state.get("pl_concept", "normal")).get("staging_prompt", "")
     if t == "リノベ後イメージ":
         # room-aware（部屋の機能を保ったまま刷新）
         pr = core.build_renovation_prompt(style_desc, user_request=_sreq, room=room)
         disc = "※リノベ後のイメージ（仕上がりは設計により異なります）"
     elif t == "家具ステージング" and room in PL_RESIDENTIAL:
-        pr = core.build_staging_prompt(style_desc, _pl_room_use(room), user_request=_sreq)
+        pr = core.build_staging_prompt(style_desc, _pl_room_use(room), user_request=_sreq,
+                                       concept_staging=_cst)
         disc = "※AI加工のイメージ"
     elif t == "家具ステージング":
         # 非居室に家具ステージングが来た場合の最終防波堤（居室用ステージングは流さない）
         if room in ("キッチン", "玄関", "廊下", "バルコニー"):
-            pr = core.build_water_staging_prompt(style_desc, user_request=_sreq)
+            pr = core.build_water_staging_prompt(style_desc, user_request=_sreq, concept_staging=_cst)
             disc = "※AI加工のイメージ"
         else:  # 浴室・洗面・トイレ・クローゼット・その他
             pr = core.build_enhance_prompt()
             disc = None
     elif t == "水回り・玄関を演出":
-        pr = core.build_water_staging_prompt(style_desc, user_request=_sreq)
+        pr = core.build_water_staging_prompt(style_desc, user_request=_sreq, concept_staging=_cst)
         disc = "※AI加工のイメージ"
     else:  # 高解像度化のみ
         pr = core.build_enhance_prompt()
@@ -2630,6 +2633,22 @@ def _pl_stage_video():
                                mime="video/mp4", key="pl_dl_narr_bgm")
 
 
+def _pl_concept_selector():
+    """上流のコンセプト選択（concept-v70c・単一の情報源 pl_concept）。画像化〜投稿文の既定が追従。
+    ★コンセプト名は内部語＝顧客向け出力に出さない。career_qol/hobby は準備中（ノーマル挙動・落ちない）。"""
+    _labels = {cid: core.CONCEPT_PRESETS[cid]["label"] for cid in core.CONCEPT_ORDER}
+    _c = st.selectbox("コンセプト（上流で1回・画像化〜投稿文の既定が追従）", core.CONCEPT_ORDER,
+                      key="pl_concept",
+                      format_func=lambda c: _labels.get(c, c)
+                      + ("（準備中）" if core.concept_is_wip(c) else ""))
+    if core.concept_is_wip(_c):
+        st.caption(f"🚧 「{_labels[_c]}」は準備中です。今はノーマル挙動で進みます（落ちません）。")
+    elif _c == "mote":
+        st.caption("🏠 家具ステージング・テロップ・ナレ・表紙・投稿文の既定がこの世界観に追従します"
+                   "（コンセプト名は顧客向けに出しません）。")
+    return _c
+
+
 def render_pipeline():
     st.subheader("物件から動画をつくる")
     st.caption("マイソクPDF や 手持ち写真 → 内観画像 → ルームツアー動画 までを一気通貫で。"
@@ -2638,6 +2657,7 @@ def render_pipeline():
     steps = ["① 取り込み・種別", "② 画像化", "③ 確認", "④ 動画化"]
     cur = {"input": 0, "review": 2, "video": 3}.get(stage, 0)
     st.caption("　→　".join(f"**{s}**" if i == cur else s for i, s in enumerate(steps)))
+    _pl_concept_selector()   # 上流1択（単一の情報源）＝画像化より前に置き下流の既定を追従させる
     # on_click で nonce を進めてから全消し（uploaderを作り直す＝地雷②回避）。rerunは自動
     st.button("最初からやり直す", key="pl_reset_btn", on_click=_pl_reset)
     st.divider()
@@ -2681,4 +2701,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: bugfix-v70b (4-2 メイン欄を表記切替にsticky追従＝英/和不整合を解消＋4-1 表紙を毎回自動生成・既定ON・失敗時は表紙なしで続行)")
+    st.caption("build: concept-v70c-u1 (コンセプト上流セレクタ＝単一の情報源pl_concept＋①画像化stagingに追従・データ駆動CONCEPTS表・ノーマル回帰・wipは準備中)")
