@@ -1242,6 +1242,28 @@ def concept_ban(cid):
     return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_of(concept_eff(cid)).get("ban_words", []))
 
 
+def concept_telop(cid):
+    """テロップの文体指示＋few-shot例。返り値 (style_str, few_shot_list)。normal/wipは("",[])＝回帰。"""
+    t = concept_of(concept_eff(cid)).get("telop") or {}
+    return str(t.get("style", "")).strip(), [str(x).strip() for x in (t.get("few_shot") or []) if str(x).strip()]
+
+
+def concept_tone(cid, key):
+    """コンセプトのトーン文字列。key∈{narration, caption, cover}。normal/wipは""＝回帰。"""
+    return str((concept_of(concept_eff(cid)).get(key) or {}).get("tone", "")).strip()
+
+
+def concept_hashtags(cid):
+    """コンセプト別ハッシュタグ（ブランド共通に少量追加するだけ）。normal/wipは[]。"""
+    return [str(x).strip() for x in ((concept_of(concept_eff(cid)).get("caption") or {}).get("hashtags") or [])
+            if str(x).strip()]
+
+
+def concept_ban_extra(cid):
+    """コンセプト固有のハードNG語のみ（共通banは concept_ban 側）。生成物のpost-filter用。"""
+    return [w for w in (concept_of(concept_eff(cid)).get("ban_words") or []) if w]
+
+
 def concept_scrub(cid, text, facts=None):
     """顧客向け出力からコンセプトban語・『モテ』・物件名を機械除去。返り値 (clean, removed[])。
     ★『モテ』の語・物件名は顧客向けに絶対出さない（型承認は別ゲート）。"""
@@ -1381,15 +1403,34 @@ def _pr_is_clean(s: str, haystack_norm: str, extra_banned=(), *,
     return True
 
 
+def _concept_pr_block(concept: str) -> str:
+    """draft_pr_copy 用コンセプト方向づけ（表紙タイトル＝cover.tone / 情感2行＝telop.style＋few_shot）。
+    normal/wip は空＝回帰。★トーンだけ寄せる（数値・事実・属性は創作させない＝景表法ガードは不変）。"""
+    cover = concept_tone(concept, "cover")
+    telop_style, few = concept_telop(concept)
+    if not (cover or telop_style or few):
+        return ""
+    parts = ["\n【コンセプト方向づけ】（トーンだけ寄せる。数値・設備・属性は創作しない＝上の厳守事項が優先）："]
+    if cover:
+        parts.append(f"・title/subtitle のトーン：{cover}")
+    if telop_style:
+        parts.append(f"・room_subs（情感2行）の文体：{telop_style}")
+    if few:
+        parts.append("・情感2行の参考例（文体と長さの手本・そのまま流用しない）：" + " / ".join(few))
+    return "\n".join(parts) + "\n"
+
+
 def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
-                  model="gemini-2.5-flash") -> dict:
+                  model="gemini-2.5-flash", concept: str = "normal") -> dict:
     """マイソク全文＋事実＋部屋種別 → PRコピー下書き。
     返り値: {titles:[{direction,title,subtitle}x3], highlights:[..], room_subs:{room:2行},
     fallback:bool}。誇大語/facts外数値/超過/未確認属性/バス交通/徒歩不一致 を機械バリデータで除去。
-    有効タイトルが0件なら簡易テンプレ（物件名｜間取り）に退避し fallback=True。事実皆無のみ None。"""
+    有効タイトルが0件なら簡易テンプレ（物件名｜間取り）に退避し fallback=True。事実皆無のみ None。
+    concept: コンセプト方向づけ（title/情感2行のトーン）。normal/wip＝空＝回帰。コンセプト固有ban語も除去。"""
     import json as _json
     if not full_text and not facts:
         return None
+    _cban = concept_ban_extra(concept)      # コンセプト固有ハードNG（性的/容姿/性別役割/モテ 等）
     facts_json = _json.dumps(facts, ensure_ascii=False)
     rooms_json = _json.dumps(rooms, ensure_ascii=False)
     hay = _pr_norm(full_text + " " + facts_json)       # 数値照合用（正規化）
@@ -1411,6 +1452,7 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
         "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
         "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
+        f"{_concept_pr_block(concept)}"          # ★コンセプト方向づけ（空=ノーマル=回帰）
         "出力JSON（これのみ・説明文なし）：\n"
         '{"titles":[{"direction":"立地|間取り|設備","title":"...","subtitle":"..."}(3案・方向を必ず分ける)],'
         '"highlights":["◎...(設備/条件から3〜5個)"],'
@@ -1442,6 +1484,8 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
             title = str(t.get("title", "")).strip()
             sub = str(t.get("subtitle", "")).strip()
             _access = facts.get("access")
+            if _cban and any(w in title for w in _cban):
+                continue                                # コンセプト固有ban（性的/容姿/モテ 等）は落とす
             if not _pr_is_clean(title, hay, loc_ban, max_len=_PR_MAX_TITLE,
                                 hay_raw=hay_raw, ban_transport=True, access=_access):
                 continue                                # 超過/誇大/facts外/未確認属性/バス交通/徒歩不一致は落とす
@@ -1449,18 +1493,21 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
                 continue
             if sub and (not _pr_is_clean(sub, hay, loc_ban, max_len=_PR_MAX_SUBTITLE,
                                          hay_raw=hay_raw, ban_transport=True, access=_access)
-                        or _pr_has_spec(sub)):
-                sub = ""                                # サブだけNGなら空に
+                        or _pr_has_spec(sub)
+                        or (_cban and any(w in sub for w in _cban))):
+                sub = ""                                # サブだけNG（コンセプトban含む）なら空に
             titles.append({"direction": str(t.get("direction", "")).strip(),
                            "title": title, "subtitle": sub})
         highlights = [h for h in (data.get("highlights", []) or [])
                       if _pr_is_clean(h, hay, loc_ban, max_len=_PR_MAX_HIGHLIGHT,
                                       hay_raw=hay_raw)
-                      and not _pr_has_any_transport(h)][:5]   # C: ◎に交通表現を載せない（band重複）
+                      and not _pr_has_any_transport(h)
+                      and not (_cban and any(w in h for w in _cban))][:5]  # ◎に交通/コンセプトban不可
         room_subs = {}
         for k, v in (data.get("room_subs", {}) or {}).items():
             s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
-            if _pr_is_clean(s.replace("\n", " "), hay, loc_ban, hay_raw=hay_raw):
+            if (_pr_is_clean(s.replace("\n", " "), hay, loc_ban, hay_raw=hay_raw)
+                    and not (_cban and any(w in s for w in _cban))):
                 room_subs[str(k)] = s
         if titles:                                      # 有効タイトルが出たら確定
             break
@@ -1575,8 +1622,15 @@ def _sns_access_pick(access):
     return best_st, best_min
 
 
+def _concept_caption_line(concept: str) -> str:
+    """draft_sns_captions 用コンセプトのトーン1行（hook/area_blurの文体）。normal/wipは空＝回帰。"""
+    tone = concept_tone(concept, "caption")
+    return f"・hook/文体のトーン：{tone}（数値・設備は創作しない＝上の厳守が優先）。\n" if tone else ""
+
+
 def draft_sns_captions(client, facts: dict, templates: dict = None,
-                       gen_date: str = None, model="gemini-2.5-flash") -> dict:
+                       gen_date: str = None, model="gemini-2.5-flash",
+                       concept: str = "normal") -> dict:
     """マイソク事実から Instagram×2 / TikTok×2 / コメント返信テンプレ を生成。
     ★数値（賃料・管理費・㎡・徒歩分）・設備は facts 由来をコードで固定し改変させない。
       Gemini はフック文・エリアぼかし・設備の選定・ハッシュタグの創作のみ。フッター/CTA/エリア大ハッシュタグ/
@@ -1624,6 +1678,7 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
         "・hook は1行・数字は事実のみ。フックA=数字/コスパ訴求（必ず具体的な金額または数字を含める）、"
         "フックB=特徴/内装訴求。\n"
         "・hashtags(IG)は15〜20個：エリア大5・エリア小4・属性5・ニッチ4の配分。TikTokは4個。\n"
+        f"{_concept_caption_line(concept)}"      # ★コンセプトのトーン（空=ノーマル=回帰）
         "出力JSON（これのみ・説明なし）：\n"
         '{"ig_a":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
         '"ig_b":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
@@ -1642,9 +1697,10 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     except Exception as e:  # noqa: BLE001  握り潰さず記録（事実部分だけでも返す＝実運用を止めない）
         warnings.append(f"AIによるフック/ハッシュタグ生成に失敗（{type(e).__name__}）。事実部分のみで出力します。")
 
-    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA
+    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA + concept_ban_extra(concept)  # ＋コンセプト固有ハードNG
     if walk is None or walk > 8:                     # 徒歩8分超/不明→立地訴求語も禁止
         ban += _PR_LOCATION_WORDS
+    con_tags = concept_hashtags(concept)             # コンセプト別タグ（ブランド共通に少量追加のみ）
 
     def _clean(s):
         s = str(s or "")
@@ -1673,8 +1729,8 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     def _ig(d):
         body = [_clean(d.get("hook", "")), "", _clean(d.get("area_blur", ""))]
         body += [x for x in (ma_line, money_line, walk_line, _equip_line(d.get("equip"))) if x]
-        # ハッシュタグ = テンプレのエリア大（固定・先頭）＋ Gemini の残り（重複除去・最大20）
-        tags = _tags(list(area_tags) + list(d.get("hashtags") or []), 20)
+        # ハッシュタグ = テンプレのエリア大（固定・先頭）＋ コンセプト別（少量）＋ Gemini の残り（重複除去・最大20）
+        tags = _tags(list(area_tags) + list(con_tags) + list(d.get("hashtags") or []), 20)
         # footer/CTA はテンプレ確定値をそのまま（編集時に必須要素ガード＋ban検査済み＝ここでは無改変）
         body += ["", cta, "", footer, "", " ".join(tags)]
         return "\n".join(body)
@@ -1683,7 +1739,8 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
         txt = _clean(d.get("text", ""))
         if len(txt) > 60:
             txt = txt[:59] + "…"
-        return f"{txt}\n" + " ".join(_tags(d.get("hashtags"), 4))
+        # TikTokは4個上限＝Geminiの内容タグ優先、余ればコンセプト別を末尾に少量
+        return f"{txt}\n" + " ".join(_tags(list(d.get("hashtags") or []) + list(con_tags), 4))
 
     return {
         "ig_a": _ig(data.get("ig_a", {})), "ig_b": _ig(data.get("ig_b", {})),
@@ -1845,14 +1902,18 @@ def narration_has_ascii(text: str) -> bool:
 
 
 def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
-                     model="gemini-2.5-flash") -> dict:
+                     model="gemini-2.5-flash", concept: str = "normal") -> dict:
     """テロップ（目向け・体言止め）を耳向けの口語ナレへ整える。
-    ★字数上限（正規化後）にハード収束・読み正規化・ban語/物件名/モテ除去。返り値 {text, limit, warnings}。"""
+    ★字数上限（正規化後）にハード収束・読み正規化・ban語/物件名/モテ除去。返り値 {text, limit, warnings}。
+    concept: ナレのトーン方向づけ（narration.tone）。normal/wip＝空＝回帰。コンセプト固有banも除去。"""
     limit = narration_char_limit(dur_sec)
     facts = facts or {}
+    _ntone = concept_tone(concept, "narration")
+    _tone_line = f"・トーン：{_ntone}\n" if _ntone else ""
     instr = (
         "次のテロップ文を、低い声の男性ナレーターが読む『耳向けの一文』に整えてください。\n"
         f"・{limit}字以内・言い切り・短文・煽らない。誇大/最上級/断定は使わない。\n"
+        f"{_tone_line}"                              # ★コンセプトのトーン（空=ノーマル=回帰）
         "・物件名・『モテ』等の内部語は使わない。数字や単位はそのまま残してよい。\n"
         "出力は本文のみ（説明・記号・引用符・改行なし）。\nテロップ："
     )
@@ -1865,7 +1926,7 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
         warnings.append(f"整え生成に失敗（{type(e).__name__}）。元テロップを正規化しました。")
     out = normalize_reading(out)                   # 読み正規化（英字/記号→カナ/和数）
     name = (facts.get("name") or "").strip()
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"]:
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + concept_ban_extra(concept):
         if w and w in out:
             out = out.replace(w, "")
             warnings.append(f"ban語『{w}』を除去")

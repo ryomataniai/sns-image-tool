@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: concept-v70c-mote1 (u1b＋mote staging_prompt改稿v1＝夜の気配と艶/光だまりと陰/グラス2つ＋【厳守】造作照明禁止(景表法)・人体不可。文言は往復前提)")
+    st.caption("build: concept-v70c-u2 (mote1＋STEP4系4工程をpl_concept追従＝テロップ情感/表紙(draft_pr_copy)・投稿文(draft_sns_captions)・ナレ(polish_narration)・voice_id＋スタイル手動選択中の一行。ブランド共通/管理費/時点注記は不変)")
 
 
 def _render_video_env_diagnostics():
@@ -578,7 +578,8 @@ def _pl_narr_polish_cb(nid, tel, dur):
         st.session_state[f"_pl_narr_msg_{nid}"] = "Gemini APIキーが未設定です（設定ページで確認）。"
         return
     # ★素材は常にテロップ全文(メイン＋情感2行)。情感を捨てず、上限内の耳向け1文に畳み込む。
-    pr = core.polish_narration(c, tel, dur, _pl_effective_facts())
+    pr = core.polish_narration(c, tel, dur, _pl_effective_facts(),
+                               concept=st.session_state.get("pl_concept", "normal"))
     st.session_state[f"pl_narr_{nid}"] = pr["text"]
     st.session_state[f"_pl_narr_msg_{nid}"] = ("🎙️ " + "／".join(pr["warnings"])
                                                if pr.get("warnings") else "")
@@ -1603,6 +1604,9 @@ def _pl_stage_input():
     _pl_follow_concept_style()          # ★スタイルwidget生成前にコンセプト→スタイルを追従（sticky）
     gc1, gc2, gc3 = st.columns(3)
     style_name = gc1.selectbox("スタイル", list(core.INTERIOR_STYLES.keys()), key="pl_style")
+    # ★人がスタイルを明示上書き中は一行明示＝「追従停止（正常）」を「追従漏れ（バグ）」と誤認させない。
+    if st.session_state.get("pl_style") != st.session_state.get("pl_style_auto"):
+        gc1.caption("✋ スタイルを手動で選択中（コンセプトに追従しません）")
     model = gc2.selectbox("モデル", core.MODELS, index=0, key="pl_model")
     aspect = gc3.radio("画像の比率", ["4:5", "1:1", "3:4"], horizontal=True, key="pl_aspect",
                        format_func=lambda a: _IMG_ASPECT_LABEL.get(a, a))
@@ -2061,8 +2065,11 @@ def _pl_stage_video():
     # ナレーション用（★キー値はここで env に載せるのみ・UI/ログには一切出さない）
     _os.environ["ELEVENLABS_API_KEY"] = get_secret("ELEVENLABS_API_KEY",
                                                    _os.environ.get("ELEVENLABS_API_KEY", ""))
-    _os.environ["ELEVENLABS_VOICE_ID"] = get_secret("ELEVENLABS_VOICE_ID",
-                                                    _os.environ.get("ELEVENLABS_VOICE_ID", ""))
+    # 既定ボイス（Secrets）→ コンセプトが voice_id を持てばそれを env に載せ替え（データ駆動）。
+    # ★mote は voice_id=None → 既定 ELEVENLABS_VOICE_ID(=HIRO) にフォールバック＝ボイス作業ゼロ・no-op。
+    _default_voice = get_secret("ELEVENLABS_VOICE_ID", _os.environ.get("ELEVENLABS_VOICE_ID", ""))
+    _os.environ["ELEVENLABS_VOICE_ID"] = core.concept_voice_id(
+        st.session_state.get("pl_concept", "normal"), default_voice=_default_voice) or ""
     st.markdown("#### ④ 動画化（ルームツアー）")
     items = st.session_state.get("pl_items", [])
     adopted = [it for it in items if it.get("gen_bytes") and it.get("_adopt", True)]
@@ -2179,7 +2186,8 @@ def _pl_stage_video():
                 with st.spinner("各シーンのナレを下書き中…"):
                     for _it in adopted:
                         _tel = _pl_scene_telop_text(_it, v_lang)
-                        _p = core.polish_narration(_nclient, _tel, v_dur, _pl_effective_facts())
+                        _p = core.polish_narration(_nclient, _tel, v_dur, _pl_effective_facts(),
+                                                   concept=st.session_state.get("pl_concept", "normal"))
                         # ★narr のみ更新（auto は触らない）＝以後テロップ変更に追従せず人が直せる
                         st.session_state[f"pl_narr_{_it['id']}"] = _p["text"]
                         _ws += _p.get("warnings", [])
@@ -2205,7 +2213,8 @@ def _pl_stage_video():
                 with st.spinner("PRコピーを下書き中…"):
                     _draft = core.draft_pr_copy(
                         _client, _facts.get("full_text", ""),
-                        {k: v for k, v in _facts.items() if k != "full_text"}, _rooms)
+                        {k: v for k, v in _facts.items() if k != "full_text"}, _rooms,
+                        concept=st.session_state.get("pl_concept", "normal"))
                 if not _draft:
                     st.warning("AI下書きに失敗しました。簡易テンプレのまま続行します。")
                 else:
@@ -2268,7 +2277,8 @@ def _pl_stage_video():
                 with st.spinner("投稿文を生成中…"):
                     try:
                         _sns = core.draft_sns_captions(_sclient, _sfacts,
-                                                       templates=_pl_effective_templates())
+                                                       templates=_pl_effective_templates(),
+                                                       concept=st.session_state.get("pl_concept", "normal"))
                     except Exception as e:  # noqa: BLE001
                         _sns = None
                         st.error(f"投稿文の生成に失敗しました: {type(e).__name__}: {str(e)[:120]}")
@@ -2715,4 +2725,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: concept-v70c-mote1 (u1b＋mote staging_prompt改稿v1＝夜の気配と艶/光だまりと陰/グラス2つ＋【厳守】造作照明禁止(景表法)・人体不可。文言は往復前提)")
+    st.caption("build: concept-v70c-u2 (mote1＋STEP4系4工程をpl_concept追従＝テロップ情感/表紙(draft_pr_copy)・投稿文(draft_sns_captions)・ナレ(polish_narration)・voice_id＋スタイル手動選択中の一行。ブランド共通/管理費/時点注記は不変)")
