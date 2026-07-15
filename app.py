@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: rentguard-v71 (賃料ガード：金額に数字以外=漢数字等が混入したら表紙は描画停止(赤)・投稿文は警告。正規化はしない=人に返す。9万8千円→¥98の沈黙破損を防ぐ・景表法)")
+    st.caption("build: factguard-v72 (事実外属性ガード：情感2行・ナレが眺望/方角/日当たり/静け/周辺をfacts無しで創作したら節単位で除去＋警告。fact照合(南向きがfactsにあれば通す)・正規化しない・1源2消費。banとは別レイヤー・景表法)")
 
 
 def _render_video_env_diagnostics():
@@ -2236,7 +2236,8 @@ def _pl_stage_video():
 
     # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
-        st.caption("マイソクの事実だけを根拠に下書きします。誇大語・事実外の数値は自動除去。"
+        st.caption("マイソクの事実だけを根拠に下書きします。誇大語・事実外の数値・"
+                   "事実外の属性（眺望/方角/日当たり/静けさ/周辺）は自動除去。"
                    "Gemini未設定/失敗でも簡易テンプレで続行します。")
         if st.button("PRコピーを下書き（AI・1回）", key="pl_prcopy_btn",
                      on_click=_pl_reset_title_choice):
@@ -2269,6 +2270,8 @@ def _pl_stage_video():
                     st.rerun()
         _draft = st.session_state.get("pl_prcopy")
         if _draft:
+            for _fw in _draft.get("warnings", []):       # ★事実外の属性（夜空等）を除去した旨を人に返す
+                st.warning("🛡️ " + _fw)
             if _draft.get("fallback"):
                 st.warning("AI候補が作れませんでした（事実に合う短い案が無し）。"
                            "簡易テンプレ（物件名 ｜ 間取り）を入れています。"
@@ -2818,4 +2821,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: rentguard-v71 (賃料ガード：金額に数字以外=漢数字等が混入したら表紙は描画停止(赤)・投稿文は警告。正規化はしない=人に返す。9万8千円→¥98の沈黙破損を防ぐ・景表法)")
+    st.caption("build: factguard-v72 (事実外属性ガード：情感2行・ナレが眺望/方角/日当たり/静け/周辺をfacts無しで創作したら節単位で除去＋警告。fact照合(南向きがfactsにあれば通す)・正規化しない・1源2消費。banとは別レイヤー・景表法)")

@@ -1154,6 +1154,70 @@ def money_yen(s) -> str:
     return f"¥{n}" if n else ""
 
 
+# ── 事実外属性ガード（景表法・factguard-v72）─────────────────────────────
+# ban語(誇大語)チェッカーとは別レイヤー。『事実に無い属性を創作する』失敗を捕まえる。
+# ★語の禁止リストではない：facts に当該属性の裏付けがあれば通す（南向きがfactsにあれば南向きは可）。
+# ★正規化(言い換え)はしない：機械が『夜空→窓辺』に書き換えると人が創作に気づけない＝除去＋警告で人に返す。
+# 情感2行(draft_pr_copy)とナレ(polish_narration)が同じこの関数を参照＝1源2消費（別定義にしない）。
+# claims=検出する属性主張 / back=factsにあれば裏付け成立とみなす語（claims＋関連する事実語）。
+_FACT_ATTR_GROUPS = [
+    {"cat": "眺望",
+     "claims": ["夜空", "星空", "満天の星", "夜景", "見晴らし", "眺望", "パノラマ", "眺め",
+                "海が見える", "海が望める", "山が見える", "富士山", "スカイツリー", "開放的な眺め"],
+     "back": ["夜景", "眺望", "見晴らし", "パノラマ", "展望", "眺め良好"]},
+    {"cat": "日当たり・方角",
+     "claims": ["南向き", "南面", "陽当たり", "陽当り", "日当たり", "日当り", "朝日が差し",
+                "西日", "日差しが差し込む", "燦々", "陽光が"],
+     "back": ["南向き", "南面", "陽当たり", "陽当り", "日当たり", "日当り", "採光", "日照", "方角", "向き"]},
+    {"cat": "階数の見え方",
+     "claims": ["高層", "見下ろす", "上層階", "眼下", "高台から"],
+     "back": ["高層", "上層階", "最上階", "タワー"]},
+    {"cat": "静けさ・環境",
+     "claims": ["静かな", "静けさ", "閑静", "緑豊か", "落ち着いた住宅街", "のどかな", "喧騒を離れ"],
+     "back": ["閑静", "静音", "防音", "二重サッシ", "緑地", "公園", "住宅街", "静穏"]},
+    {"cat": "周辺環境",
+     "claims": ["商店街が近い", "商店街がすぐ", "公園が目の前", "公園が近い", "便利な立地",
+                "好立地", "駅前の賑わい", "買い物に便利"],
+     "back": ["商店街", "公園", "スーパー", "コンビニ", "駅前", "住宅街"]},
+]
+
+
+def _fact_hay(facts) -> str:
+    """facts の全値（full_text 含む）を裏付け照合用の文字列に連結。"""
+    return " ".join(str(v) for v in (facts or {}).values())
+
+
+def fact_scrub(text, facts=None):
+    """事実外の属性主張（眺望/方角/日当たり/階数/静けさ/周辺）を『節（。／改行）単位』で除去。
+    facts に裏付けのある属性は残す（語の禁止でなく事実照合）。正規化・言い換えはしない。
+    返り値 (clean, removed[])。★情感2行・ナレの両方がこの1関数を参照。"""
+    hay = _fact_hay(facts)
+    unbacked = []
+    for g in _FACT_ATTR_GROUPS:
+        if any(b in hay for b in g["back"]):
+            continue                                  # factsに裏付けあり＝この属性は主張OK
+        unbacked += g["claims"]
+    if not unbacked:
+        return str(text or ""), []
+    removed, out = [], []
+    parts = re.split(r"([。！？\n／/])", str(text or ""))   # 節に分割（区切りは保持）
+    for i in range(0, len(parts), 2):
+        clause = parts[i]
+        delim = parts[i + 1] if i + 1 < len(parts) else ""
+        hit = [c for c in unbacked if c in clause]
+        if hit:
+            removed += hit                            # 事実外属性を含む節ごと落とす（破片を残さない）
+        else:
+            out.append(clause + delim)
+    clean = re.sub(r"[、，]{2,}", "、", "".join(out)).strip("、，。．！？　 \n")
+    return clean, sorted(set(removed))
+
+
+def fact_is_clean(text, facts=None) -> bool:
+    """事実外の属性主張が無いか（fact_scrub と同一ルール＝1源2消費）。"""
+    return not fact_scrub(text, facts)[1]
+
+
 # PRコピーの禁止語（景表法：最上級・断定）
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]
@@ -1479,6 +1543,9 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         "・立地が弱い場合（徒歩が長い／バス便のみ）は『駅近』『駅チカ』等を書かない。"
         "その場合はエリア・環境・生活利便に振るか、広さ・間取り等の別方向で訴求する。\n"
         "・最上級/断定（最高・完璧・絶対・日本一・最安・必ず・唯一 等）を使わない（景表法）。断定を避け体験describで。\n"
+        "・情感（room_subs）は【部屋の中で完結する事実】（帖数・設備・間取り・角部屋・室内洗濯機置場 等）"
+        "から立てる。眺望・方角・日当たり・階数の見え方・静けさ・周辺環境には一切触れない"
+        "（マイソクに明示がある場合を除く）。例『夜空』『見晴らし』『南向き』『閑静』は明示が無ければ書かない。\n"
         f"{_concept_pr_block(concept)}"          # ★コンセプト方向づけ（空=ノーマル=回帰）
         "出力JSON（これのみ・説明文なし）：\n"
         '{"titles":[{"direction":"立地|間取り|設備","title":"...","subtitle":"..."}(3案・方向を必ず分ける)],'
@@ -1499,7 +1566,8 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         except Exception:  # noqa: BLE001
             return None
 
-    titles, highlights, room_subs = [], [], {}
+    titles, highlights, room_subs, fact_warn = [], [], {}, []
+    _fact_facts = {**facts, "full_text": full_text}     # 裏付け照合はfacts＋マイソク全文
     for attempt in range(2):                            # 有効タイトル0なら1回だけ再生成
         data = _call(base_instruction + (stricter if attempt else ""))
         if not isinstance(data, dict):
@@ -1530,12 +1598,16 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
                                       hay_raw=hay_raw)
                       and not _pr_has_any_transport(h)
                       and not (_cban and any(w in h for w in _cban))][:5]  # ◎に交通/コンセプトban不可
-        room_subs = {}
+        room_subs, fact_warn = {}, []
         for k, v in (data.get("room_subs", {}) or {}).items():
             s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
             if (_pr_is_clean(s.replace("\n", " "), hay, loc_ban, hay_raw=hay_raw)
                     and not (_cban and any(w in s for w in _cban))):
-                room_subs[str(k)] = s
+                s, _frm = fact_scrub(s, _fact_facts)    # ★事実外の属性(夜空/眺望/静け等)を節単位で除去
+                if _frm:
+                    fact_warn.append(f"{k}の情感から事実外の属性『{'・'.join(_frm)}』を除去しました")
+                if s.strip():                           # 全節が事実外で空になったらテンプレに差し戻し
+                    room_subs[str(k)] = s
         if titles:                                      # 有効タイトルが出たら確定
             break
     # 退避：有効タイトルが1件も無ければ P1b-1 の簡易テンプレ（物件名 ｜ 間取り）にフォールバック
@@ -1551,7 +1623,7 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
     if not titles and not highlights and not room_subs:
         return None
     return {"titles": titles[:3], "highlights": highlights, "room_subs": room_subs,
-            "fallback": is_fallback}
+            "fallback": is_fallback, "warnings": sorted(set(fact_warn))}
 
 
 # ── SNS投稿文（Instagram / TikTok）生成 ─────────────────────────────
@@ -1946,6 +2018,8 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
         "次のテロップ文を、低い声の男性ナレーターが読む『耳向けの一文』に整えてください。\n"
         f"・{limit}字以内・言い切り・短文・煽らない。誇大/最上級/断定は使わない。\n"
         f"{_tone_line}"                              # ★コンセプトのトーン（空=ノーマル=回帰）
+        "・眺望・方角・日当たり・階数の見え方・静けさ・周辺環境には触れない"
+        "（例『夜空』『見晴らし』『南向き』『閑静』はマイソクに明示が無ければ書かない）。部屋の中の事実だけ。\n"
         "・物件名・『モテ』等の内部語は使わない。数字や単位はそのまま残してよい。\n"
         "出力は本文のみ（説明・記号・引用符・改行なし）。\nテロップ："
     )
@@ -1965,6 +2039,9 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
     if name and name in out:
         out = out.replace(name, "")
         warnings.append("物件名を除去")
+    out, _frm = fact_scrub(out, facts)             # ★事実外属性(夜空等)の伝播を遮断（情感2行→ナレ）
+    if _frm:
+        warnings.append(f"事実外の属性『{'・'.join(_frm)}』を除去（マイソクに明示なし）")
     out = re.sub(r"\s+", " ", out).strip()
     if len(out) > limit:
         out = out[:limit]
