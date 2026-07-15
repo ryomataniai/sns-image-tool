@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: covercopy-v73 (静的既定コピーの穴を塞ぐ：表紙コピー『帰りたくない。角部屋。』もfact_scrubに通す＝角部屋がfactsに無ければ除去(禁止でなく照合)。角部屋/採光/通風を語彙に追加。few_shot漏れも同時に捕捉。_PL_SUB_TEMPLATEはv74)")
+    st.caption("build: factguard-v74 (情感テンプレの事実照合：_PL_SUB_TEMPLATEの既定情感が『光が差し込む/静か/自然光』をfacts無しで毎回焼き込む穴を、_pl_caption_subでfact_scrub照合。全節事実外なら帖数+室名にfallback。sticky機構は不変。『静か』語幹化で副詞も捕捉・住宅街のfalse-backing除去)")
 
 
 def _render_video_env_diagnostics():
@@ -542,15 +542,23 @@ def _pl_caption_main(it, lang):
 
 
 def _pl_caption_sub(it):
-    """情感2行の自動下書き（改行区切り）。種別テンプレ→無ければ帖数入り汎用。"""
+    """情感2行の自動下書き（改行区切り）。種別テンプレ→無ければ帖数入り汎用。
+    ★factguard-v74: 既定テンプレはfacts無関係の固定文＝『光が差し込む/静か/自然光』等の属性を毎回主張し、
+      PRコピー下書きを押さないと そのままテロップに焼かれる。facts に裏付けの無い属性は事実照合で除去
+      （禁止でなく照合＝南向き等がfactsにあれば残る）。全節が事実外なら帖数＋室名の安全既定へ。"""
     room = it.get("room", "その他")
-    t = _PL_SUB_TEMPLATE.get(room)
-    if t:
-        return "\n".join(t)
     name = _PL_ROOM_JP.get(room, room)
     jo = it.get("jo")
-    line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
-    return line1 + "\n自然光が心地よい空間"
+    t = _PL_SUB_TEMPLATE.get(room)
+    if t:
+        base = "\n".join(t)
+    else:
+        line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
+        base = line1 + "\n自然光が心地よい空間"
+    clean, _ = core.fact_scrub(base, _pl_effective_facts())   # ★事実外属性を節単位で除去（照合）
+    if clean.strip():
+        return clean
+    return f"{jo:g}帖の{name}" if jo else name               # facts安全な最小既定（帖数＋室名・主張なし）
 
 
 def _pl_scene_main_text(it, lang):
@@ -2829,4 +2837,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: covercopy-v73 (静的既定コピーの穴を塞ぐ：表紙コピー『帰りたくない。角部屋。』もfact_scrubに通す＝角部屋がfactsに無ければ除去(禁止でなく照合)。角部屋/採光/通風を語彙に追加。few_shot漏れも同時に捕捉。_PL_SUB_TEMPLATEはv74)")
+    st.caption("build: factguard-v74 (情感テンプレの事実照合：_PL_SUB_TEMPLATEの既定情感が『光が差し込む/静か/自然光』をfacts無しで毎回焼き込む穴を、_pl_caption_subでfact_scrub照合。全節事実外なら帖数+室名にfallback。sticky機構は不変。『静か』語幹化で副詞も捕捉・住宅街のfalse-backing除去)")
