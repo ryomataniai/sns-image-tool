@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: narsync-v70a (ナレをシーン単位ID基準へ＝動画と同期・テロップ追従sticky・読み正規化(1LDK→カナ/¥→和数)・字数正規化後・atempo無)")
+    st.caption("build: readfix-v70b (読み辞書を最長一致に刷新＝光熱費/観光/手帖の誤読事故を防止＋快適/帖/光を追加・ナレ字数上限を20字に(係数4.2不変・−0.3秒))")
 
 
 def _render_video_env_diagnostics():
@@ -2374,6 +2374,9 @@ def _pl_stage_video():
                     _ncnt = len(core.normalize_reading(_nv))               # ★字数は正規化後で数える
                     if _ncnt > _nlimit:
                         st.error(f"🎙️ {_ncnt}字（上限{_nlimit}字を超過）。短縮してください（尺からはみ出します）。")
+                    elif 0 < _ncnt <= _nlimit // 2:
+                        # 既定(メインのみ)がスカスカのとき、情感2行を素材に上限近くまで埋める導線を控えめに示唆
+                        st.caption(f"🎙️ {_ncnt}/{_nlimit}字（正規化後）— 「AIで整える」で情感を織り込むとより自然になります")
                     else:
                         st.caption(f"🎙️ {_ncnt}/{_nlimit}字（正規化後）")
                     if core.narration_has_ascii(_nv):
@@ -2640,4 +2643,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: narsync-v70a (ナレをシーン単位ID基準へ＝動画と同期・テロップ追従sticky・読み正規化(1LDK→カナ/¥→和数)・字数正規化後・atempo無)")
+    st.caption("build: readfix-v70b (読み辞書を最長一致に刷新＝光熱費/観光/手帖の誤読事故を防止＋快適/帖/光を追加・ナレ字数上限を20字に(係数4.2不変・−0.3秒))")
