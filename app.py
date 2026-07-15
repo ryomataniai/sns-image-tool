@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: factguard-v72 (事実外属性ガード：情感2行・ナレが眺望/方角/日当たり/静け/周辺をfacts無しで創作したら節単位で除去＋警告。fact照合(南向きがfactsにあれば通す)・正規化しない・1源2消費。banとは別レイヤー・景表法)")
+    st.caption("build: covercopy-v73 (静的既定コピーの穴を塞ぐ：表紙コピー『帰りたくない。角部屋。』もfact_scrubに通す＝角部屋がfactsに無ければ除去(禁止でなく照合)。角部屋/採光/通風を語彙に追加。few_shot漏れも同時に捕捉。_PL_SUB_TEMPLATEはv74)")
 
 
 def _render_video_env_diagnostics():
@@ -2052,7 +2052,8 @@ def _pl_cover_subline(facts, issue_no):
 
 
 def _pl_cover_clean_copy(copy, facts):
-    """雑誌型コピーの生成時ガード：ban語・物件名・『モテ』を除去（UI警告に加えた構造保証）。
+    """雑誌型コピーの生成時ガード：ban語・物件名・『モテ』＋事実外属性を除去（構造保証）。
+    ★静的既定『帰りたくない。角部屋。』も含め、角部屋等がfactsに無ければ除去（禁止でなく照合・factguard-v72）。
     空になったら安全な既定へ。末尾の句点『。』は意図的な演出なので保持する。"""
     s = str(copy or "")
     for w in list(core._PR_BANNED) + core._SNS_BAN_EXTRA + ["モテ部屋", "モテ"]:
@@ -2061,6 +2062,7 @@ def _pl_cover_clean_copy(copy, facts):
     name = (facts.get("name") or "").strip()
     if name and name in s:
         s = s.replace(name, "")
+    s, _ = core.fact_scrub(s, facts)       # ★事実外属性（角部屋/眺望/日当たり等）を節単位で除去
     s = s.strip("　「」『』\"' ")
     return s or "居心地のいい部屋。"
 
@@ -2451,6 +2453,12 @@ def _pl_stage_video():
                                     f"（抽出値『{_cfacts.get('rent','')} / {_cfacts.get('fee','')}』）。"
                                     "金額が正しく表示できないため表紙生成を中止しました。取り込みの抽出値を"
                                     "確認してください（自動での数値化はしません＝賃料は正確な額で出す必要があります）")
+                            # ★表紙コピーの事実外属性ガード（静的既定『…角部屋。』もfacts照合）。除去を可視化。
+                            _cin = st.session_state.get("pl_cover_copy", "")
+                            _cclean, _crm = core.fact_scrub(_cin, _cfacts)
+                            if _crm:
+                                st.warning(f"🛡️ 表紙コピーから事実外の属性『{'・'.join(_crm)}』を除去しました"
+                                           "（マイソクに明示なし・掲載前にコピーを見直してください）")
                             _mfields = {
                                 "masthead": st.session_state.get("pl_cover_masthead", "OSAKA ROOMS"),
                                 "subline": _pl_cover_subline(_cfacts,
@@ -2821,4 +2829,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-v72 (事実外属性ガード：情感2行・ナレが眺望/方角/日当たり/静け/周辺をfacts無しで創作したら節単位で除去＋警告。fact照合(南向きがfactsにあれば通す)・正規化しない・1源2消費。banとは別レイヤー・景表法)")
+    st.caption("build: covercopy-v73 (静的既定コピーの穴を塞ぐ：表紙コピー『帰りたくない。角部屋。』もfact_scrubに通す＝角部屋がfactsに無ければ除去(禁止でなく照合)。角部屋/採光/通風を語彙に追加。few_shot漏れも同時に捕捉。_PL_SUB_TEMPLATEはv74)")
