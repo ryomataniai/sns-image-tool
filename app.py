@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: narration-v68 (AIナレーション：原稿字数制約＋ElevenLabs TTS＋シーン同期adelay合成・速度変更なし＋冒頭表紙挿入)")
+    st.caption("build: narsync-v70a (ナレをシーン単位ID基準へ＝動画と同期・テロップ追従sticky・読み正規化(1LDK→カナ/¥→和数)・字数正規化後・atempo無)")
 
 
 def _render_video_env_diagnostics():
@@ -546,6 +546,42 @@ def _pl_caption_sub(it):
     jo = it.get("jo")
     line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
     return line1 + "\n自然光が心地よい空間"
+
+
+def _pl_scene_main_text(it, lang):
+    """シーンのメイン行のみ（編集後優先）。★ナレ自動下書きの元＝短く上限内に収まり緑スタート。
+    目（メイン＋情感2行を並列表示）と耳（直列・尺に縛られる）で予算が違うため、ナレ既定は
+    メインのみ純コピー。情感2行は『AIで整える』で素材として畳み込む（情報は失わない）。"""
+    return str(st.session_state.get(f"pl_capmain_{it['id']}") or _pl_caption_main(it, lang)).strip()
+
+
+def _pl_scene_telop_text(it, lang):
+    """シーンのテロップ全文（メイン＋情感2行・編集後を優先）。★『AIで整える』/『全下書き』の素材。
+    ナレ自動下書きには使わない（丸ごとは耳の尺を超えるため）。"""
+    main = st.session_state.get(f"pl_capmain_{it['id']}") or _pl_caption_main(it, lang)
+    subs = st.session_state.get(f"pl_capsub_{it['id']}")
+    if subs is None:
+        subs = _pl_caption_sub(it)
+    lines = [str(main)] + [s for s in str(subs).split("\n") if s.strip()]
+    return "、".join(x.strip() for x in lines if x.strip())
+
+
+def _pl_narr_polish_cb(nid, tel, dur):
+    """『AIで整える』on_click。テロップ全文(メイン＋情感2行=tel)を素材に口語＋読み正規化し
+    上限内の1文へ畳んで narr のみ更新（auto は触らない＝以後追従せず人の編集扱い）。
+    コールバック内なのでウィジェットキーへの代入が安全（地雷①回避）。"""
+    try:
+        c = make_client()
+    except RuntimeError:
+        c = None
+    if c is None:
+        st.session_state[f"_pl_narr_msg_{nid}"] = "Gemini APIキーが未設定です（設定ページで確認）。"
+        return
+    # ★素材は常にテロップ全文(メイン＋情感2行)。情感を捨てず、上限内の耳向け1文に畳み込む。
+    pr = core.polish_narration(c, tel, dur, _pl_effective_facts())
+    st.session_state[f"pl_narr_{nid}"] = pr["text"]
+    st.session_state[f"_pl_narr_msg_{nid}"] = ("🎙️ " + "／".join(pr["warnings"])
+                                               if pr.get("warnings") else "")
 
 
 # テロップのスタイル自動既定：水回りは座布団(pop)で可読性、居室・その他は clean
@@ -1155,6 +1191,7 @@ _PL_PROPERTY_EXACT = (
     "pl_sns")                          # SNS投稿文（物件固有）
 _PL_PROPERTY_PREFIX = ("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
                        "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
+                       "pl_narr_", "_pl_narr_msg_",
                        "pl_facts_edit_")
 
 
@@ -1480,6 +1517,7 @@ def _pl_stage_input():
         for k in [k for k in list(st.session_state)
                   if k.startswith(("pl_room_", "pl_roomid_", "pl_treat_", "pl_fp_pick",
                                    "pl_capmain_", "pl_capsub_", "pl_taste_", "pl_pos_",
+                                   "pl_narr_", "_pl_narr_msg_",
                                    "pl_facts_edit_"))
                   and k not in _PL_KEEP_ON_IMPORT]:
             del st.session_state[k]
@@ -2064,21 +2102,23 @@ def _pl_stage_video():
         if st.session_state.get("pl_open_title") == "flash":
             st.caption("※ 表紙挿入中は冒頭の極短フラッシュ（タイトル文字）を自動でOFFにします（冒頭の重複回避）。")
 
-    # ── 🎙️ AIナレーション（narration-v68）──
+    # ── 🎙️ AIナレーション（narsync-v70a：シーン単位・欄は下のテロップ編集UIに並べる）──
     _narr_env = rtv.narration_env_ready()
     _narr_ok = _narr_env["key"] and _narr_env["voice"]
     v_narr_on = False
     with st.expander("🎙️ AIナレーション（男性ナレーター・シーン同期）", expanded=False):
         _nlimit = core.narration_char_limit(v_dur)
-        st.caption(f"各シーン1文・**{_nlimit}字以内**（{v_dur}秒尺に収める・後処理の速度変更はしません）。"
-                   "コスト目安：約60〜80字/本＝無料枠で月100本以上。")
+        st.caption(f"各シーン1文・**{_nlimit}字以内（読み正規化後）**（{v_dur}秒尺に収める・速度変更なし）。"
+                   "ナレ欄は下の『各シーンのテロップを編集』にテロップと並べて表示します。"
+                   "未編集ならテロップに追従／一度直したら追従しません。空欄のシーンは無音。"
+                   "英字・㎡・金額は日本語読みへ自動正規化。コスト目安：約60〜80字/本。")
         if not _narr_ok:
             st.info("ElevenLabs の APIキー／ボイスIDが未設定です。Secrets に "
                     "ELEVENLABS_API_KEY と ELEVENLABS_VOICE_ID を追加すると有効化されます。", icon="🔒")
         v_narr_on = st.checkbox("ナレーションを付ける", value=False, key="pl_v_narr_on",
                                 disabled=not _narr_ok)
-        _nlabels = [it.get("room") or f"シーン{i+1}" for i, it in enumerate(adopted)]
-        if st.button("原稿を生成（AI・1回）", key="pl_narr_btn", disabled=not _narr_ok):
+        if v_narr_on and st.button("全シーンにAIで下書き（各ナレ欄へ流し込み）",
+                                   key="pl_narr_all", disabled=not _narr_ok):
             try:
                 _nclient = make_client()
             except RuntimeError:
@@ -2086,24 +2126,17 @@ def _pl_stage_video():
             if _nclient is None:
                 st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
             else:
-                with st.spinner("ナレ原稿を生成中…"):
-                    _nd = core.draft_narration(_nclient, _pl_effective_facts(), _nlabels, v_dur)
-                if _nd:
-                    for _i, _ln in enumerate(_nd["lines"]):
-                        st.session_state[f"pl_narr_{_i}"] = _ln
-                    for _w in _nd.get("warnings", []):
-                        st.warning(_w)
-                    st.rerun()
-                else:
-                    st.warning("原稿を作れませんでした（採用シーンが不足している可能性）。")
-        if v_narr_on:
-            for _i, _lab in enumerate(_nlabels):
-                _nkey = f"pl_narr_{_i}"
-                st.session_state.setdefault(_nkey, "")
-                _ntxt = st.text_input(f"シーン{_i+1}（{_lab}）", key=_nkey)
-                _nlen = len("".join((_ntxt or "").split()))
-                if _nlen > _nlimit:
-                    st.warning(f"シーン{_i+1}: {_nlen}字（上限{_nlimit}字を超過）。短縮するか再生成を。")
+                _ws = []
+                with st.spinner("各シーンのナレを下書き中…"):
+                    for _it in adopted:
+                        _tel = _pl_scene_telop_text(_it, v_lang)
+                        _p = core.polish_narration(_nclient, _tel, v_dur, _pl_effective_facts())
+                        # ★narr のみ更新（auto は触らない）＝以後テロップ変更に追従せず人が直せる
+                        st.session_state[f"pl_narr_{_it['id']}"] = _p["text"]
+                        _ws += _p.get("warnings", [])
+                for _w in sorted(set(_ws)):
+                    st.warning("🎙️ " + _w)
+                st.rerun()
 
     # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
@@ -2323,6 +2356,34 @@ def _pl_stage_video():
                 sc2.selectbox("配置", ["auto"] + _PL_TELOP_POSITIONS, index=0,
                               key=f"pl_pos_{it['id']}",
                               format_func=lambda x: _POS_LABEL.get(x, x))
+                # 🎙️ ナレ欄（テロップと並べる）。未編集ならテロップに追従／編集済みなら追従しない。
+                if v_narr_on:
+                    _nid = it["id"]
+                    _nkey, _akey = f"pl_narr_{_nid}", f"pl_narr_auto_{_nid}"
+                    _draft = core.normalize_reading(_pl_scene_main_text(it, v_lang))  # メインのみ＝緑スタート
+                    if _nkey not in st.session_state:                       # 初回：自動下書き＋追従基準
+                        st.session_state[_nkey] = _draft
+                        st.session_state[_akey] = _draft
+                    elif (st.session_state.get(_akey) == st.session_state.get(_nkey)
+                          and st.session_state[_nkey] != _draft):           # 未編集→テロップに追従
+                        st.session_state[_nkey] = _draft
+                        st.session_state[_akey] = _draft
+                    st.text_area("🎙️ ナレーション（読み上げ内容・空欄＝このシーンは無音）",
+                                 key=_nkey, height=68)
+                    _nv = st.session_state.get(_nkey, "")
+                    _ncnt = len(core.normalize_reading(_nv))               # ★字数は正規化後で数える
+                    if _ncnt > _nlimit:
+                        st.error(f"🎙️ {_ncnt}字（上限{_nlimit}字を超過）。短縮してください（尺からはみ出します）。")
+                    else:
+                        st.caption(f"🎙️ {_ncnt}/{_nlimit}字（正規化後）")
+                    if core.narration_has_ascii(_nv):
+                        st.warning("🎙️ 英字が残っています（TTSが英語読みする可能性）。"
+                                   "日本語表記に直すか『AIで整える』を押してください。")
+                    st.button("AIで整える", key=f"pl_narr_polish_{_nid}",
+                              on_click=_pl_narr_polish_cb, args=(_nid, _pl_scene_telop_text(it, v_lang), v_dur))
+                    _pmsg = st.session_state.get(f"_pl_narr_msg_{_nid}")
+                    if _pmsg:
+                        st.warning(_pmsg)
 
     n = len(adopted)
     n_still = sum(1 for it in adopted if it.get("_origin") == "persp")  # 3Dパース＝fal非通過
@@ -2363,7 +2424,8 @@ def _pl_stage_video():
             "note": _note, "taste": _pl_resolve_taste(it, v_taste),
             "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
             "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit,
-            "narration": (st.session_state.get(f"pl_narr_{_k}", "") if v_narr_on else "")})
+            # ★シーン単位（ID基準）でナレを持たせる＝index基準の噛み合わせズレ(v68真因)を断つ
+            "narration": (st.session_state.get(f"pl_narr_{it['id']}", "") if v_narr_on else "")})
         _images.append((_nm, it["gen_bytes"]))
     # 表紙挿入ON時は冒頭極短フラッシュを自動OFF（冒頭の重複回避）
     if _scenes and st.session_state.get("pl_open_title") == "flash" and not v_cover_on:
@@ -2578,4 +2640,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: narration-v68 (AIナレーション：原稿字数制約＋ElevenLabs TTS＋シーン同期adelay合成・速度変更なし＋冒頭表紙挿入)")
+    st.caption("build: narsync-v70a (ナレをシーン単位ID基準へ＝動画と同期・テロップ追従sticky・読み正規化(1LDK→カナ/¥→和数)・字数正規化後・atempo無)")

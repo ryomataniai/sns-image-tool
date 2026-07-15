@@ -1645,6 +1645,96 @@ def draft_narration(client, facts: dict, scene_labels, dur_sec=5,
     return {"lines": out, "limit": limit, "warnings": sorted(set(warnings))}
 
 
+# ── ナレーション読み正規化（narsync-v70a）─────────────────────────────────────
+# 日本語TTS対策：英字/記号を確定辞書でカタカナ・和数へ。AIに読みを推測させない（誤読防止）。
+# ★テロップ側は変換しない（目向け表記維持）。ナレ欄の自動下書き/整え時のみ適用。
+def _num_to_wa(n) -> str:
+    """整数を和数読み（万・千）へ。79000→7万9千 / 8000→8千 / 120000→12万 / 88000→8万8千。"""
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    man, rem = divmod(n, 10000)
+    sen, rem2 = divmod(rem, 1000)
+    parts = []
+    if man:
+        parts.append(f"{man}万")
+    if sen:
+        parts.append(f"{sen}千")
+    if rem2:
+        parts.append(f"{rem2}")            # 百以下の端数はそのまま（稀）
+    return "".join(parts) or "0"
+
+
+# 置換順が重要（長いキーを先に）。間取り→金額→単位→略語 の順で適用。
+_READ_MAP = [
+    ("4LDK", "フォーエルディーケー"), ("3LDK", "スリーエルディーケー"),
+    ("2LDK", "ツーエルディーケー"), ("1LDK", "ワンエルディーケー"),
+    ("2DK", "ツーディーケー"), ("1DK", "ワンディーケー"),
+    ("LDK", "エルディーケー"), ("DK", "ディーケー"),
+    ("1K", "ワンケー"), ("1R", "ワンルーム"),
+    ("㎡", "平米"), ("m²", "平米"), ("m2", "平米"),
+    ("WIC", "ウォークインクローゼット"),
+    ("SRC", "エスアールシー"), ("SOHO", "ソーホー"), ("RC", "アールシー"),
+    ("JR", "ジェイアール"),
+    ("＋", "、プラス"), ("+", "、プラス"),
+]
+
+
+def normalize_reading(text: str) -> str:
+    """ナレ読み正規化。英字・記号を確定的にカタカナ/和数へ（1LDK→ワンエルディーケー・㎡→平米・
+    ¥79,000/79,000円→7万9千円）。★TTSに英字をそのまま流さないための決定的変換（AI非依存）。"""
+    s = str(text or "")
+
+    def _yen(m):
+        return _num_to_wa(m.group(1).replace(",", "")) + "円"
+    s = re.sub(r"¥\s*([\d,]+)", _yen, s)          # ¥79,000 → 7万9千円
+    s = re.sub(r"([\d,]+)\s*円", _yen, s)          # 79,000円 → 7万9千円
+    for k, v in _READ_MAP:
+        s = s.replace(k, v)
+    return s
+
+
+def narration_has_ascii(text: str) -> bool:
+    """TTS直前の安全網：読み上げに不向きなASCII英字が残っているか（自動変換はしない・警告用）。"""
+    return bool(re.search(r"[A-Za-z]", str(text or "")))
+
+
+def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
+                     model="gemini-2.5-flash") -> dict:
+    """テロップ（目向け・体言止め）を耳向けの口語ナレへ整える。
+    ★字数上限（正規化後）にハード収束・読み正規化・ban語/物件名/モテ除去。返り値 {text, limit, warnings}。"""
+    limit = narration_char_limit(dur_sec)
+    facts = facts or {}
+    instr = (
+        "次のテロップ文を、低い声の男性ナレーターが読む『耳向けの一文』に整えてください。\n"
+        f"・{limit}字以内・言い切り・短文・煽らない。誇大/最上級/断定は使わない。\n"
+        "・物件名・『モテ』等の内部語は使わない。数字や単位はそのまま残してよい。\n"
+        "出力は本文のみ（説明・記号・引用符・改行なし）。\nテロップ："
+    )
+    warnings, out = [], str(text or "")
+    try:
+        resp = client.models.generate_content(model=model, contents=[instr + str(text or "")])
+        raw = (getattr(resp, "text", "") or "").strip().splitlines()
+        out = raw[0] if raw else str(text or "")
+    except Exception as e:  # noqa: BLE001  握り潰さず記録（元テロップの正規化で続行）
+        warnings.append(f"整え生成に失敗（{type(e).__name__}）。元テロップを正規化しました。")
+    out = normalize_reading(out)                   # 読み正規化（英字/記号→カナ/和数）
+    name = (facts.get("name") or "").strip()
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"]:
+        if w and w in out:
+            out = out.replace(w, "")
+            warnings.append(f"ban語『{w}』を除去")
+    if name and name in out:
+        out = out.replace(name, "")
+        warnings.append("物件名を除去")
+    out = re.sub(r"\s+", " ", out).strip()
+    if len(out) > limit:
+        out = out[:limit]
+        warnings.append(f"{limit}字超のため打ち切り")
+    return {"text": out, "limit": limit, "warnings": sorted(set(warnings))}
+
+
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
     """マイソクPDF → 実写真ベースのルームツアー計画を作る。
 
