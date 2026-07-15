@@ -1248,13 +1248,20 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     cover_sec = float(glob.get("cover_sec", 0) or 0)
     cover_on = (bool(glob.get("cover_on")) and cover_sec > 0
                 and os.path.exists(_jp("cover.png")))
+    cover_warn = []
     if cover_on:
-        cov = _jp("cover_clip.mp4")
-        _cover_clip(open(_jp("cover.png"), "rb").read(), cover_sec, out_w, out_h, cov)
-        covered = _jp("room_tour_silent.mp4")   # 無音版そのものを表紙入りに置換
-        _prepend_clip(cov, body, _jp("_tmp_covered.mp4"))
-        shutil.move(_jp("_tmp_covered.mp4"), covered)
-        body = covered
+        try:                                     # ★フェイルセーフ：表紙は付加価値。失敗しても動画は止めない
+            cov = _jp("cover_clip.mp4")
+            _cover_clip(open(_jp("cover.png"), "rb").read(), cover_sec, out_w, out_h, cov)
+            covered = _jp("room_tour_silent.mp4")   # 無音版そのものを表紙入りに置換
+            _prepend_clip(cov, body, _jp("_tmp_covered.mp4"))
+            shutil.move(_jp("_tmp_covered.mp4"), covered)
+            body = covered
+            cover_on = True
+        except Exception as e:  # noqa: BLE001  logger/state/UIへ。表紙なしで続行
+            cover_on = False
+            cover_warn.append("表紙の挿入に失敗したため、表紙なしで動画を生成しました（"
+                              + _log_failure("cover_prepend", e) + "）。")
 
     out = {"outdir": job_dir}
     if glob.get("also_silent", True):
@@ -1303,7 +1310,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     state["phase"] = "done"
     state["outputs"] = {"silent": out.get("silent"), "bgm": out.get("bgm"),
                         "narrated": out.get("narrated"), "narrated_bgm": out.get("narrated_bgm")}
-    state["narration_warnings"] = narr_warn
+    state["narration_warnings"] = narr_warn + cover_warn   # 表紙フェイルセーフ警告も同経路でUIへ
     state["n_failed"] = sum(1 for sc in scenes if sc.get("status") == "failed")
     _save_job_state(job_dir, state)
     return out

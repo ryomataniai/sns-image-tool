@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: readfix-v70b (読み辞書を最長一致に刷新＝光熱費/観光/手帖の誤読事故を防止＋快適/帖/光を追加・ナレ字数上限を20字に(係数4.2不変・−0.3秒))")
+    st.caption("build: bugfix-v70b (4-2 メイン欄を表記切替にsticky追従＝英/和不整合を解消＋4-1 表紙を毎回自動生成・既定ON・失敗時は表紙なしで続行)")
 
 
 def _render_video_env_diagnostics():
@@ -2016,6 +2016,27 @@ def _pl_cover_default_src(adopted):
     return adopted[0]["id"] if adopted else None
 
 
+def _pl_auto_cover_bytes(adopted):
+    """表紙を既定素材＋facts で自動生成（simpleカバー・ffmpegのみ課金なし）。v70b 4-1。
+    素材＝既定(LDK/居室/先頭)、タイトル＝設定済み or 間取り、数値はマイソク事実のみ。作れなければ None。"""
+    import room_tour_video as rtv
+    _sid = _pl_cover_default_src(adopted)
+    _src = next((it for it in adopted if it["id"] == _sid), None)
+    if not _src or not _src.get("gen_bytes"):
+        return None
+    _f = _pl_effective_facts()
+    _title = (st.session_state.get("pl_cover_title") or "").strip() \
+        or (_f.get("madori", "") or "").split("[")[0].strip()
+    _fields = {
+        "title": _title, "subtitle": st.session_state.get("pl_cover_sub", ""),
+        "highlights": ((st.session_state.get("pl_prcopy") or {}).get("highlights") or [])[:3],
+        "access_band": _pl_cover_access_band(_f.get("access")),
+        "madori_area": _pl_cover_madori_area(_f),
+        "note": "※家具・小物はAI生成のイメージ",
+    }
+    return rtv.build_cover(_src["gen_bytes"], _fields, aspect="9:16")
+
+
 def _pl_stage_video():
     import os as _os
     import room_tour_video as rtv
@@ -2089,13 +2110,24 @@ def _pl_stage_video():
                              help="OFF＝従来のクロスフェード0.6秒。ON＝各カットの境界を0.2秒の"
                                   "白フラッシュに（メモリ特性は従来と同一・全結合には戻しません）。")
 
-    # ── 冒頭に表紙を挿入（narration-v68）──
+    # ── 冒頭に表紙を挿入（narration-v68 / v70b 4-1：毎回自動生成＋既定ON）──
+    # 谷合さんが「表紙が追加されない」を繰返し踏んだため、表紙を自動生成しトグル既定ONに。
+    # 表紙生成は ffmpeg のみ・課金なし＝毎回作ってもコスト影響なし。失敗しても止めない（付加価値）。
+    if "pl_cover_png" not in st.session_state and adopted:
+        try:
+            _acov = _pl_auto_cover_bytes(adopted)
+            if _acov:
+                st.session_state["pl_cover_png"] = {"aspect": "9:16", "bytes": _acov}
+        except Exception as e:  # noqa: BLE001  自動生成失敗は止めない（手動ボタンで作れる）
+            st.session_state["_pl_cover_auto_err"] = f"{type(e).__name__}"
     _cov_ready = bool(st.session_state.get("pl_cover_png"))
-    v_cover_on = st.checkbox("表紙を冒頭に挿入", value=False, key="pl_v_cover_on",
+    v_cover_on = st.checkbox("表紙を冒頭に挿入", value=True, key="pl_v_cover_on",
                              disabled=not _cov_ready,
-                             help="下の「🖼️ 表紙特大」で生成した表紙を動画冒頭に静止挿入します。")
+                             help="表紙は自動生成され既定ONです。素材/文言を変えたいときは"
+                                  "下の「🖼️ 表紙特大」で作り直せます。")
     if not _cov_ready:
-        st.caption("↑ 先に下の「🖼️ 表紙特大」で表紙を生成すると有効になります。")
+        st.caption("↑ 表紙を自動生成できませんでした。下の「🖼️ 表紙特大」で作成すると有効になります"
+                   "（表紙なしでも動画は生成できます）。")
     v_cover_sec = 1.5
     if v_cover_on and _cov_ready:
         v_cover_sec = st.slider("表紙の表示秒数", 1.0, 3.0, 1.5, 0.5, key="pl_v_cover_sec")
@@ -2330,23 +2362,29 @@ def _pl_stage_video():
                 mime="image/png", key="pl_cover_dl")
             st.caption("※タイトル/素材/比率を変えたら、再度「表紙を生成」を押すと更新されます。")
 
-    # 部屋名表記を切り替えたら、各シーンのメイン文の自動下書きをリセットして追従させる
-    if st.session_state.get("_pl_lang_sig") != v_lang:
-        for it in adopted:
-            st.session_state.pop(f"pl_capmain_{it['id']}", None)
-        st.session_state["_pl_lang_sig"] = v_lang
-
     if v_caps:
         with st.expander(f"各シーンのテロップを編集（{len(adopted)}シーン・自動下書き）", expanded=False):
-            st.caption("メイン＝部屋名＋帖（自動）。情感2行＝下書き。どちらも自由に編集できます。")
+            st.caption("メイン＝部屋名＋帖（自動・表記切替に追従）。情感2行＝下書き。どちらも自由に編集できます。")
             st.caption("スタイル/配置の『既定に従う』＝部屋種別（居室clean／水回りpop）→全体既定 の順で自動決定。")
             _TASTE_LABEL = {"auto": "既定に従う", "clean": "clean（白・影）", "pop": "pop（座布団）"}
             _POS_LABEL = {"auto": "既定に従う", "下中央": "下中央", "下左": "下左",
                           "上中央": "上中央", "中央": "中央"}
             for pos, it in enumerate(adopted):
                 st.markdown(f"**{pos + 1}. {_PL_ROOM_JP.get(it['room'], it['room'])}**")
-                st.text_input("メイン", value=_pl_caption_main(it, v_lang),
-                              key=f"pl_capmain_{it['id']}")
+                # メイン欄も v70a ナレ欄と同じ sticky（未編集→表記切替に追従／手編集→追従停止）。
+                #   ★popでは Streamlit が widget内部値を保持し value= が無視される（英→和が残る真因）。
+                #   widget生成前に session_state へ代入する方式なら確実に反映される（地雷①回避）。
+                _mid = it["id"]
+                _mkey, _amkey = f"pl_capmain_{_mid}", f"pl_capmain_auto_{_mid}"
+                _mdraft = _pl_caption_main(it, v_lang)
+                if _mkey not in st.session_state:
+                    st.session_state[_mkey] = _mdraft
+                    st.session_state[_amkey] = _mdraft
+                elif (st.session_state.get(_amkey) == st.session_state.get(_mkey)
+                      and st.session_state[_mkey] != _mdraft):
+                    st.session_state[_mkey] = _mdraft           # 未編集→表記切替に追従
+                    st.session_state[_amkey] = _mdraft
+                st.text_input("メイン", key=_mkey)
                 st.text_area("情感2行（1行ずつ改行）", value=_pl_caption_sub(it),
                              key=f"pl_capsub_{it['id']}", height=70)
                 sc1, sc2 = st.columns(2)
@@ -2643,4 +2681,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: readfix-v70b (読み辞書を最長一致に刷新＝光熱費/観光/手帖の誤読事故を防止＋快適/帖/光を追加・ナレ字数上限を20字に(係数4.2不変・−0.3秒))")
+    st.caption("build: bugfix-v70b (4-2 メイン欄を表記切替にsticky追従＝英/和不整合を解消＋4-1 表紙を毎回自動生成・既定ON・失敗時は表紙なしで続行)")
