@@ -1127,6 +1127,33 @@ def extract_sale_facts_vision(client, pdf_bytes: bytes,
     return facts
 
 
+# ── 賃料ガード（景表法）─────────────────────────────────────────────
+# 賃料/管理費/価格は法令項目。数字抽出型の整形(_mag_yen等)は漢数字が来ると『黙って桁を欠く』
+# （例『9万8千円』→『¥98』）。エラーにならず正常な広告として描画される＝最も危険な沈黙破損。
+# ★正規化(漢数字→数値)はしない：機械が金額を勝手に解釈しない。人に返す（描画を止める／警告する）。
+_MONEY_CLEAN_RE = re.compile(r"[¥\s]*[\d,]+[\s円]*")
+
+
+def money_is_clean(s) -> bool:
+    """金額文字列が『¥/空白/数字/カンマ/円』だけで構成されるか（空も可＝金額なし）。
+    False＝漢数字・その他文字の混入＝数字抽出で桁が欠ける危険。"""
+    s = str(s or "").strip()
+    return (not s) or bool(_MONEY_CLEAN_RE.fullmatch(s))
+
+
+def money_yen(s) -> str:
+    """金額を '¥12,345' へ（数字とカンマのみ抽出）。空は ''。
+    ★数字以外(漢数字等)が混入していたら ValueError＝呼び出し側で描画を止める（沈黙破損の防止）。
+    正規化はしない（賃料は法令項目・機械が漢数字から金額を作らない＝人に返す）。"""
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    if not money_is_clean(s):
+        raise ValueError(f"金額に数字以外の文字が含まれます: 『{s}』（自動で数値化はしません）")
+    n = re.sub(r"[^\d,]", "", s).strip(",")
+    return f"¥{n}" if n else ""
+
+
 # PRコピーの禁止語（景表法：最上級・断定）
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]
@@ -1687,6 +1714,11 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
         "【物件事実】"
     )
     warnings = []
+    # ★賃料ガード（景表法）：投稿文は rent/fee/price を生値で表示する。数字以外(漢数字等)が混入
+    #   していたら人に知らせる（表示は verbatim なので止めないが、金額の異常を沈黙させない）。
+    for _lbl, _v in (("賃料", rent), ("管理費", fee), ("価格", price)):
+        if _v and not money_is_clean(_v):
+            warnings.append(f"{_lbl}『{_v}』に数字以外の文字が含まれます（投稿文にそのまま表示・要確認）")
     data = {}
     try:
         resp = client.models.generate_content(model=model, contents=[instr + facts_json])

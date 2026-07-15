@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: magcover-v69b (雑誌型表紙をv70c-u2上にrebase：明朝マスト/コピー・金罫線・下部クリーム覆い・黒帯なし・管理費併記・AIで一言12字ban。★表紙コピーはconcept.cover.toneに配線＝draft_pr_copyと同源・二重情報源なし)")
+    st.caption("build: rentguard-v71 (賃料ガード：金額に数字以外=漢数字等が混入したら表紙は描画停止(赤)・投稿文は警告。正規化はしない=人に返す。9万8千円→¥98の沈黙破損を防ぐ・景表法)")
 
 
 def _render_video_env_diagnostics():
@@ -2437,6 +2437,17 @@ def _pl_stage_video():
                     with st.spinner("表紙を生成中…（ffmpeg/PIL）"):
                         if _cstyle == "magazine":
                             _mst, _mwk = core._sns_access_pick(_cfacts.get("access"))
+                            # ★賃料ガード（景表法）：数字以外(漢数字等)が混入したら描画を止め人に返す。
+                            #   正規化(漢数字→数値)はしない＝機械が金額を勝手に作らない。沈黙破損の防止。
+                            _bad = [lbl for lbl, v in (("賃料", _cfacts.get("rent", "")),
+                                                       ("管理費", _cfacts.get("fee", "")))
+                                    if not core.money_is_clean(v)]
+                            if _bad:
+                                raise ValueError(
+                                    f"{' / '.join(_bad)}に数字以外の文字が含まれます"
+                                    f"（抽出値『{_cfacts.get('rent','')} / {_cfacts.get('fee','')}』）。"
+                                    "金額が正しく表示できないため表紙生成を中止しました。取り込みの抽出値を"
+                                    "確認してください（自動での数値化はしません＝賃料は正確な額で出す必要があります）")
                             _mfields = {
                                 "masthead": st.session_state.get("pl_cover_masthead", "OSAKA ROOMS"),
                                 "subline": _pl_cover_subline(_cfacts,
@@ -2807,4 +2818,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: magcover-v69b (雑誌型表紙をv70c-u2上にrebase：明朝マスト/コピー・金罫線・下部クリーム覆い・黒帯なし・管理費併記・AIで一言12字ban。★表紙コピーはconcept.cover.toneに配線＝draft_pr_copyと同源・二重情報源なし)")
+    st.caption("build: rentguard-v71 (賃料ガード：金額に数字以外=漢数字等が混入したら表紙は描画停止(赤)・投稿文は警告。正規化はしない=人に返す。9万8千円→¥98の沈黙破損を防ぐ・景表法)")

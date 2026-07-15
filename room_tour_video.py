@@ -833,9 +833,10 @@ def _mag_fit(font_path, text, ls, max_w, base, min_size):
 
 
 def _mag_yen(s):
-    """賃料/管理費 → '¥12,345'（数字とカンマのみ抽出・空なら''）。"""
-    n = re.sub(r"[^\d,]", "", str(s or "")).strip(",")
-    return f"¥{n}" if n else ""
+    """賃料/管理費 → '¥12,345'（数字とカンマのみ抽出・空なら''）。
+    ★数字以外(漢数字等)が混入したら core.money_yen が ValueError＝表紙描画を止める（沈黙破損の防止）。"""
+    import core
+    return core.money_yen(s)
 
 
 def build_cover_magazine(image_bytes: bytes, fields: dict, aspect: str = "9:16") -> bytes:
