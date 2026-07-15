@@ -124,7 +124,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: concept-v70c-u1 (コンセプト上流セレクタ＝単一の情報源pl_concept＋①画像化stagingに追従・データ駆動CONCEPTS表・ノーマル回帰・wipは準備中)")
+    st.caption("build: concept-v70c-u1b (u1＋コンセプトがスタイル既定を決める style_default＝見た目の単一情報源・pl_style sticky追従/人が変えたら停止・mote=ホテルライク)")
 
 
 def _render_video_env_diagnostics():
@@ -650,6 +650,19 @@ def _pl_room_use(room):
     if room == "寝室":
         return "寝室"
     return ""
+
+
+def _pl_follow_concept_style():
+    """コンセプト→スタイル既定の sticky 追従（v70a pl_narr_auto / v70b pl_capmain_auto と同型の3例目）。
+    ★見た目の源はコンセプト＝単一の情報源。人がスタイルを明示変更したら停止（pl_style != pl_style_auto）。
+    widget生成前に代入（pop禁止＝v70bの教訓）。スタイル記述に生活感を持たせない＝二重情報源の再発防止。
+    ★スタイル selectbox(key=pl_style) の生成より前に必ず呼ぶこと。"""
+    sd = core.concept_style_default(st.session_state.get("pl_concept", "normal"))
+    if sd in core.INTERIOR_STYLES:
+        prev_auto = st.session_state.get("pl_style_auto")
+        if st.session_state.get("pl_style") in (None, prev_auto):   # 未設定 or 前回自動値のまま＝未上書き
+            st.session_state["pl_style"] = sd                       # ★スタイルwidget生成前に代入
+        st.session_state["pl_style_auto"] = sd                      # 追跡値を更新（次回の追従判定用）
 
 
 def _pl_sel_index(options, value, default=0):
@@ -1587,6 +1600,7 @@ def _pl_stage_input():
                "リノベ提案（事業B）＝内装ごと刷新した完成イメージ（機能と骨格は維持）。"
                "処理は部屋種別ごとに自動設定され、必要なら個別に変更できます。")
     _IMG_ASPECT_LABEL = {"4:5": "4:5（Instagram投稿）", "1:1": "1:1（正方形）", "3:4": "3:4（縦）"}
+    _pl_follow_concept_style()          # ★スタイルwidget生成前にコンセプト→スタイルを追従（sticky）
     gc1, gc2, gc3 = st.columns(3)
     style_name = gc1.selectbox("スタイル", list(core.INTERIOR_STYLES.keys()), key="pl_style")
     model = gc2.selectbox("モデル", core.MODELS, index=0, key="pl_model")
@@ -2701,4 +2715,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: concept-v70c-u1 (コンセプト上流セレクタ＝単一の情報源pl_concept＋①画像化stagingに追従・データ駆動CONCEPTS表・ノーマル回帰・wipは準備中)")
+    st.caption("build: concept-v70c-u1b (u1＋コンセプトがスタイル既定を決める style_default＝見た目の単一情報源・pl_style sticky追従/人が変えたら停止・mote=ホテルライク)")

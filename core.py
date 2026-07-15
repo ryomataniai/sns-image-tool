@@ -1155,6 +1155,7 @@ _MOTE_HARD_NG = [   # モテのハードNG（機械除去＋警告。型承認=�
 CONCEPT_PRESETS = {
     "normal": {
         "label": "ノーマル", "status": "ready",
+        "style_default": "ナチュラル/北欧",                      # 現行既定＝回帰（sticky初期値も同じ）
         "staging_prompt": "",                                  # 追加なし＝現行既定（回帰なし）
         "telop": {"style": "", "few_shot": []},
         "narration": {"voice_id": None, "tone": ""},
@@ -1162,6 +1163,7 @@ CONCEPT_PRESETS = {
     },
     "mote": {
         "label": "モテ部屋", "status": "ready",
+        "style_default": "ホテルライク",                        # ★見た目の源＝コンセプト（北欧ではない）。谷合さん決定 2026-07-15
         "staging_prompt": (
             "生活の気配と余白を残す。置きすぎない。間接照明・やわらかい色温度（電球色寄り）、"
             "読みかけの本・マグ・小さな観葉・畳んだブランケット等『誰かが暮らしている』小物をひかえめに。"
@@ -1214,6 +1216,12 @@ def concept_eff(cid):
 def concept_voice_id(cid, default_voice=None):
     """コンセプトの voice_id（表に直書き＝設定）。None → 既定にフォールバック。★鍵はSecrets、設定は表。"""
     return concept_of(concept_eff(cid)).get("narration", {}).get("voice_id") or default_voice
+
+
+def concept_style_default(cid, default=None):
+    """コンセプトが決める『スタイル既定』（INTERIOR_STYLESのキー）。★見た目の単一の情報源＝コンセプト。
+    wipは concept_eff で normal に倒れる。未定義なら default。UI側で sticky 追従させる（人が変えたら停止）。"""
+    return concept_of(concept_eff(cid)).get("style_default") or default
 
 
 def concept_ban(cid):
