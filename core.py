@@ -1940,6 +1940,56 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
     return {"text": out, "limit": limit, "warnings": sorted(set(warnings))}
 
 
+def draft_cover_copy(client, facts: dict, model="gemini-2.5-flash",
+                     concept: str = "normal") -> dict:
+    """雑誌型表紙のキャッチを1つ生成。★12字以内・体言止め・やわらかい語り口。
+    誇大/最上級/断定・物件名・『モテ』等の内部語は禁止（生成後にコードで除去＋警告）。
+    concept: コンセプトの cover.tone を方向づけに使う（★v70cの単一の情報源＝draft_pr_copyの表紙と同源）。
+    normal/wip＝空＝現行トーンに回帰。コンセプト固有ban語も除去。返り値: {copy:str, warnings:[str]}。"""
+    import json as _json
+    limit = 12
+    name = (facts.get("name") or "").strip()
+    _ctone = concept_tone(concept, "cover")             # ★表紙トーンの単一の情報源（コンセプト）
+    _tone_line = (f"・トーン：{_ctone}\n" if _ctone
+                  else "・招きたくなる／居心地の良さのニュアンス。\n")   # 空=現行トーン=回帰
+    instr = (
+        f"あなたは賃貸物件の表紙コピーライターです。表紙のキャッチを1つだけ、"
+        f"**{limit}字以内**の日本語で作ってください。\n"
+        f"{_tone_line}"
+        "・体言止め・短句・やわらかい語り口。\n"
+        "・誇大/最上級/断定（最高・絶対・破格・激安・希少・唯一 等）は使わない。\n"
+        "・物件名・建物名・『モテ』等の内部語は絶対に使わない。数字は入れない。\n"
+        "出力はキャッチ本文のみ（説明・記号・引用符・改行なし）。\n"
+        "物件事実（ヒント）："
+        + _json.dumps({k: v for k, v in facts.items()
+                       if k in ("madori", "area", "equipment")}, ensure_ascii=False)
+    )
+    warnings, copy = [], ""
+    try:
+        resp = client.models.generate_content(model=model, contents=[instr])
+        raw = (getattr(resp, "text", "") or "").strip()
+        copy = raw.splitlines()[0] if raw else ""
+    except Exception as e:  # noqa: BLE001  握り潰さず記録（既定コピーで続行）
+        warnings.append(f"AIコピー生成に失敗（{type(e).__name__}）。既定コピーを使います。")
+
+    copy = re.sub(r"\s+", "", copy).strip("　「」『』\"'。、・")
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + concept_ban_extra(concept):
+        if w and w in copy:
+            copy = copy.replace(w, "")
+            warnings.append(f"ban語『{w}』を除去")
+    if name and name in copy:
+        copy = copy.replace(name, "")
+        warnings.append("物件名を除去")
+    copy = copy.strip("　「」『』\"'。、・")
+    if len(copy) > limit:
+        copy = copy[:limit]
+        warnings.append(f"{limit}字超のため打ち切り")
+    if not copy:
+        copy = "居心地のいい部屋。"                # フォールバック（9字）
+        warnings.append("生成できず既定コピーを使用")
+    return {"copy": copy, "warnings": sorted(set(warnings))}
+
+
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):
     """マイソクPDF → 実写真ベースのルームツアー計画を作る。
 

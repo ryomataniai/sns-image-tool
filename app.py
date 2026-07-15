@@ -11,6 +11,7 @@
 
 import io
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -124,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: concept-v70c-u2 (mote1＋STEP4系4工程をpl_concept追従＝テロップ情感/表紙(draft_pr_copy)・投稿文(draft_sns_captions)・ナレ(polish_narration)・voice_id＋スタイル手動選択中の一行。ブランド共通/管理費/時点注記は不変)")
+    st.caption("build: magcover-v69b (雑誌型表紙をv70c-u2上にrebase：明朝マスト/コピー・金罫線・下部クリーム覆い・黒帯なし・管理費併記・AIで一言12字ban。★表紙コピーはconcept.cover.toneに配線＝draft_pr_copyと同源・二重情報源なし)")
 
 
 def _render_video_env_diagnostics():
@@ -145,6 +146,10 @@ def _render_video_env_diagnostics():
             f"{'（存在）' if d['font_ok'] else ' ★存在せず（同梱fonts/やfonts-noto-cjkを確認）'}")
         if not (d["drawtext"] and d["font_ok"]):
             st.warning("⚠ 冒頭タイトル・テロップが本番で出ない場合、上記の赤項目が原因の可能性が高いです。")
+        # 明朝（雑誌型カバーのマスト/コピー用）
+        (st.success if d.get("serif_ok") else st.info)(
+            f"明朝フォント（雑誌型カバー）: {d.get('serif') or '(未解決)'}"
+            f"{'（存在）' if d.get('serif_ok') else ' ※未解決＝ゴシックで代替表示になります'}")
         # ナレーション（ElevenLabs）— ★キー値は表示しない（存在有無のみ）
         _ek, _ev = d.get("eleven_key"), d.get("eleven_voice")
         (st.success if (_ek and _ev) else st.info)(
@@ -1199,7 +1204,7 @@ _PL_PROPERTY_EXACT = (
     "pl_src_sig", "pl_items", "pl_rooms", "pl_floorplan", "pl_summary",
     "pl_facts", "pl_prcopy", "pl_flash_text", "pl_v_tag", "pl_title_edit",
     "pl_sub_edit", "pl_title_idx", "pl_cover_title", "pl_cover_sub",
-    "pl_cover_src", "pl_cover_png", "pl_gap_targets", "pl_persp_png",
+    "pl_cover_src", "pl_cover_png", "pl_cover_copy", "pl_gap_targets", "pl_persp_png",
     # 売買マイソク対応（物件固有）：種別・facts抽出ゲート・確認状態・物件選択
     "pl_ptype", "pl_ptype_sig", "pl_facts_key", "pl_facts_confirmed",
     "pl_facts_confirm_chk", "pl_prop_pick", "pl_prop_manual_start",
@@ -2026,6 +2031,40 @@ def _pl_cover_madori_area(facts):
     return " ".join(x for x in (madori, area) if x)
 
 
+# 雑誌型サブライン用：大阪主要エリアのローマ字（無ければ日本語のまま表示＝ゴシックで可読）
+_PL_AREA_ROMAJI = {
+    "福島": "FUKUSHIMA", "野田": "NODA", "梅田": "UMEDA", "大阪": "OSAKA", "難波": "NAMBA",
+    "なんば": "NAMBA", "天王寺": "TENNOJI", "本町": "HOMMACHI", "心斎橋": "SHINSAIBASHI",
+    "京橋": "KYOBASHI", "淀屋橋": "YODOYABASHI", "中之島": "NAKANOSHIMA", "天満": "TENMA",
+    "桜川": "SAKURAGAWA", "西九条": "NISHIKUJO", "弁天町": "BENTENCHO", "新大阪": "SHIN-OSAKA",
+    "谷町": "TANIMACHI", "北浜": "KITAHAMA", "堀江": "HORIE", "南堀江": "MINAMI-HORIE",
+}
+
+
+def _pl_cover_subline(facts, issue_no):
+    """雑誌型サブライン 'OSAKA {エリア} · No.NN'。エリアはマイソクの駅名から自動（ローマ字化・失敗時JP）。"""
+    st_name, _ = core._sns_access_pick(facts.get("access"))
+    area = (st_name or "").replace("駅", "").strip()
+    romaji = _PL_AREA_ROMAJI.get(area, area)          # 未知エリアは日本語のまま（ゴシックで描画）
+    nn = re.sub(r"\D", "", str(issue_no or "01")).zfill(2)[:2] or "01"
+    head = "OSAKA " if romaji and romaji.encode("ascii", "ignore").decode() == romaji else ""
+    return f"{head}{romaji} · No.{nn}".strip() if romaji else f"No.{nn}"
+
+
+def _pl_cover_clean_copy(copy, facts):
+    """雑誌型コピーの生成時ガード：ban語・物件名・『モテ』を除去（UI警告に加えた構造保証）。
+    空になったら安全な既定へ。末尾の句点『。』は意図的な演出なので保持する。"""
+    s = str(copy or "")
+    for w in list(core._PR_BANNED) + core._SNS_BAN_EXTRA + ["モテ部屋", "モテ"]:
+        if w and w in s:
+            s = s.replace(w, "")
+    name = (facts.get("name") or "").strip()
+    if name and name in s:
+        s = s.replace(name, "")
+    s = s.strip("　「」『』\"' ")
+    return s or "居心地のいい部屋。"
+
+
 def _pl_cover_default_src(adopted):
     """表紙素材の既定：最初のLDK→無ければ先頭の居室→無ければ先頭。"""
     for it in adopted:
@@ -2306,19 +2345,12 @@ def _pl_stage_video():
 
     # ── 表紙特大（P1b-2）：リールカバー/カルーセル1枚目のPNG（動画本編には挿入しない）──
     with st.expander("🖼️ 表紙特大（リールカバー / カルーセル1枚目）を生成", expanded=False):
-        st.caption("タイトル大見出し＋サブ＋◎魅力ポイント＋駅徒歩＋間取り/面積の1枚。"
-                   "数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
-                   "ffmpegのみ・fal課金なし・Gemini不要。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
+        st.caption("素材＋事実から表紙1枚を生成。数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
+                   "ffmpegのみ・fal課金なし。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
         _cfacts = st.session_state.get("pl_facts", {})
-        # タイトル/サブ：PRコピーで選んだ値を既定に（生成前seed・未設定時のみ＝地雷1回避）
-        if "pl_cover_title" not in st.session_state:
-            st.session_state["pl_cover_title"] = st.session_state.get("pl_title_edit", "")
-        if "pl_cover_sub" not in st.session_state:
-            st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
-        cc1, cc2 = st.columns(2)
-        cc1.text_input("タイトル（特大）", key="pl_cover_title",
-                       placeholder="PRコピー下書きで選ぶと自動で入ります")
-        cc2.text_input("サブタイトル（小）", key="pl_cover_sub")
+        _cstyle = st.radio("スタイル", ["simple", "magazine"], horizontal=True, key="pl_cover_style",
+                           format_func=lambda s: {"simple": "シンプル（現行）",
+                                                  "magazine": "雑誌型（マガジン）"}.get(s, s))
         # 素材画像：既定=最初のLDK→居室→先頭（生成前seed＋stale idガード）
         _copts = [it["id"] for it in adopted]
         if st.session_state.get("pl_cover_src") not in _copts:
@@ -2334,47 +2366,97 @@ def _pl_stage_video():
         _chl = ((st.session_state.get("pl_prcopy") or {}).get("highlights") or [])[:3]
         _cband = _pl_cover_access_band(_cfacts.get("access"))
         _cma = _pl_cover_madori_area(_cfacts)
-        if _chl:
-            st.caption("◎ " + "　".join(_chl))
-        st.caption(f"駅徒歩：{_cband or '（直接徒歩が取れず・省略）'}　／　間取り・面積：{_cma or '（取れず）'}")
-        # 文字数チェック（超過は表紙で … 切り詰めになるため、短縮を促す。生成は止めない）
-        _ctitle = st.session_state.get("pl_cover_title", "").strip()
-        _csub = st.session_state.get("pl_cover_sub", "").strip()
-        _clen = []
-        if len(_ctitle) > core._PR_MAX_TITLE:
-            _clen.append(f"タイトル {len(_ctitle)}字/上限{core._PR_MAX_TITLE}字")
-        if len(_csub) > core._PR_MAX_SUBTITLE:
-            _clen.append(f"サブ {len(_csub)}字/上限{core._PR_MAX_SUBTITLE}字")
-        for _h in _chl:
-            if len(str(_h).strip()) > core._PR_MAX_HIGHLIGHT:
-                _clen.append(f"◎「{str(_h).strip()}」{len(str(_h).strip())}字/上限{core._PR_MAX_HIGHLIGHT}字")
-        if _clen:
-            st.warning("⚠️ 長すぎます（このままだと表紙で … に切り詰められます）："
-                       + "／".join(_clen) + "。短くすると文意が保てます。")
-        # 誇大・断定語の簡易チェック（編集後テキストにも念のため・警告のみで生成は止めない）
-        _ctext = _ctitle + " " + _csub
-        _cbad = [w for w in core._PR_BANNED if w in _ctext]
-        if _cbad:
-            st.warning(f"⚠️ 誇大・断定の可能性がある語：{'、'.join(_cbad)}"
-                       "（景表法・掲載前に見直しを）")
+
+        if _cstyle == "simple":
+            # タイトル/サブ：PRコピーで選んだ値を既定に（生成前seed・未設定時のみ＝地雷1回避）
+            if "pl_cover_title" not in st.session_state:
+                st.session_state["pl_cover_title"] = st.session_state.get("pl_title_edit", "")
+            if "pl_cover_sub" not in st.session_state:
+                st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
+            cc1, cc2 = st.columns(2)
+            cc1.text_input("タイトル（特大）", key="pl_cover_title",
+                           placeholder="PRコピー下書きで選ぶと自動で入ります")
+            cc2.text_input("サブタイトル（小）", key="pl_cover_sub")
+            if _chl:
+                st.caption("◎ " + "　".join(_chl))
+            st.caption(f"駅徒歩：{_cband or '（省略）'}　／　間取り・面積：{_cma or '（取れず）'}")
+            _ctitle = st.session_state.get("pl_cover_title", "").strip()
+            _csub = st.session_state.get("pl_cover_sub", "").strip()
+            _cbad = [w for w in core._PR_BANNED if w in (_ctitle + " " + _csub)]
+            if _cbad:
+                st.warning(f"⚠️ 誇大・断定の可能性がある語：{'、'.join(_cbad)}（景表法・掲載前に見直しを）")
+        else:
+            # 雑誌型：①誌名（Secrets既定OSAKA ROOMS）②通番 ③コピー ④AIで一言
+            st.session_state.setdefault("pl_cover_masthead",
+                                        get_secret("COVER_MASTHEAD", "OSAKA ROOMS"))
+            st.session_state.setdefault("pl_cover_issue", "01")
+            st.session_state.setdefault("pl_cover_copy", "帰りたくない。角部屋。")
+            mc1, mc2 = st.columns([3, 1])
+            mc1.text_input("誌名（マスト）", key="pl_cover_masthead",
+                           help="IGアカウント名と表記統一。Secretsの COVER_MASTHEAD が既定。")
+            mc2.text_input("通番", key="pl_cover_issue", placeholder="01")
+            st.text_input("コピー（キャッチ・12字目安）", key="pl_cover_copy")
+            mb1, _mb2 = st.columns([1, 2])
+            if mb1.button("✨ AIで一言（12字）", key="pl_cover_ai"):
+                try:
+                    _mcl = make_client()
+                except RuntimeError:
+                    _mcl = None
+                if _mcl is None:
+                    st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
+                else:
+                    with st.spinner("コピーを生成中…"):
+                        _cc = core.draft_cover_copy(_mcl, _pl_effective_facts(),
+                                                    concept=st.session_state.get("pl_concept", "normal"))
+                    st.session_state["pl_cover_copy"] = _cc["copy"]
+                    for _w in _cc.get("warnings", []):
+                        st.warning("🖊️ " + _w)
+                    st.rerun()
+            _mcopy = st.session_state.get("pl_cover_copy", "").strip()
+            _mclen = len("".join(_mcopy.split()))
+            if _mclen > 12:
+                st.warning(f"コピーが{_mclen}字（12字目安を超過）。表紙内で自動縮小しますが短い方が映えます。")
+            _mbad = [w for w in (list(core._PR_BANNED) + core._SNS_BAN_EXTRA + ["モテ"])
+                     if w and w in _mcopy]
+            _mname = (_cfacts.get("name") or "").strip()
+            if _mbad or (_mname and _mname in _mcopy):
+                st.warning("⚠️ コピーにban語/物件名の可能性："
+                           + "、".join(_mbad + ([_mname] if _mname and _mname in _mcopy else []))
+                           + "（生成時に自動除去＋景表法・型承認の確認を）")
+            st.caption(f"サブライン（自動）：{_pl_cover_subline(_cfacts, st.session_state.get('pl_cover_issue','01'))}"
+                       f"　／　スペック：{_cma or '（取れず）'}・管理費を必ず併記")
+
         if st.button("表紙を生成（ffmpegのみ・課金なし）", key="pl_cover_gen"):
             _csrc = next((it for it in adopted
                           if it["id"] == st.session_state.get("pl_cover_src")), None)
             if not _csrc or not _csrc.get("gen_bytes"):
                 st.error("素材画像が見つかりません。確認ステージで採用画像を用意してください。")
             else:
-                _cfields = {
-                    "title": st.session_state.get("pl_cover_title", ""),
-                    "subtitle": st.session_state.get("pl_cover_sub", ""),
-                    "highlights": _chl,
-                    "access_band": _cband,
-                    "madori_area": _cma,
-                    "note": st.session_state.get("pl_v_note", "") or "※AI加工のイメージ",
-                }
                 _casp = st.session_state.get("pl_cover_aspect", "9:16")
                 try:
-                    with st.spinner("表紙を生成中…（ffmpeg）"):
-                        _cpng = rtv.build_cover(_csrc["gen_bytes"], _cfields, aspect=_casp)
+                    with st.spinner("表紙を生成中…（ffmpeg/PIL）"):
+                        if _cstyle == "magazine":
+                            _mst, _mwk = core._sns_access_pick(_cfacts.get("access"))
+                            _mfields = {
+                                "masthead": st.session_state.get("pl_cover_masthead", "OSAKA ROOMS"),
+                                "subline": _pl_cover_subline(_cfacts,
+                                                             st.session_state.get("pl_cover_issue", "01")),
+                                "copy": _pl_cover_clean_copy(st.session_state.get("pl_cover_copy", ""),
+                                                             _cfacts),
+                                "madori": _cfacts.get("madori", ""), "area_sqm": _cfacts.get("area", ""),
+                                "station": (_mst or "").replace("駅", ""), "walk": _mwk,
+                                "rent": _cfacts.get("rent", ""), "fee": _cfacts.get("fee", ""),
+                                "note": "※家具・小物はAI生成のイメージ",
+                            }
+                            _cpng = rtv.build_cover_magazine(_csrc["gen_bytes"], _mfields, aspect=_casp)
+                        else:
+                            _cfields = {
+                                "title": st.session_state.get("pl_cover_title", ""),
+                                "subtitle": st.session_state.get("pl_cover_sub", ""),
+                                "highlights": _chl, "access_band": _cband, "madori_area": _cma,
+                                "note": st.session_state.get("pl_v_note", "") or "※AI加工のイメージ",
+                            }
+                            _cpng = rtv.build_cover(_csrc["gen_bytes"], _cfields, aspect=_casp)
                     # 生成結果は非ウィジェットキーへ（地雷1回避）。取り込み時に削除される物件固有キー
                     st.session_state["pl_cover_png"] = {"aspect": _casp, "bytes": _cpng}
                 except Exception as e:  # noqa: BLE001
@@ -2725,4 +2807,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: concept-v70c-u2 (mote1＋STEP4系4工程をpl_concept追従＝テロップ情感/表紙(draft_pr_copy)・投稿文(draft_sns_captions)・ナレ(polish_narration)・voice_id＋スタイル手動選択中の一行。ブランド共通/管理費/時点注記は不変)")
+    st.caption("build: magcover-v69b (雑誌型表紙をv70c-u2上にrebase：明朝マスト/コピー・金罫線・下部クリーム覆い・黒帯なし・管理費併記・AIで一言12字ban。★表紙コピーはconcept.cover.toneに配線＝draft_pr_copyと同源・二重情報源なし)")

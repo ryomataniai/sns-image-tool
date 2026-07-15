@@ -81,6 +81,22 @@ def _font() -> str:
     return ""
 
 
+# 明朝（雑誌型カバーのマスト/コピー用）。同梱を最優先＝本番/ローカルで確実に明朝が出る。
+_SERIF_CANDIDATES = [
+    str(Path(__file__).parent / "fonts" / "NotoSerifJP-Regular.ttf"),   # 同梱（OFL・確実）
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",          # Cloud apt（あれば）
+    "/System/Library/Fonts/ヒラギノ明朝 ProN.ttc",                       # macOSローカル
+]
+
+
+def _serif_font() -> str:
+    """明朝フォントのパス。無ければゴシック(_font)にフォールバック（劣化するが動作は継続）。"""
+    for p in _SERIF_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    return _font()
+
+
 def env_diagnostics() -> dict:
     """描画環境の自己診断（Cloudでのフォント/drawtext欠如を可視化）。設定画面で表示。
     冒頭タイトル・テロップは drawtext と日本語フォントの両方が要る。どちらか欠けると文字が出ない。
@@ -94,8 +110,11 @@ def env_diagnostics() -> dict:
     except Exception:  # noqa: BLE001
         drawtext = False
     font = _font()
+    serif = _serif_font()
     return {"ffmpeg": ff, "drawtext": bool(drawtext),
             "font": font, "font_ok": bool(font and os.path.exists(font)),
+            "serif": serif, "serif_ok": bool(serif and os.path.exists(serif)
+                                             and serif.endswith((".ttf", ".otf", "ProN.ttc"))),
             # ★キー/ボイスIDの値は返さない（存在有無のみ）＝UI/ログに秘匿情報を出さない
             "eleven_key": bool(os.environ.get("ELEVENLABS_API_KEY")),
             "eleven_voice": bool(os.environ.get("ELEVENLABS_VOICE_ID"))}
@@ -773,6 +792,162 @@ def _cover_scrim_png(W: int, H: int, header_bottom: int, footer_top: int,
     os.close(fd)
     Image.fromarray(arr, "RGBA").save(path)
     return path
+
+
+# ======================================================================
+# 表紙テンプレv2「雑誌型（マガジンカバー）」magcover-v69
+#   承認サンプル(表紙A_VISAGE)を再現：部屋写真が主役・黒帯なし・下部クリーム覆い・明朝マスト/コピー。
+#   字間はPILに無いため1文字ずつ描画で実装。
+# ======================================================================
+_MAG_INK = (36, 36, 34)       # #242422 本文インク
+_MAG_SUB = (74, 70, 66)       # #4a4642 サブ
+_MAG_GOLD = (178, 148, 88)    # #b29458 金差し色
+_MAG_CREAM = (247, 244, 239)  # #f7f4ef 下部覆い
+
+
+def _mag_span(font, text, ls):
+    """字間ls込みの総幅(px)。"""
+    if not text:
+        return 0.0
+    return sum(font.getlength(c) for c in text) + ls * (len(text) - 1)
+
+
+def _mag_draw_spaced(draw, text, font, cx, y, ls, fill):
+    """字間ls付きで中央cxに1文字ずつ描画。"""
+    x = cx - _mag_span(font, text, ls) / 2
+    for ch in text:
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += font.getlength(ch) + ls
+
+
+def _mag_fit(font_path, text, ls, max_w, base, min_size):
+    """字間ls込みで max_w に収まる最大サイズ（base→min_size・2刻み）。"""
+    from PIL import ImageFont
+    size = base
+    while size > min_size:
+        f = ImageFont.truetype(font_path, size)
+        if _mag_span(f, text, ls) <= max_w:
+            return f, size
+        size -= 2
+    return ImageFont.truetype(font_path, min_size), min_size
+
+
+def _mag_yen(s):
+    """賃料/管理費 → '¥12,345'（数字とカンマのみ抽出・空なら''）。"""
+    n = re.sub(r"[^\d,]", "", str(s or "")).strip(",")
+    return f"¥{n}" if n else ""
+
+
+def build_cover_magazine(image_bytes: bytes, fields: dict, aspect: str = "9:16") -> bytes:
+    """雑誌型（マガジンカバー）表紙PNG。部屋写真が主役・黒帯なし・下部クリーム覆い。
+    fields: masthead(誌名) / subline(エリア·No) / copy(キャッチ) /
+            madori・area_sqm・station・walk・rent・fee(スペック用) / note(AI注記)。
+    ★賃料には必ず管理費を併記（コードで構造保証）。★物件名・内部語は出さない（呼び出し側で除去）。"""
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from io import BytesIO
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+    serif = _serif_font()
+    gothic = _font() or serif
+
+    # 素材を fill（force_original_aspect_ratio=increase + crop 相当）
+    base = Image.open(BytesIO(image_bytes)).convert("RGB")
+    base = ImageOps.fit(base, (W, H), method=Image.LANCZOS)
+
+    # 下部クリームの羽根ぼかしグラデ（黒禁止・alpha 0→228・smoothstep・y1330→1515）
+    y0, y1 = int(H * 0.693), int(H * 0.789)               # 9:16→1330/1515。比率で他サイズも追従
+    ramp = np.clip((np.arange(H) - y0) / max(1, (y1 - y0)), 0, 1)
+    ss = ramp * ramp * (3 - 2 * ramp)                     # smoothstep
+    alpha = (ss * 228).astype(np.uint8)
+    ov = np.zeros((H, W, 4), dtype=np.uint8)
+    ov[:, :, 0], ov[:, :, 1], ov[:, :, 2] = _MAG_CREAM
+    ov[:, :, 3] = alpha[:, None]
+    canvas = base.convert("RGBA")
+    canvas.alpha_composite(Image.fromarray(ov, "RGBA"))
+    draw = ImageDraw.Draw(canvas)
+
+    def _region_lum(y_top, h):
+        reg = np.asarray(canvas.convert("RGB"))[y_top:y_top + h, int(W * 0.1):int(W * 0.9)]
+        return float(reg.mean()) if reg.size else 255.0
+
+    def _auto_pair(y_top, h, sub_default):
+        """帯の輝度で (本色, 影色 or None) を返す。明→ink/影なし、暗→白/黒影。"""
+        if _region_lum(y_top, h) <= 140:
+            return (255, 255, 255), (0, 0, 0)
+        return sub_default, None
+
+    # ① マスト（誌名・明朝・字間14・中央・上部・幅880に自動縮小・暗写真は白+影）
+    mast = (fields.get("masthead") or "OSAKA ROOMS").strip()
+    my = int(H * 0.198)                                   # ≒380
+    mf, ms = _mag_fit(serif, mast, 14, 880, 76, 40)
+    _mcol, _msh = _auto_pair(my, ms, _MAG_INK)
+    if _msh:
+        _mag_draw_spaced(draw, mast, mf, W / 2 + 2, my + 2, 14, _msh)
+    _mag_draw_spaced(draw, mast, mf, W / 2, my, 14, _mcol)
+    # ③ 金の細罫線（マスト直下・短く／両輝度で視認できる金）
+    rule_w = min(320, _mag_span(mf, mast, 14))
+    ry = my + ms + 16
+    draw.rectangle([W / 2 - rule_w / 2, ry, W / 2 + rule_w / 2, ry + 2], fill=_MAG_GOLD)
+    # ② サブライン（ゴシック・字間6・中央・暗写真は白）
+    sub = (fields.get("subline") or "").strip()
+    if sub:
+        sf, _ = _mag_fit(gothic, sub, 6, 900, 32, 20)
+        _scol = (255, 255, 255) if _mcol == (255, 255, 255) else _MAG_SUB
+        _mag_draw_spaced(draw, sub, sf, W / 2, ry + 22, 6, _scol)
+
+    # ④ コピー（明朝・大・中央・下部・幅1000に自動縮小 80→44）
+    copy = (fields.get("copy") or "").strip()
+    cy = int(H * 0.750)                                   # ≒1440
+    if copy:
+        cf, cs = _mag_fit(serif, copy, 2, 1000, 80, 44)
+        # 暗い写真フォールバック：コピー帯の合成後平均輝度で ink / 白+影 を自動切替
+        reg = np.asarray(canvas.convert("RGB"))[cy:cy + cs, int(W * 0.1):int(W * 0.9)]
+        lum = float(reg.mean()) if reg.size else 255.0
+        if lum <= 140:
+            _mag_draw_spaced(draw, copy, cf, W / 2 + 2, cy + 2, 2, (0, 0, 0))   # 薄い影
+            _mag_draw_spaced(draw, copy, cf, W / 2, cy, 2, (255, 255, 255))
+        else:
+            _mag_draw_spaced(draw, copy, cf, W / 2, cy, 2, _MAG_INK)
+        cy_bottom = cy + cs
+    else:
+        cy_bottom = cy
+
+    # ⑤ スペック2行（ゴシック・中央）★管理費を必ず併記
+    madori = (fields.get("madori") or "").split("[")[0].strip()
+    sqm = re.sub(r"[^\d.]", "", str(fields.get("area_sqm") or ""))
+    station = (fields.get("station") or "").strip()
+    walk = str(fields.get("walk") or "").strip()
+    parts = []
+    if madori:
+        parts.append(madori)
+    if sqm:
+        parts.append(f"{sqm}㎡")
+    if station and walk:
+        parts.append(f"{station} 徒歩{walk}分")
+    spec1 = "  /  ".join(parts)
+    rent, fee = _mag_yen(fields.get("rent")), _mag_yen(fields.get("fee"))
+    if rent and fee:
+        spec2 = f"{rent}  +  管理費 {fee}  /  月"
+    elif rent:
+        spec2 = f"{rent}（管理費は要確認）  /  月"
+    else:
+        spec2 = ""
+    sy = max(cy_bottom + 30, int(H * 0.826))              # ≒1585
+    if spec1:
+        s1f, _ = _mag_fit(gothic, spec1, 3, 980, 40, 26)
+        _mag_draw_spaced(draw, spec1, s1f, W / 2, sy, 3, _MAG_INK)
+        sy += int(s1f.size * 1.5)
+    if spec2:
+        s2f, _ = _mag_fit(gothic, spec2, 2, 980, 33, 22)
+        _mag_draw_spaced(draw, spec2, s2f, W / 2, sy, 2, _MAG_SUB)
+
+    # ⑥ AI注記（右下・小・法令必須・ハードコード既定）
+    note = (fields.get("note") or "※家具・小物はAI生成のイメージ").strip()
+    nf = ImageFont.truetype(gothic, 24)
+    draw.text((W - nf.getlength(note) - 36, H - 56), note, font=nf, fill=_MAG_SUB)
+
+    buf = BytesIO()
+    canvas.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
 
 
 def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
