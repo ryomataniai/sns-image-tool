@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: factguard-v74 (情感テンプレの事実照合：_PL_SUB_TEMPLATEの既定情感が『光が差し込む/静か/自然光』をfacts無しで毎回焼き込む穴を、_pl_caption_subでfact_scrub照合。全節事実外なら帖数+室名にfallback。sticky機構は不変。『静か』語幹化で副詞も捕捉・住宅街のfalse-backing除去)")
+    st.caption("build: subtmpl-v75 (情感2行の静的既定をコンセプト追従＝CONCEPT_PRESETSにsub_template。mote=家族でなくふたり/単身の世界観。_pl_caption_subはコンセプト別→汎用→帖数汎用の順。sticky機構は不変(返す既定値のみ差替え)。fact_scrub照合は継続)")
 
 
 def _render_video_env_diagnostics():
@@ -549,12 +549,16 @@ def _pl_caption_sub(it):
     room = it.get("room", "その他")
     name = _PL_ROOM_JP.get(room, room)
     jo = it.get("jo")
-    t = _PL_SUB_TEMPLATE.get(room)
-    if t:
-        base = "\n".join(t)
-    else:
-        line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
-        base = line1 + "\n自然光が心地よい空間"
+    # ★静的既定もコンセプトに追従（factguard-v75）。コンセプト別→汎用テンプレ→帖数汎用 の順。
+    _concept = st.session_state.get("pl_concept", "normal")
+    base = core.concept_sub_template(_concept, room)
+    if base is None:
+        t = _PL_SUB_TEMPLATE.get(room)
+        if t:
+            base = "\n".join(t)
+        else:
+            line1 = f"{jo:g}帖の広々とした{name}" if jo else f"ゆとりのある{name}"
+            base = line1 + "\n自然光が心地よい空間"
     clean, _ = core.fact_scrub(base, _pl_effective_facts())   # ★事実外属性を節単位で除去（照合）
     if clean.strip():
         return clean
@@ -2837,4 +2841,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: factguard-v74 (情感テンプレの事実照合：_PL_SUB_TEMPLATEの既定情感が『光が差し込む/静か/自然光』をfacts無しで毎回焼き込む穴を、_pl_caption_subでfact_scrub照合。全節事実外なら帖数+室名にfallback。sticky機構は不変。『静か』語幹化で副詞も捕捉・住宅街のfalse-backing除去)")
+    st.caption("build: subtmpl-v75 (情感2行の静的既定をコンセプト追従＝CONCEPT_PRESETSにsub_template。mote=家族でなくふたり/単身の世界観。_pl_caption_subはコンセプト別→汎用→帖数汎用の順。sticky機構は不変(返す既定値のみ差替え)。fact_scrub照合は継続)")

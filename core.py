@@ -1292,6 +1292,19 @@ CONCEPT_PRESETS = {
         "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
                     "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},   # ブランド共通に少量追加
         "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。"},
+        # 情感2行の静的既定（PRコピー下書きを押さない時に出る）。★家族でなく ふたり／単身 の世界観。
+        # facts無関係の属性主張はしない（採光/眺望/角部屋等は fact_scrub が別途照合）。谷合さん調整可・往復前提。
+        "sub_template": {
+            "LDK": ["終電を、気にしない。", "呼びたくなる、リビング。"],
+            "キッチン": ["ふたりで、火を囲む。", "呼びたくなる、キッチン。"],
+            "寝室": ["ひとりの夜が、ほどける。", "朝が、悪くない。"],
+            "洋室": ["こもりたくなる、部屋。", "夜が、長くなる。"],
+            "玄関": ["ただいまが、様になる。"],
+            "浴室": ["一日を、流して眠る。"],
+            "洗面": ["朝の顔が、決まる。"],
+            "バルコニー": ["夜風に、あたる。"],
+            "外観": ["帰りたくなる、佇まい。"],
+        },
     },
     # ── 枠のみ（v70cは選ぶと normal挙動＋『準備中』表示）。将来 v70d で中身を書くだけ ──
     "career_qol": {
@@ -1339,6 +1352,14 @@ def concept_style_default(cid, default=None):
 def concept_ban(cid):
     """そのコンセプトで機械除去する語＝共通ban ＋ コンセプト固有ハードNG。"""
     return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_of(concept_eff(cid)).get("ban_words", []))
+
+
+def concept_sub_template(cid, room):
+    """情感2行の静的既定（コンセプト別・部屋種別）。無ければ None＝呼出側で汎用_PL_SUB_TEMPLATEへ。
+    ★静的既定もコンセプトに追従（家族⇔ふたり/単身）。wipは concept_eff で normal に倒れ None＝汎用。"""
+    st = concept_of(concept_eff(cid)).get("sub_template") or {}
+    lines = st.get(room)
+    return "\n".join(lines) if lines else None
 
 
 def concept_telop(cid):
