@@ -1291,7 +1291,8 @@ CONCEPT_PRESETS = {
         "ban_words": _MOTE_HARD_NG,
         "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
                     "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},   # ブランド共通に少量追加
-        "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。"},
+        "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。",
+                  "default": "帰りたくない。角部屋。"},   # ★モテの既定コピー（normalは空＝人が書く）
         # 情感2行の静的既定（PRコピー下書きを押さない時に出る）。★家族でなく ふたり／単身 の世界観。
         # facts無関係の属性主張はしない（採光/眺望/角部屋等は fact_scrub が別途照合）。谷合さん調整可・往復前提。
         "sub_template": {
@@ -1352,6 +1353,12 @@ def concept_style_default(cid, default=None):
 def concept_ban(cid):
     """そのコンセプトで機械除去する語＝共通ban ＋ コンセプト固有ハードNG。"""
     return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_of(concept_eff(cid)).get("ban_words", []))
+
+
+def concept_cover_default(cid):
+    """表紙コピーの静的既定（コンセプト別）。mote='帰りたくない。角部屋。' / normal='' ＝人が書く/AIで一言。
+    ★normalに同格コピーを発明しない（推測を避ける）。covercopy-v73が守る『既定に事実主張』穴もnormalでは消える。"""
+    return str(concept_of(concept_eff(cid)).get("cover", {}).get("default", "")).strip()
 
 
 def concept_sub_template(cid, room):
@@ -1523,6 +1530,42 @@ def _pr_is_clean(s: str, haystack_norm: str, extra_banned=(), *,
     return True
 
 
+# 部屋種別の別名（Geminiが自然に言い換える範囲を正規名へ吸収）。★key='正規名'、値=言い換え候補。
+#   これが無いと room_subs のキー LDK→リビング 等で seeding の完全一致が外れ、AIコピーが黙って捨てられる。
+_ROOM_ALIASES = {
+    "LDK": ["リビング", "リビングダイニング", "リビングダイニングキッチン", "居間", "LD", "DK", "ダイニング"],
+    "洋室": ["洋間", "寝室", "ベッドルーム", "主寝室", "居室", "個室", "書斎"],
+    "寝室": ["洋室", "洋間", "ベッドルーム", "主寝室", "居室"],
+    "キッチン": ["台所", "調理場"],
+    "玄関": ["エントランス", "土間"],
+    "浴室": ["バスルーム", "風呂", "お風呂", "バス", "浴室・洗面"],
+    "洗面": ["洗面所", "洗面室", "ランドリー", "脱衣所"],
+    "トイレ": ["化粧室", "お手洗い", "手洗い"],
+    "バルコニー": ["ベランダ", "テラス"],
+    "クローゼット": ["収納", "ウォークインクローゼット", "WIC", "納戸"],
+    "外観": ["エクステリア", "建物", "外観・エントランス"],
+}
+
+
+def _normalize_room_key(k, rooms):
+    """Geminiの room_subs キー k を、採用部屋リスト rooms 内の正規名へ寄せる。
+    完全一致→別名表→部分一致 の順。どれにも当たらなければ None（＝キー不一致＝バグ）。"""
+    k = str(k or "").strip()
+    if not k:
+        return None
+    if k in rooms:
+        return k
+    kl = k.lower()
+    for r in rooms:                                   # 別名表：r の言い換え候補に k が含まれるか
+        cands = [r] + _ROOM_ALIASES.get(r, [])
+        if kl in [c.lower() for c in cands]:
+            return r
+    for r in rooms:                                   # 部分一致の保険（洋室2→洋室 等）
+        if r and (r in k or k in r):
+            return r
+    return None
+
+
 def _concept_pr_block(concept: str) -> str:
     """draft_pr_copy 用コンセプト方向づけ（表紙タイトル＝cover.tone / 情感2行＝telop.style＋few_shot）。
     normal/wip は空＝回帰。★トーンだけ寄せる（数値・事実・属性は創作させない＝景表法ガードは不変）。"""
@@ -1595,7 +1638,7 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
         except Exception:  # noqa: BLE001
             return None
 
-    titles, highlights, room_subs, fact_warn = [], [], {}, []
+    titles, highlights, room_subs, fact_warn, key_warn = [], [], {}, [], []
     _fact_facts = {**facts, "full_text": full_text}     # 裏付け照合はfacts＋マイソク全文
     for attempt in range(2):                            # 有効タイトル0なら1回だけ再生成
         data = _call(base_instruction + (stricter if attempt else ""))
@@ -1627,16 +1670,21 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
                                       hay_raw=hay_raw)
                       and not _pr_has_any_transport(h)
                       and not (_cban and any(w in h for w in _cban))][:5]  # ◎に交通/コンセプトban不可
-        room_subs, fact_warn = {}, []
+        room_subs, fact_warn, key_warn = {}, [], []
         for k, v in (data.get("room_subs", {}) or {}).items():
             s = "\n".join(str(x) for x in v) if isinstance(v, list) else str(v)
+            rk = _normalize_room_key(k, rooms)          # ★キーを正規部屋名へ（LDK↔リビング等を吸収）
+            if rk is None:                              # 対応が取れない＝キー不一致＝バグ（黙って捨てない）
+                if s.strip():
+                    key_warn.append(f"AIが『{k}』の情感を生成しましたが、部屋の対応が取れず既定に戻しました")
+                continue
             if (_pr_is_clean(s.replace("\n", " "), hay, loc_ban, hay_raw=hay_raw)
                     and not (_cban and any(w in s for w in _cban))):
                 s, _frm = fact_scrub(s, _fact_facts)    # ★事実外の属性(夜空/眺望/静け等)を節単位で除去
                 if _frm:
-                    fact_warn.append(f"{k}の情感から事実外の属性『{'・'.join(_frm)}』を除去しました")
+                    fact_warn.append(f"{rk}の情感から事実外の属性『{'・'.join(_frm)}』を除去しました")
                 if s.strip():                           # 全節が事実外で空になったらテンプレに差し戻し
-                    room_subs[str(k)] = s
+                    room_subs[rk] = s
         if titles:                                      # 有効タイトルが出たら確定
             break
     # 退避：有効タイトルが1件も無ければ P1b-1 の簡易テンプレ（物件名 ｜ 間取り）にフォールバック
@@ -1652,7 +1700,8 @@ def draft_pr_copy(client, full_text: str, facts: dict, rooms: list,
     if not titles and not highlights and not room_subs:
         return None
     return {"titles": titles[:3], "highlights": highlights, "room_subs": room_subs,
-            "fallback": is_fallback, "warnings": sorted(set(fact_warn))}
+            "fallback": is_fallback, "warnings": sorted(set(fact_warn)),
+            "key_warnings": sorted(set(key_warn))}   # ★キー不一致（バグ）＝guard落ち（正常）と別枠
 
 
 # ── SNS投稿文（Instagram / TikTok）生成 ─────────────────────────────

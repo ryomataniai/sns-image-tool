@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: subtmpl-v75 (情感2行の静的既定をコンセプト追従＝CONCEPT_PRESETSにsub_template。mote=家族でなくふたり/単身の世界観。_pl_caption_subはコンセプト別→汎用→帖数汎用の順。sticky機構は不変(返す既定値のみ差替え)。fact_scrub照合は継続)")
+    st.caption("build: keynorm-v76 ((A)room_subsキー正規化：Geminiが LDK→リビング/洋室→寝室 と改名してもAIコピーを捨てず正規名で照合。対応取れない時は赤⚠️で人に返す(guard落ち=黄🛡️と区別)。(B)表紙コピーnormal既定を空に(moteは帰りたくない。角部屋。維持))")
 
 
 def _render_video_env_diagnostics():
@@ -2284,7 +2284,9 @@ def _pl_stage_video():
                     st.rerun()
         _draft = st.session_state.get("pl_prcopy")
         if _draft:
-            for _fw in _draft.get("warnings", []):       # ★事実外の属性（夜空等）を除去した旨を人に返す
+            for _kw in _draft.get("key_warnings", []):   # ★キー不一致＝バグ（赤・要確認・黙って捨てない）
+                st.error("⚠️ " + _kw + "（部屋の対応が取れませんでした＝要確認）")
+            for _fw in _draft.get("warnings", []):       # 事実外の属性を除去＝正常動作（黄・人に返す）
                 st.warning("🛡️ " + _fw)
             if _draft.get("fallback"):
                 st.warning("AI候補が作れませんでした（事実に合う短い案が無し）。"
@@ -2407,7 +2409,10 @@ def _pl_stage_video():
             st.session_state.setdefault("pl_cover_masthead",
                                         get_secret("COVER_MASTHEAD", "OSAKA ROOMS"))
             st.session_state.setdefault("pl_cover_issue", "01")
-            st.session_state.setdefault("pl_cover_copy", "帰りたくない。角部屋。")
+            # ★表紙コピー既定もコンセプト追従（mote=帰りたくない。角部屋。／normal=空＝人が書く/AIで一言）
+            st.session_state.setdefault(
+                "pl_cover_copy",
+                core.concept_cover_default(st.session_state.get("pl_concept", "normal")))
             mc1, mc2 = st.columns([3, 1])
             mc1.text_input("誌名（マスト）", key="pl_cover_masthead",
                            help="IGアカウント名と表記統一。Secretsの COVER_MASTHEAD が既定。")
@@ -2841,4 +2846,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: subtmpl-v75 (情感2行の静的既定をコンセプト追従＝CONCEPT_PRESETSにsub_template。mote=家族でなくふたり/単身の世界観。_pl_caption_subはコンセプト別→汎用→帖数汎用の順。sticky機構は不変(返す既定値のみ差替え)。fact_scrub照合は継続)")
+    st.caption("build: keynorm-v76 ((A)room_subsキー正規化：Geminiが LDK→リビング/洋室→寝室 と改名してもAIコピーを捨てず正規名で照合。対応取れない時は赤⚠️で人に返す(guard落ち=黄🛡️と区別)。(B)表紙コピーnormal既定を空に(moteは帰りたくない。角部屋。維持))")
