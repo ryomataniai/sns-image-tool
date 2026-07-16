@@ -1155,7 +1155,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
                negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
                aspect: str = "9:16", fit_mode: str = "fill", flash_cut: bool = False,
-               progress=None) -> dict:
+               durations: Optional[list] = None, trims: Optional[list] = None,
+               beat_ids: Optional[list] = None, progress=None) -> dict:
     """
     images: [(name, image_bytes), ...] 再生順
     captions: 各クリップ下部の文言（None かつ with_captions=True なら name を使用）
@@ -1167,6 +1168,11 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
         morph防止・fal課金なし）。fit_mode は contain 固定（図面全体を表示）。None は全クリップ通常。
     aspect: 動画の向き "9:16"（既定）/ "1:1" / "16:9"
     fit_mode: 余白の扱い "fill"（既定・余白ゼロ/端が切れる）/ "contain"（全体表示・余白あり）
+    durations/trims/beat_ids: ★story-v78 A0 part2（ビート割り当て）。3つ揃うと「ビートモード」。
+        durations[i]=クリップiの生成尺(秒・{5,10})／trims[i]=生成後に切り出す尺（尺切り出し＝速度変更でない）／
+        beat_ids[i]=クリップiが属するビートid（連続する同idが1ビート）。
+        連結は _assemble_beats（ビート内xfade0.6s・ビート境界ハードカット）→ 総尺=Σ(トリム尺−ビート内xfade)=Σナレ秒。
+        ★3つのいずれかが None なら現行完全回帰（global duration＋全クリップ _xfade_concat）。
     progress: callable(step:int, total:int, msg:str) 進捗コールバック（任意）
     戻り値: {'silent': path, 'bgm': path, 'outdir': dir}（生成した版のみ・mp4はファイルパスで返す）。
         ※ 呼び出し側は open(path,'rb') で download_button に渡し、不要になったら outdir を掃除する。
@@ -1178,6 +1184,9 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
     room_types = room_types or ["generic"] * n
     if captions is None:
         captions = [name for name, _ in images] if with_captions else [""] * n
+    # ★ビートモード判定：3つ揃い、かつ全て長さnのときのみ。1つでも欠ける/長さ不一致なら現行回帰。
+    _beat_mode = (durations is not None and trims is not None and beat_ids is not None
+                  and len(durations) == n and len(trims) == n and len(beat_ids) == n)
 
     workdir = tempfile.mkdtemp(prefix="tour_")
     seg_paths = []
@@ -1188,15 +1197,16 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
             if progress:
                 progress(i, n, f"{name}: {'静止クリップ生成中' if _still else '動画生成中'}…")
             raw = os.path.join(workdir, f"raw_{i}.mp4")
+            _gen_dur = int(durations[i]) if _beat_mode else duration   # ★ビートモード=per-clip生成尺
             if _still:
                 # 間取り図・3Dパース等：fal/Klingを通さず静止クリップ（morphゼロ・課金ゼロ）
-                _still_clip(img, duration, raw)
+                _still_clip(img, _gen_dur, raw)
                 _fit = "contain"                       # 全体表示（図面の端を切らない）
             else:
                 rt = room_types[i] if i < len(room_types) else "generic"
                 prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
                 # ストリーミングで raw へ直接書き込み（mp4を変数に載せない＝OOM対策）
-                generate_clip_fal(img, prompt, duration=duration, model_key=model_key,
+                generate_clip_fal(img, prompt, duration=_gen_dur, model_key=model_key,
                                   negative_prompt=negative_prompt, cfg_scale=cfg_scale,
                                   out_path=raw)
                 _fit = fit_mode
@@ -1216,13 +1226,29 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                             top_tag=top_tag if with_captions else "",
                             note=_note, taste=tst, pos=pos, flash=flash,
                             out_w=out_w, out_h=out_h, fit_mode=_fit)
+            if _beat_mode:
+                # ★生成尺（durations[i]）→ トリム尺（trims[i]）へ切り出す（尺切り出し＝速度変更でない・atempo0）
+                trimmed = os.path.join(workdir, f"trim_{i}.mp4")
+                _trim_clip(seg, trimmed, float(trims[i]))
+                seg = trimmed
             seg_paths.append(seg)
 
-        # ③ クロスフェード連結（メモリ安全＝逐次）
+        # ③ 連結（メモリ安全＝逐次）
         if progress:
             progress(n, n, "連結中…")
         silent = os.path.join(workdir, "tour_silent.mp4")
-        _xfade_concat(seg_paths, silent, flash_cut=flash_cut)
+        if _beat_mode:
+            # ★ビート境界=ハードカット（食われない）／ビート内=xfade0.6s。連続する同 beat_id を1ビートに束ねる。
+            beat_groups: list[list[str]] = []
+            _prev = object()
+            for i, bid in enumerate(beat_ids):
+                if bid != _prev:
+                    beat_groups.append([])
+                    _prev = bid
+                beat_groups[-1].append(seg_paths[i])
+            _assemble_beats(beat_groups, silent, t=0.6, flash_cut=flash_cut)
+        else:
+            _xfade_concat(seg_paths, silent, flash_cut=flash_cut)
 
         # 完成mp4は bytes ではなくファイルパスで返す（session_state/変数に mp4 を載せない）。
         # workdir は finally で消えるため、返す成果物だけ永続 outdir へ移す。
