@@ -1266,6 +1266,31 @@ def prepare_subtitle(text, facts=None, max_chars=20, max_lines=3):
     return wrap_subtitle(clean, max_chars, max_lines), removed
 
 
+def subtitle_events(beats, cover_sec=0.0):
+    """★story-v78 B ③『字数比の1行ずつ切替』：各ビートの字幕行を時刻イベントへ展開（with-timestamps不要）。
+    beats=[{lines:[str], dur:float}]（ビート順）。dur=ビートの描画秒(=beat_narr_sec)。
+    ビート開始 = cover_sec + Σ(前ビートの dur)（＝ナレ音声の配置と同一・A0の単純化）。
+    ビート内 = 各行の『字数比』で尺を按分（wrap_subtitleが句読点優先で折返し済＝行の字数と発話時間がほぼ比例）。
+    ★②等分割(最大1213ms)より精度が高い(A1のLDKビートで最大118ms・Claude推定＝真の判定はCの実測Δms)。
+    ★D(with-timestamps)成功時は不要／失敗時はこれに退避＝ElevenLabsが落ちても実用水準のフォールバック。
+    返り値: [(line, start_sec, end_sec)]。lines空のビートは尺だけ進める（字幕なし・stillビート等）。"""
+    events = []
+    acc = float(cover_sec or 0.0)
+    for b in (beats or []):
+        dur = float(b.get("dur") or 0.0)
+        lines = [str(l) for l in (b.get("lines") or []) if l and str(l).strip()]
+        total = sum(len(l) for l in lines)
+        if total > 0 and dur > 0:
+            t0 = acc
+            for i, l in enumerate(lines):
+                d = dur * (len(l) / total)
+                end = acc + dur if i == len(lines) - 1 else t0 + d   # 最終行はビート終端ぴったりに
+                events.append((l, round(t0, 3), round(end, 3)))
+                t0 += d
+        acc += dur
+    return events
+
+
 # PRコピーの禁止語（景表法：最上級・断定）
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]

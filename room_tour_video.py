@@ -582,6 +582,30 @@ def _assemble_beats(beat_groups: list[list[str]], out_path: str,
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _burn_subtitles(video_path: str, events, out_path: str,
+                    out_w: int = 1080, out_h: int = 1920) -> str:
+    """★story-v78 B ③：時刻付き字幕を動画に焼く（clean 白＋影・下部safe-zone・1行ずつ切替）。
+    events=[(line, start_sec, end_sec)]（core.subtitle_events の出力）。無音bodyに焼く→後段でBGM/ナレを重ねる。
+    メモリ安全＝1パス。events空/無効なら素通し（表紙のみ・ナレ無し等）。"""
+    ev = [(str(l), float(s), float(e)) for l, s, e in (events or [])
+          if l and str(l).strip() and float(e) > float(s)]
+    if not ev:
+        shutil.copy(video_path, out_path)
+        return out_path
+    font = _font()
+    fontref = f"fontfile='{font}'" if font else "font='Noto Sans CJK JP'"
+    y = out_h - 240                                   # 下部safe-zone（最下部200px回避）・1行
+    draws = [f"drawtext={fontref}:text='{_esc(line)}':fontcolor=white:fontsize=48:"
+             f"shadowcolor=black@0.55:shadowx=2:shadowy=2:x=(w-text_w)/2:y={y}:"
+             f"enable='between(t\\,{s:.3f}\\,{e:.3f})'" for line, s, e in ev]
+    vf = "[0:v]" + ",".join(draws) + "[v]"
+    subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-i", video_path,
+                    "-filter_complex", vf, "-map", "[v]", "-map", "0:a?",
+                    "-c:a", "copy", "-r", "30", "-pix_fmt", "yuv420p",
+                    "-movflags", "+faststart", out_path], check=True, timeout=600)
+    return out_path
+
+
 def _mux_bgm(video_path: str, bgm_wav: str, out_path: str) -> str:
     ff = _ffmpeg()
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", video_path, "-i", bgm_wav,
@@ -1451,9 +1475,12 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     def _jp(path):
         return os.path.join(job_dir, path)
 
+    _unified = bool(glob.get("unified_subtitle"))   # ★B: ナレ=字幕一本化時はメイン/情感を焼かない（字幕は動画レベルで③時刻焼き）
+
     def _make_seg(sc):   # raw → seg（テロップ・注記込み normalize）。冪等
         _normalize_clip(_jp(sc["raw"]), _jp(sc["seg"]),
-                        caption=sc.get("caption", ""), sub_lines=sc.get("subs"),
+                        caption="" if _unified else sc.get("caption", ""),
+                        sub_lines=None if _unified else sc.get("subs"),
                         top_tag=sc.get("top_tag", ""), note=sc.get("note", ""),
                         taste=sc.get("taste", "clean"), pos=sc.get("pos", "下中央"),
                         flash=sc.get("flash", ""), out_w=out_w, out_h=out_h,
@@ -1569,6 +1596,21 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             cover_warn.append("表紙の挿入に失敗したため、表紙なしで動画を生成しました（"
                               + _log_failure("cover_prepend", e) + "）。")
 
+    # ── ★story-v78 B ③：ナレ字幕を『字数比の1行ずつ切替』で無音bodyに焼く（with-timestamps不要のフォールバック水準）──
+    #   ビート開始=cover_off+Σ前ビートdur（＝ナレ音声の配置と同一・A0の単純化）。表紙区間は字幕なし（唯一の例外）。
+    _sub_beats = glob.get("subtitle_beats")
+    if _sub_beats:
+        try:
+            import core as _core
+            _events = _core.subtitle_events(_sub_beats, cover_sec if cover_on else 0.0)
+            _subbed = _jp("_tmp_subbed.mp4")
+            _burn_subtitles(body, _events, _subbed, out_w, out_h)
+            shutil.move(_subbed, _jp("room_tour_silent.mp4"))
+            body = _jp("room_tour_silent.mp4")
+        except Exception as e:  # noqa: BLE001  字幕はフェイルセーフ（失敗しても動画は止めない）
+            cover_warn.append("字幕の焼き込みに失敗したため字幕なしで生成しました（"
+                              + _log_failure("burn_subtitles", e) + "）。")
+
     out = {"outdir": job_dir}
     if glob.get("also_silent", True):
         out["silent"] = body
@@ -1603,7 +1645,9 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                     apath = _jp(f"narrbeat_{bid}.mp3")
                     try:
                         if not os.path.exists(apath):
-                            tts_elevenlabs(txt, apath)   # ★キーは env のみ・例外に載せない
+                            import core as _core
+                            # ★B一本化の音声側：字幕は生テキスト(w残す)／音声は normalize_reading(w除去・LDK→エルディーケー・㎡→平米)。
+                            tts_elevenlabs(_core.normalize_reading(txt), apath)  # ★キーは env のみ・例外に載せない
                         _sec = _dur(apath)
                         _chars = len(re.sub(r"\s+", "", txt))
                         _cps = (_chars / _sec) if _sec > 0 else 0.0
@@ -1629,7 +1673,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 apath = _jp(f"narr_{sc['i']}.mp3")
                 try:
                     if not os.path.exists(apath):
-                        tts_elevenlabs(txt, apath)      # ★キーは env のみ・例外に載せない
+                        import core as _core
+                        tts_elevenlabs(_core.normalize_reading(txt), apath)  # ★B: 音声のみ正規化（字幕は生・w残す）
                 except Exception as e:  # noqa: BLE001  1本失敗は隔離＝logger/stateへ
                     narr_warn.append(_log_failure(f"tts(scene {sc['i']})", e))
                     continue

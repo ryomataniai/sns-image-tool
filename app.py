@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-b1-v78 (テキスト一本化の判定器を先に固定=guard先行。core.wrap_subtitle(ナレ字幕を3行×20字・句読点優先で折返し・60字超は末尾…)＋prepare_subtitle(焼込前fact_scrub=人がpl_narrを手編集して事実外属性を書いた場合の最終ゲート=生成経路と別・手編集の穴・idempotentで二重適用安全→wrap)。★未配線=実行時影響ゼロ。前=story-a3-v78:物語生成配線)")
+    st.caption("build: story-b2-v78 (テキスト一本化を配線: ナレを字幕へ。③字数比の1行ずつ切替(core.subtitle_events=行の字数比でビート尺を按分・②等分割1213msより118ms・with-timestamps不要=DのフォールバックにもなるB作り込みゼロ)。rtv._burn_subtitles(動画レベルで時刻焼き・clean下部)。unified時はメイン/情感を焼かない・note(景表法)保持・表紙は字幕なし。★音声側=TTS直前にnormalize_reading(w除去/LDK→エルディーケー・字幕は生text=w残す=一本化)。丸め…発火で⚠️。前=story-b1-v78:判定器)")
 
 
 def _render_video_env_diagnostics():
@@ -2859,6 +2859,34 @@ def _pl_stage_video():
         st.session_state["_pl_v_predicted_sec"] = _predicted
     else:
         st.session_state.pop("_pl_v_predicted_sec", None)
+    # ★story-v78 B（テキスト一本化）：ナレを字幕へ。ビート単位・③字数比の1行切替（動画レベルで焼く）。
+    #   ビートのナレ(=TTSと同一text)を prepare_subtitle(焼込前fact_scrub=手編集の穴＋3行折返し)→{lines,dur}。
+    #   dur=beat_narr_sec（A0の描画秒＝ナレ音声と同一の時間軸）。subtitle_beats があれば unified＝メイン/情感を焼かない。
+    _sub_beats, _sub_warn = None, []
+    if v_story and v_narr_on and _scenes:
+        _facts_sub = _pl_effective_facts()
+        _sub_beats = []
+        _prev = object()
+        for _sc in _scenes:
+            _bid = _sc.get("beat_id")
+            if _bid == _prev:
+                continue                                  # ビート先頭のみ（beat_narration/secは先頭sceneに載る）
+            _prev = _bid
+            _bn = (_sc.get("beat_narration") or "").strip()
+            _bdur = float(_sc.get("beat_narr_sec") or 0.0)
+            if _bn:
+                _slines, _sremoved = core.prepare_subtitle(_bn, _facts_sub)
+                _sub_beats.append({"lines": _slines, "dur": _bdur})
+                _room = _sc.get("room", "")
+                for _r in _sremoved:
+                    _sub_warn.append(f"{_room}: 字幕から事実外属性『{_r}』を除去しました（焼込前ゲート）。")
+                if _slines and _slines[-1].endswith("…"):
+                    _sub_warn.append(f"{_room}: 字幕を3行に収めるため末尾を省略しました"
+                                     "（★音声は全文読みます／D＝同期実装後は不要になります）。")
+            else:
+                _sub_beats.append({"lines": [], "dur": _bdur})   # ナレ無ビート＝尺だけ進める（字幕なし）
+    for _w in _sub_warn:
+        st.warning("💬 " + _w)
     _ow, _oh = rtv.ASPECT_DIMS.get(v_aspect, (1080, 1920))
     _cov_bytes = None
     if v_cover_on and st.session_state.get("pl_cover_png"):
@@ -2867,7 +2895,9 @@ def _pl_stage_video():
              "with_bgm": v_bgm, "also_silent": True, "flash_cut": bool(v_flashcut),
              "narration_on": bool(v_narr_on),
              "cover_on": bool(v_cover_on and _cov_bytes), "cover_sec": float(v_cover_sec),
-             "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None}
+             "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None,
+             # ★story-v78 B：ナレ字幕の一本化。subtitle_beats=③焼込用[{lines,dur}]／unified=メイン/情感を焼かない。
+             "subtitle_beats": _sub_beats, "unified_subtitle": bool(_sub_beats)}
     import tempfile as _tf
     _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
     _job_dir = _os.path.join(_tf.gettempdir(), f"tour_{_job_id}")
@@ -3075,4 +3105,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-b1-v78 (テキスト一本化の判定器を先に固定=guard先行。core.wrap_subtitle(ナレ字幕を3行×20字・句読点優先で折返し・60字超は末尾…)＋prepare_subtitle(焼込前fact_scrub=人がpl_narrを手編集して事実外属性を書いた場合の最終ゲート=生成経路と別・手編集の穴・idempotentで二重適用安全→wrap)。★未配線=実行時影響ゼロ。前=story-a3-v78:物語生成配線)")
+    st.caption("build: story-b2-v78 (テキスト一本化を配線: ナレを字幕へ。③字数比の1行ずつ切替(core.subtitle_events=行の字数比でビート尺を按分・②等分割1213msより118ms・with-timestamps不要=DのフォールバックにもなるB作り込みゼロ)。rtv._burn_subtitles(動画レベルで時刻焼き・clean下部)。unified時はメイン/情感を焼かない・note(景表法)保持・表紙は字幕なし。★音声側=TTS直前にnormalize_reading(w除去/LDK→エルディーケー・字幕は生text=w残す=一本化)。丸め…発火で⚠️。前=story-b1-v78:判定器)")
