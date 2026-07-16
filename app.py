@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: roomsort-v78 (③に🔀部屋順に整列=ワンショット。連続同室化で非連続LDKを隣接→A0で在庫2ビート化。core._ROOM_TOUR_ORDER(1箇所・洋室末尾=落とし所)＋安定ソート＋_normalize_room_key前方一致。初回自動整列は廃止=押さなければPDF順・状態を持たない。前=story-a0-v78:ビート割り当て/タイムライン・📏実尺の隣に📐予定Σ)")
+    st.caption("build: story-a1-v78 (A物語の判定器を先に固定=measure-first。normalize_readingに笑いw/ｗ除去(音声のみ・字幕は別経路・www.とidentityで最長一致守る)。★測定でfactguard緩和/ban限定はno-op判明=この空間が落ち着くは既に通る/手が丁寧になるは既にban外→変更せずテストでロック。前=roomsort-v78:🔀部屋順に整列)")
 
 
 def _render_video_env_diagnostics():
@@ -3016,4 +3016,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: roomsort-v78 (③に🔀部屋順に整列=ワンショット。連続同室化で非連続LDKを隣接→A0で在庫2ビート化。core._ROOM_TOUR_ORDER(1箇所・洋室末尾=落とし所)＋安定ソート＋_normalize_room_key前方一致。初回自動整列は廃止=押さなければPDF順・状態を持たない。前=story-a0-v78:ビート割り当て/タイムライン・📏実尺の隣に📐予定Σ)")
+    st.caption("build: story-a1-v78 (A物語の判定器を先に固定=measure-first。normalize_readingに笑いw/ｗ除去(音声のみ・字幕は別経路・www.とidentityで最長一致守る)。★測定でfactguard緩和/ban限定はno-op判明=この空間が落ち着くは既に通る/手が丁寧になるは既にban外→変更せずテストでロック。前=roomsort-v78:🔀部屋順に整列)")

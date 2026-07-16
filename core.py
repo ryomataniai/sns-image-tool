@@ -2177,6 +2177,9 @@ def normalize_reading(text: str) -> str:
     s = re.sub(r"¥\s*([\d,]+)", _yen, s)          # ¥79,000 → 7万9千円
     s = re.sub(r"([\d,]+)\s*円", _yen, s)          # 79,000円 → 7万9千円
     s = re.sub(r"(\d+)\s*帖", r"\1じょう", s)       # ★数字+帖のみ（手帖=てちょうを壊さない）
+    # ★笑いの w/ｗ（連続可）を音声から除去（字幕には残す＝別経路・story-v78）。HIROが「ダブリュー」と読むのを防ぐ。
+    #   直前が日本語(非ASCII)かつ直後が句読点/空白/行末のときだけ＝URL(www.)や英単語内wを壊さない（最長一致の規律）。
+    s = re.sub(r"(?<=[^\x00-\x7f])[wｗ]+(?=[。、，！？!?\s]|$)", "", s)
     s = _READ_RE.sub(lambda m: _READ_TABLE[m.group(0)], s)   # 辞書：最長一致で置換
     return s
 
