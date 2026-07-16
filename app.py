@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: narrmeas-v77 (①読み辞書に献立→こんだて/創る→つくる追加(最長一致・貢献/創業は無傷) ②ナレ実測CPS計装：TTS実尺÷実文字数=実測字/秒＋末尾無音を毎シーンUI表示。係数_NARR_CPS=4.2は推測でなく実測を見てから決める(今回は未変更・atempo禁止維持))")
+    st.caption("build: crashfix-coverai (表紙『AIで一言』の生成後代入(地雷①)を on_click callback化＝StreamlitAPIExceptionで本番クラッシュしていたのを修正。全走査でバグ型はこの1箇所のみ確認。v78前提2/3は本ユニットに混ぜず別途)")
 
 
 def _render_video_env_diagnostics():
@@ -2079,6 +2079,20 @@ def _pl_cover_clean_copy(copy, facts):
     return s or "居心地のいい部屋。"
 
 
+def _pl_cover_ai_cb():
+    """『AIで一言』on_click。生成→pl_cover_copy へ代入。★コールバック内＝widget生成前＝地雷①回避。
+    body-flowで st.session_state['pl_cover_copy']=... すると StreamlitAPIException で落ちる（v78前提1の修正）。"""
+    try:
+        _mcl = make_client()
+    except RuntimeError:
+        st.session_state["_pl_cover_ai_msg"] = "Gemini APIキーが未設定です（設定ページで確認）。"
+        return
+    _cc = core.draft_cover_copy(_mcl, _pl_effective_facts(),
+                                concept=st.session_state.get("pl_concept", "normal"))
+    st.session_state["pl_cover_copy"] = _cc["copy"]     # ← コールバック内なので widget キーへ安全に代入
+    st.session_state["_pl_cover_ai_msg"] = "／".join("🖊️ " + w for w in _cc.get("warnings", [])) or ""
+
+
 def _pl_cover_default_src(adopted):
     """表紙素材の既定：最初のLDK→無ければ先頭の居室→無ければ先頭。"""
     for it in adopted:
@@ -2419,21 +2433,11 @@ def _pl_stage_video():
             mc2.text_input("通番", key="pl_cover_issue", placeholder="01")
             st.text_input("コピー（キャッチ・12字目安）", key="pl_cover_copy")
             mb1, _mb2 = st.columns([1, 2])
-            if mb1.button("✨ AIで一言（12字）", key="pl_cover_ai"):
-                try:
-                    _mcl = make_client()
-                except RuntimeError:
-                    _mcl = None
-                if _mcl is None:
-                    st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
-                else:
-                    with st.spinner("コピーを生成中…"):
-                        _cc = core.draft_cover_copy(_mcl, _pl_effective_facts(),
-                                                    concept=st.session_state.get("pl_concept", "normal"))
-                    st.session_state["pl_cover_copy"] = _cc["copy"]
-                    for _w in _cc.get("warnings", []):
-                        st.warning("🖊️ " + _w)
-                    st.rerun()
+            # ★on_click コールバック＝widget生成前に代入（body-flowでの生成後代入は地雷①でクラッシュ）
+            mb1.button("✨ AIで一言（12字）", key="pl_cover_ai", on_click=_pl_cover_ai_cb)
+            _cai_msg = st.session_state.get("_pl_cover_ai_msg", "")
+            if _cai_msg:
+                st.warning(_cai_msg)
             _mcopy = st.session_state.get("pl_cover_copy", "").strip()
             _mclen = len("".join(_mcopy.split()))
             if _mclen > 12:
@@ -2846,4 +2850,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: narrmeas-v77 (①読み辞書に献立→こんだて/創る→つくる追加(最長一致・貢献/創業は無傷) ②ナレ実測CPS計装：TTS実尺÷実文字数=実測字/秒＋末尾無音を毎シーンUI表示。係数_NARR_CPS=4.2は推測でなく実測を見てから決める(今回は未変更・atempo禁止維持))")
+    st.caption("build: crashfix-coverai (表紙『AIで一言』の生成後代入(地雷①)を on_click callback化＝StreamlitAPIExceptionで本番クラッシュしていたのを修正。全走査でバグ型はこの1箇所のみ確認。v78前提2/3は本ユニットに混ぜず別途)")
