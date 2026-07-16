@@ -1227,6 +1227,45 @@ def fact_is_clean(text, facts=None) -> bool:
     return not fact_scrub(text, facts)[1]
 
 
+def wrap_subtitle(text, max_chars=20, max_lines=3):
+    """★story-v78 B：ナレ＝字幕一本化の折返し。長いナレ文を字幕の『行』へ分割（日本語＝文字数ベース）。
+    句読点（。、）の後ろで区切るのを優先し、無ければ max_chars で強制改行。max_lines 超過分は末尾…で丸める
+    （暫定の静的字幕用。1行ずつの切替＝timing は D）。空文字は []。改行・前後空白は潰す。"""
+    s = re.sub(r"\s+", "", str(text or ""))
+    if not s:
+        return []
+    segs = [x for x in re.findall(r"[^。、]*[。、]?", s) if x]   # 句読点を含めて断片化
+    lines, cur = [], ""
+    for seg in segs:
+        while len(seg) > max_chars:                # 断片自体が長すぎる→強制分割
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.append(seg[:max_chars])
+            seg = seg[max_chars:]
+        if len(cur) + len(seg) <= max_chars:
+            cur += seg
+        else:
+            if cur:
+                lines.append(cur)
+            cur = seg
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:                     # 暫定：超過は末尾…で丸める（Dで解消）
+        lines = lines[:max_lines]
+        lines[-1] = (lines[-1][:max_chars - 1] + "…") if lines[-1] else "…"
+    return lines
+
+
+def prepare_subtitle(text, facts=None, max_chars=20, max_lines=3):
+    """★story-v78 B：字幕を焼き込む直前の整形＝最終ゲート。
+    ① fact_scrub（★人が pl_narr を手編集して事実外属性を書いた場合に落とす。生成経路の fact_scrub とは別＝
+       『手編集の穴』を塞ぐもので重複ではない。fact_scrub は idempotent なので二重適用は安全）。
+    ② wrap_subtitle で行へ折返す。返り値: (lines[str], removed[str])。"""
+    clean, removed = fact_scrub(text or "", facts)
+    return wrap_subtitle(clean, max_chars, max_lines), removed
+
+
 # PRコピーの禁止語（景表法：最上級・断定）
 _PR_BANNED = ["最高", "完璧", "絶対", "日本一", "最安", "必ず", "唯一", "100%", "激安", "破格",
               "特選", "掘り出し", "No.1", "ナンバーワン", "最上級", "究極", "業界一", "他にない"]

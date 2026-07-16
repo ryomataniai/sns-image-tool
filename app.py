@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-a3-v78 (物語生成を配線: ④の『全シーンに下書き』を廃止し、シチュエーション6+自由入力(検出部屋で絞る§4)→『🎬物語を生成』1コールに置換。各ビート先頭sceneのpl_narrに格納・pl_narr_auto更新しない=編集済み判定でテロップ追従停止(意図)・継続シーンは空+『1枚目にまとまっています』1行。実機提出用に生成プロンプト+生レスポンスのデバッグ欄(Fで撤去)。前=story-a2-v78:story_narration本体)")
+    st.caption("build: story-b1-v78 (テキスト一本化の判定器を先に固定=guard先行。core.wrap_subtitle(ナレ字幕を3行×20字・句読点優先で折返し・60字超は末尾…)＋prepare_subtitle(焼込前fact_scrub=人がpl_narrを手編集して事実外属性を書いた場合の最終ゲート=生成経路と別・手編集の穴・idempotentで二重適用安全→wrap)。★未配線=実行時影響ゼロ。前=story-a3-v78:物語生成配線)")
 
 
 def _render_video_env_diagnostics():
@@ -3075,4 +3075,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-a3-v78 (物語生成を配線: ④の『全シーンに下書き』を廃止し、シチュエーション6+自由入力(検出部屋で絞る§4)→『🎬物語を生成』1コールに置換。各ビート先頭sceneのpl_narrに格納・pl_narr_auto更新しない=編集済み判定でテロップ追従停止(意図)・継続シーンは空+『1枚目にまとまっています』1行。実機提出用に生成プロンプト+生レスポンスのデバッグ欄(Fで撤去)。前=story-a2-v78:story_narration本体)")
+    st.caption("build: story-b1-v78 (テキスト一本化の判定器を先に固定=guard先行。core.wrap_subtitle(ナレ字幕を3行×20字・句読点優先で折返し・60字超は末尾…)＋prepare_subtitle(焼込前fact_scrub=人がpl_narrを手編集して事実外属性を書いた場合の最終ゲート=生成経路と別・手編集の穴・idempotentで二重適用安全→wrap)。★未配線=実行時影響ゼロ。前=story-a3-v78:物語生成配線)")
