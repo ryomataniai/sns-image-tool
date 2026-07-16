@@ -1969,16 +1969,38 @@ def beat_ceiling_chars(stock, coefficient=_BEAT_COEF_PROVISIONAL, max_clip=10):
     return int((stock or 0) * max_clip * coefficient)
 
 
-def allocate_beat_cuts(chars, stock, coefficient=_BEAT_COEF_PROVISIONAL):
-    """ビートの字数と在庫画像数からカット割り当てを返す（谷合さんQ2の順序）。
+# ★ビート内カット境界のxfade尺(videofix-v58)。ビート境界はハードカット(0)＝累積ズレを断つ(谷合さん確定)。
+_BEAT_XFADE_SEC = 0.6
+
+
+def _split_trims(total, cuts):
+    """total を cuts(生成尺) に分割。各トリム ≤ その生成尺。均等→頭打ち→残りを他へ再配分。
+    返り値 Σ = min(total, Σcuts)。"""
+    trims = [0.0] * len(cuts)
+    remaining = min(total, sum(cuts))
+    for _ in range(len(cuts) + 1):
+        active = [i for i in range(len(cuts)) if trims[i] < cuts[i] - 1e-9]
+        if not active or remaining <= 1e-9:
+            break
+        share = remaining / len(active)
+        for i in active:
+            add = min(share, cuts[i] - trims[i])
+            trims[i] += add
+            remaining -= add
+    return trims
+
+
+def allocate_beat_cuts(chars, stock, coefficient=_BEAT_COEF_PROVISIONAL, xfade=_BEAT_XFADE_SEC):
+    """ビートの字数と在庫画像数からカット割り当て＋per-cutトリムを返す（谷合さんQ2の順序）。
     ① 在庫の5秒で足りる→5s ② 足りない→一部を10s生成→トリム ③ 在庫×10でも足りない→上限で防ぐ(overflow)。
-    ★ホールドは③が漏れた最後の砦のみ（演出でなくバグに見えるので選択肢にしない）。
-    返り値: {narr_sec, cuts:[5|10,...], display_sec, overflow:bool, hold_sec, fal_cost_units}。"""
+    ★ビート内xfade(0.6s×境界)が食う分をトリムに足す（Σtrim=narr+0.6×(n-1)）→描画=Σtrim−0.6×(n-1)=narr（ズレ0）。
+    ★ビート境界はハードカット(呼出側)＝ビート間は食われない→総尺=Σnarr ちょうど。
+    返り値: {narr_sec, cuts:[5|10,...], trims:[..], rendered_sec, xfade_intra, overflow, hold_sec, fal_cost_units}。"""
     narr = (chars or 0) / coefficient
     stock = int(stock or 0)
     if stock <= 0:
-        return {"narr_sec": round(narr, 2), "cuts": [], "display_sec": 0.0,
-                "overflow": narr > 0, "hold_sec": round(narr, 2), "fal_cost_units": 0.0}
+        return {"narr_sec": round(narr, 2), "cuts": [], "trims": [], "rendered_sec": 0.0,
+                "xfade_intra": 0, "overflow": narr > 0, "hold_sec": round(narr, 2), "fal_cost_units": 0.0}
     if stock * 5 >= narr:                         # ① 5秒カットで足りる
         cuts = [5] * min(max(1, math.ceil(narr / 5)), stock)
     elif stock * 10 >= narr:                      # ② 足りない→最小数だけ10s生成→トリム
@@ -1986,12 +2008,17 @@ def allocate_beat_cuts(chars, stock, coefficient=_BEAT_COEF_PROVISIONAL):
         cuts = [10] * n10 + [5] * (stock - n10)
     else:                                         # ③ 在庫×10でも足りない（A側の上限が漏れた）＝最後の砦
         cuts = [10] * stock
-    total_clip = sum(cuts)
-    return {"narr_sec": round(narr, 2), "cuts": cuts,
-            "display_sec": round(min(narr, total_clip), 2),     # トリム：表示尺はナレ秒
-            "overflow": total_clip < narr,
-            "hold_sec": round(max(0.0, narr - total_clip), 2),  # ③漏れ時のみ>0（末尾フリーズ＋警告）
-            "fal_cost_units": sum(c / 5 for c in cuts)}         # 5s=1単位・10s=2単位
+    n = len(cuts)
+    padded = narr + xfade * (n - 1)               # ★ビート内xfadeが食う分を足す（nは不変）
+    while sum(cuts) < padded and 5 in cuts:        # パディング後もカバー不足なら5s→10s格上げ
+        cuts[cuts.index(5)] = 10
+    trims = _split_trims(padded, cuts)
+    rendered = sum(trims) - xfade * (n - 1)        # 描画尺（ビート内xfade分を引く）＝理想はnarr
+    return {"narr_sec": round(narr, 2), "cuts": cuts, "trims": [round(t, 2) for t in trims],
+            "rendered_sec": round(rendered, 2), "xfade_intra": n - 1,
+            "overflow": sum(cuts) < padded,
+            "hold_sec": round(max(0.0, narr - rendered), 2),   # ③漏れ時のみ>0（末尾フリーズ＋警告）
+            "fal_cost_units": sum(c / 5 for c in cuts)}        # 5s=1単位・10s=2単位
 
 
 def beat_generation_targets(beats, coefficient=_BEAT_COEF_PROVISIONAL):
