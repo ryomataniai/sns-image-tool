@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-a0-v78 (ビート割り当て＋タイムライン：部屋=ビート/画像=カット。🎬ストーリー割り当てONで連続する同室を1ビートに束ね、ナレ字数から尺配分→ビート境界ハードカット/ビート内0.6xfade(パディングで相殺)→実尺==Σ予定ビート尺。ナレ配置=Σ前ビート秒の単純化(durs/xfade不使用)。既定OFF=完全回帰。📏実尺の隣に📐予定Σを表示)")
+    st.caption("build: roomsort-v78 (③に🔀部屋順に整列=ワンショット。連続同室化で非連続LDKを隣接→A0で在庫2ビート化。core._ROOM_TOUR_ORDER(1箇所・洋室末尾=落とし所)＋安定ソート＋_normalize_room_key前方一致。初回自動整列は廃止=押さなければPDF順・状態を持たない。前=story-a0-v78:ビート割り当て/タイムライン・📏実尺の隣に📐予定Σ)")
 
 
 def _render_video_env_diagnostics():
@@ -1015,12 +1015,6 @@ def _pl_link_items(items, pl_rooms):
             it["jo"] = byid[rid].get("jo")
 
 
-# 動線順（ツアーらしい並び）。同種内は現orderを維持して安定ソート
-_PL_ROOM_RANK = {"外観": -1, "玄関": 0, "LDK": 1, "キッチン": 2, "洋室": 3, "寝室": 4,
-                 "クローゼット": 5, "洗面": 6, "浴室": 7, "トイレ": 8,
-                 "バルコニー": 9, "その他": 10}
-
-
 def _pl_gen_sorted():
     """生成済アイテムを order 昇順で返す。"""
     return sorted([it for it in st.session_state.get("pl_items", [])
@@ -1028,9 +1022,11 @@ def _pl_gen_sorted():
 
 
 def _pl_auto_reorder():
-    """生成済アイテムの order を部屋種別の動線順で振り直す（同種は現order維持＝安定）。"""
+    """★roomsort-v78：生成済アイテムの order を標準ツアー順（core._ROOM_TOUR_ORDER・1箇所）に振り直す。
+    同ランクは現order維持＝安定ソート（LDK1枚目/2枚目の相対順を壊さない）。★ワンショット：ボタン押下時のみ
+    呼ぶ（初回自動整列は廃止＝押さなければPDF順・機械が勝手に動かさない・状態を持たない＝sticky事故のクラスを断つ）。"""
     gen = sorted(_pl_gen_sorted(),
-                 key=lambda it: (_PL_ROOM_RANK.get(it.get("room"), 10), it.get("order", 0)))
+                 key=lambda it: (core.room_tour_rank(it.get("room")), it.get("order", 0)))
     for i, it in enumerate(gen):
         it["order"] = i
 
@@ -1153,7 +1149,7 @@ def _pl_run_generation(jobs, style_name, model, aspect, req):
             prog.progress(done / len(jobs), text=f"画像化中… {done}/{len(jobs)}")
     prog.empty()
     if any(it.get("gen_bytes") for it in st.session_state.get("pl_items", [])):
-        st.session_state["pl_reordered"] = False   # 新バッチは関所で動線順を初回自動適用
+        # ★roomsort-v78：初回自動整列を廃止（PDF順のまま③へ）。並び替えは③の「🔀 部屋順に整列」で人が1クリック。
         st.session_state["pl_stage"] = "review"
         st.rerun()
     else:
@@ -1916,13 +1912,13 @@ def _pl_stage_review():
         return
     st.caption("各画像を Before/After で確認。採用／除外／この画像だけ再生成／並べ替え が選べます。"
                "この並び順で動画が連結されます。動画化は下のボタンから（falコスト発生）。")
-    # D: 初回入場時に動線順を自動適用（以降は手動並べ替えを尊重して再適用しない）
-    if not st.session_state.get("pl_reordered"):
-        _pl_auto_reorder()
-        st.session_state["pl_reordered"] = True
-    # C: いつでも動線順に一発整列
-    if st.button("↕ 動線順に整列（玄関→LDK→洋室→…→水回り→バルコニー）",
-                 key="pl_reorder_btn", use_container_width=True):
+    # ★roomsort-v78：初回自動整列は廃止＝マイソク(PDF)順のまま表示。並び順は人が決める。
+    #   「🔀 部屋順に整列」はワンショット：押した瞬間だけ標準ツアー順へ。押さなければ動かさない。
+    #   押した後に ↑上へ/↓下へ で直せる（その修正を機械が上書きしない＝状態を持たない）。
+    if st.button("🔀 部屋順に整列（外観→玄関→LDK→キッチン→水回り→…→洋室）",
+                 key="pl_reorder_btn", use_container_width=True,
+                 help="採用画像をこの1回だけ標準ツアー順に並べ替えます。押さなければ元の順のまま。"
+                      "同じ部屋（LDK2枚など）は隣り合い、後で ↑上へ/↓下へ で微調整できます。"):
         _pl_auto_reorder(); st.rerun()
     try:
         client = make_client()
@@ -3020,4 +3016,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-a0-v78 (ビート割り当て＋タイムライン：部屋=ビート/画像=カット。🎬ストーリー割り当てONで連続する同室を1ビートに束ね、ナレ字数から尺配分→ビート境界ハードカット/ビート内0.6xfade(パディングで相殺)→実尺==Σ予定ビート尺。ナレ配置=Σ前ビート秒の単純化(durs/xfade不使用)。既定OFF=完全回帰。📏実尺の隣に📐予定Σを表示)")
+    st.caption("build: roomsort-v78 (③に🔀部屋順に整列=ワンショット。連続同室化で非連続LDKを隣接→A0で在庫2ビート化。core._ROOM_TOUR_ORDER(1箇所・洋室末尾=落とし所)＋安定ソート＋_normalize_room_key前方一致。初回自動整列は廃止=押さなければPDF順・状態を持たない。前=story-a0-v78:ビート割り当て/タイムライン・📏実尺の隣に📐予定Σ)")

@@ -1574,6 +1574,23 @@ def _normalize_room_key(k, rooms):
     return None
 
 
+_ROOM_TOUR_ORDER = [
+    "外観", "玄関", "LDK", "リビング", "ダイニング", "キッチン",
+    "洗面", "浴室", "トイレ", "バルコニー", "クローゼット", "収納",
+    "洋室", "和室", "寝室",
+]  # ★roomsort-v78：標準ツアー順（1箇所）。洋室/和室/寝室=末尾＝物語の落とし所(A2/B3とも洋室で着地)。
+
+
+def room_tour_rank(room):
+    """部屋名を標準ツアー順のランク(int)へ。未知は末尾(len)。同ランクは呼び出し側の安定ソートで元順維持。
+    ★接尾辞付き（例『LDK（下中央・10帖）』）は _normalize_room_key の部分一致で寄せる＝新しい正規化を作らない
+    （keynorm-v76の教訓：部屋名の正規化は1箇所）。"""
+    canon = _normalize_room_key(room, _ROOM_TOUR_ORDER)
+    if canon is None:
+        return len(_ROOM_TOUR_ORDER)
+    return _ROOM_TOUR_ORDER.index(canon)
+
+
 def _concept_pr_block(concept: str) -> str:
     """draft_pr_copy 用コンセプト方向づけ（表紙タイトル＝cover.tone / 情感2行＝telop.style＋few_shot）。
     normal/wip は空＝回帰。★トーンだけ寄せる（数値・事実・属性は創作させない＝景表法ガードは不変）。"""
