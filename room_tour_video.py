@@ -533,6 +533,55 @@ def _xfade_concat(seg_paths: list[str], out_path: str, t: float = 0.6,
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def _trim_clip(src: str, dst: str, seconds: float) -> str:
+    """クリップを先頭から seconds 秒に切り出す（尺切り出し＝速度変更でない・atempo0）。
+    全クリップ同一パラメータ(30fps/yuv420p/sar=1)に揃え、後段の concat demuxer を通す。"""
+    _reencode_piece(src, dst, f"[0:v]trim=start=0:end={max(0.1, seconds):.3f},setpts=PTS-STARTPTS")
+    return dst
+
+
+def _concat_hard(paths: list[str], out_path: str) -> str:
+    """ハードカット連結（concat demuxer・-c copy・食われない）。★ビート境界に使う＝累積ズレを断つ。"""
+    if len(paths) == 1:
+        shutil.copy(paths[0], out_path)
+        return out_path
+    workdir = tempfile.mkdtemp(prefix="hc_")
+    try:
+        listfile = os.path.join(workdir, "list.txt")
+        with open(listfile, "w") as lf:
+            for p in paths:
+                lf.write("file '%s'\n" % p.replace("'", "'\\''"))
+        subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                        "-i", listfile, "-c", "copy", "-movflags", "+faststart", out_path],
+                       check=True, timeout=600)
+        return out_path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _assemble_beats(beat_groups: list[list[str]], out_path: str,
+                    t: float = 0.6, flash_cut: bool = False) -> str:
+    """★story-v78 A0 part2：ビート単位の連結。ビート内はxfade(0.6s・多画像)／ビート境界はハードカット。
+    beat_groups=[[ビート0のクリップpath...], [ビート1...], ...]（各pathは既にtrims尺にトリム済）。
+    → 各ビートを xfade連結（1枚ならそのまま）→ ビート間を concat demuxer でハード連結。
+    ★総尺 = Σ(各ビートの描画尺) = Σナレ秒（ビート境界は食われない）。"""
+    workdir = tempfile.mkdtemp(prefix="beat_")
+    try:
+        beat_clips = []
+        for bi, grp in enumerate(beat_groups):
+            if not grp:
+                continue
+            if len(grp) == 1:
+                beat_clips.append(grp[0])                    # 1画像ビート＝そのまま（パディングなし）
+            else:
+                bc = os.path.join(workdir, f"beat_{bi}.mp4")  # 多画像＝ビート内xfade
+                _xfade_concat(grp, bc, t=t, flash_cut=flash_cut)
+                beat_clips.append(bc)
+        return _concat_hard(beat_clips, out_path)             # ★ビート間はハードカット
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def _mux_bgm(video_path: str, bgm_wav: str, out_path: str) -> str:
     ff = _ffmpeg()
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", video_path, "-i", bgm_wav,
