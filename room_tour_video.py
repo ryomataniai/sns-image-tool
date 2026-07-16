@@ -583,6 +583,38 @@ def tts_elevenlabs(text: str, out_path: str, timeout: int = 60) -> str:
     return out_path
 
 
+def tts_timestamps_probe(text: str, timeout: int = 60) -> dict:
+    """★v78字幕同期の疎通確認用。ElevenLabs with-timestamps を叩き、生JSON(alignment等)を返す。
+    本番の鍵/ボイス(HIRO)/合成設定(現行と同一)を使用。日本語で文字/単語どちらのタイムスタンプが返るか、
+    要素数が入力文字列長と一致するか、句読点・数字がどう扱われるかを実レスポンスで確定するため。
+    ★キーは戻り値にもログにも載せない。audio_base64 は巨大かつ解析に不要なので長さ表記へ置換。"""
+    if requests is None:
+        raise RuntimeError("requests が利用できません。")
+    key = os.environ.get("ELEVENLABS_API_KEY")
+    voice = os.environ.get("ELEVENLABS_VOICE_ID")
+    if not key or not voice:
+        raise RuntimeError("ELEVENLABS_API_KEY / ELEVENLABS_VOICE_ID が未設定です。")
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice}/with-timestamps"
+    try:
+        resp = requests.post(
+            url,
+            headers={"xi-api-key": key, "accept": "application/json", "content-type": "application/json"},
+            json={"text": text, "model_id": _ELEVEN_MODEL,
+                  "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}},
+            timeout=timeout)
+    except Exception as e:  # noqa: BLE001  ★キーを含みうる例外詳細は握って型のみ露出
+        raise RuntimeError(f"疎通リクエスト失敗（{type(e).__name__}）") from None
+    if resp.status_code != 200:
+        raise RuntimeError(f"疎通失敗 HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        raise RuntimeError("疎通: JSONで返りませんでした（with-timestamps非対応の可能性）") from None
+    if isinstance(data.get("audio_base64"), str):     # 音声本体は解析に不要・巨大なので長さのみ
+        data["audio_base64"] = f"<omitted base64: {len(data['audio_base64'])} chars>"
+    return data
+
+
 def _scene_start_times(durs, t, cover_sec=0.0, flash_delay=0.0):
     """メモリ安全連結タイムライン上での各シーン可視開始時刻(秒)。
       body内: start_i = Σ(durs[:i]) − i×t （i=0→0）。

@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: defaults-v78pre2 (v78前提2/3独立ユニット：ナレ既定ON＋表紙スタイルをコンセプトsticky追従(pl_cover_style_auto影キー・mote=雑誌型/normal=simple・setdefaultでなく追従・人が変えたら停止＋『手動選択中』一行)。u1bと同型)")
+    st.caption("build: tsprobe-v78 (v78字幕同期の疎通=アプリ内一時デバッグ欄。本番鍵/HIRO/設定でwith-timestampsを1回叩き生JSON表示。文字単位か/要素数==入力長か/句読点数字の扱い/『。』1つのms を実レスポンスで確定してから設計。鍵非露出・後で外す)")
 
 
 def _render_video_env_diagnostics():
@@ -2136,6 +2136,45 @@ def _pl_auto_cover_bytes(adopted):
     return rtv.build_cover(_src["gen_bytes"], _fields, aspect="9:16")
 
 
+def _pl_v78_timestamp_probe(rtv):
+    """★一時デバッグ（v78字幕同期の疎通・後で外す）: ElevenLabs with-timestamps の生JSONを画面に出す。
+    本番の鍵/ボイス(HIRO)/合成設定を使用。谷合さんは Reboot→ボタン1回→スクショ で完結。
+    確認: 文字単位か／要素数==入力長か／句読点・数字の扱い／『。』1つのms（=字数不足 vs 句読点ポーズ の答え）。"""
+    with st.expander("🧪 一時デバッグ: ElevenLabs with-timestamps 疎通（v78字幕同期・後で外す）"):
+        _txt = "終電まで、あと30分。その話は、まだしない。"
+        st.caption("本番の鍵/ボイス(HIRO)/合成設定で1回叩き、生JSONを表示。鍵は画面にもログにも出しません。"
+                   "『返るか』でなく『日本語字幕に使えるか（文字単位・要素数一致・句読点/数字）』を実レスポンスで確定。")
+        st.code(_txt, language=None)
+        if st.button("🧪 疎通を1回叩く（with-timestamps）", key="_v78_probe_btn"):
+            try:
+                st.session_state["_v78_probe"] = rtv.tts_timestamps_probe(_txt)
+                st.session_state["_v78_probe_err"] = ""
+            except Exception as e:  # noqa: BLE001  ★キーを含みうる詳細は型のみ
+                st.session_state["_v78_probe"] = None
+                st.session_state["_v78_probe_err"] = f"{type(e).__name__}: {str(e)[:120]}"
+        if st.session_state.get("_v78_probe_err"):
+            st.error("疎通失敗: " + st.session_state["_v78_probe_err"])
+        _pr = st.session_state.get("_v78_probe")
+        if _pr:
+            _al = _pr.get("alignment") or _pr.get("normalized_alignment") or {}
+            _c = _al.get("characters") or []
+            _s = _al.get("character_start_times_seconds") or []
+            _e = _al.get("character_end_times_seconds") or []
+            st.markdown("**自動チェック（生JSONから計算・下に生JSON全文）**")
+            _chk = {
+                "粒度": "文字単位(charactersあり)" if _c else "characters無し=単語単位/非対応の疑い",
+                "要素数": len(_c), "入力文字列長": len(_txt), "要素数==入力長": len(_c) == len(_txt),
+                "『、』を含む": "、" in _c, "『。』を含む": "。" in _c,
+                "数字3の要素数": _c.count("3"), "数字0の要素数": _c.count("0"),
+            }
+            if _c and _e and _s and len(_c) == len(_e) == len(_s):
+                _chk["『。』1つのms"] = [round((_e[i] - _s[i]) * 1000)
+                                        for i, ch in enumerate(_c) if ch == "。"]
+            st.write(_chk)
+            st.markdown("**生JSON（audio_base64は長さ表記済み・要約なし）**")
+            st.json(_pr)
+
+
 def _pl_stage_video():
     import os as _os
     import room_tour_video as rtv
@@ -2148,6 +2187,7 @@ def _pl_stage_video():
     _default_voice = get_secret("ELEVENLABS_VOICE_ID", _os.environ.get("ELEVENLABS_VOICE_ID", ""))
     _os.environ["ELEVENLABS_VOICE_ID"] = core.concept_voice_id(
         st.session_state.get("pl_concept", "normal"), default_voice=_default_voice) or ""
+    _pl_v78_timestamp_probe(rtv)   # ★一時デバッグ: with-timestamps 疎通（v78字幕同期・後で外す）
     st.markdown("#### ④ 動画化（ルームツアー）")
     items = st.session_state.get("pl_items", [])
     adopted = [it for it in items if it.get("gen_bytes") and it.get("_adopt", True)]
@@ -2865,4 +2905,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: defaults-v78pre2 (v78前提2/3独立ユニット：ナレ既定ON＋表紙スタイルをコンセプトsticky追従(pl_cover_style_auto影キー・mote=雑誌型/normal=simple・setdefaultでなく追従・人が変えたら停止＋『手動選択中』一行)。u1bと同型)")
+    st.caption("build: tsprobe-v78 (v78字幕同期の疎通=アプリ内一時デバッグ欄。本番鍵/HIRO/設定でwith-timestampsを1回叩き生JSON表示。文字単位か/要素数==入力長か/句読点数字の扱い/『。』1つのms を実レスポンスで確定してから設計。鍵非露出・後で外す)")
