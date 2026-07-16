@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: tabkeep-v78 (④設定の往復リセットを修正：Streamlitが非描画widgetのstateを破棄→③↔④往復でナレ/表紙/BGM等が既定ONに戻る沈黙バグ。影キー(_keep_*)で人の選択を保存しcleanup分だけ復元(pl_style_auto同型)。defaults-v78pre2が悪化させた回帰)")
+    st.caption("build: story-a0-v78 (ビート割り当て＋タイムライン：部屋=ビート/画像=カット。🎬ストーリー割り当てONで連続する同室を1ビートに束ね、ナレ字数から尺配分→ビート境界ハードカット/ビート内0.6xfade(パディングで相殺)→実尺==Σ予定ビート尺。ナレ配置=Σ前ビート秒の単純化(durs/xfade不使用)。既定OFF=完全回帰。📏実尺の隣に📐予定Σを表示)")
 
 
 def _render_video_env_diagnostics():
@@ -2181,7 +2181,7 @@ def _pl_v78_timestamp_probe(rtv):
 # ★sticky(pl_style_auto)と同じ「widget生成前に代入」規律。pl_styleが効いたのは②で毎回描画されるから。
 _PL_V_KEEP_KEYS = ("pl_v_model", "pl_v_dur", "pl_v_bgm", "pl_v_aspect", "pl_v_caps",
                    "pl_v_tag", "pl_v_note", "pl_v_flashcut", "pl_v_cover_on",
-                   "pl_v_cover_sec", "pl_v_narr_on")
+                   "pl_v_cover_sec", "pl_v_narr_on", "pl_v_story")
 
 
 def _pl_v_keep(key, default):
@@ -2202,6 +2202,50 @@ def _pl_v_save_settings():
     for _k in _PL_V_KEEP_KEYS:
         if _k in st.session_state:
             st.session_state["_keep_" + _k] = st.session_state[_k]
+
+
+def _pl_assign_story_beats(scenes, v_dur):
+    """★story-v78 A0 part2：連続する同 room を1ビートにまとめ、各scene に beat_id/gen_dur/trim を注入。
+    ナレ有ビート → core.allocate_beat_cuts(chars, stock)（描画尺==ナレ秒・パディングでビート内xfade相殺）。
+    ナレ無/still ビート → 固定 v_dur（描画尺=v_dur×stock−0.6×(stock−1)＝_assemble_beats実描画と一致）。
+    ビート先頭sceneに beat_narration/beat_narr_sec を載せる（run_tour_jobの単純化ナレ配置が読む）。
+    返り値: 予定総尺（Σ 各ビート描画尺）。★実尺==この値 が受入。scenes を in-place 変更。
+    ★normalは呼ばれない（story OFF）＝完全回帰。"""
+    if not scenes:
+        return 0.0
+    # 連続する同 room を1ビートに（room 未設定は個別ビート＝間取り図等の still を独立させる）
+    groups, cur, cur_key = [], [], object()
+    for sc in scenes:
+        k = sc.get("room") if sc.get("room") else id(sc)   # room無し=単独ビート
+        if k != cur_key and cur:
+            groups.append(cur); cur = []
+        cur.append(sc); cur_key = k
+    if cur:
+        groups.append(cur)
+    total = 0.0
+    for bid, grp in enumerate(groups):
+        stock = len(grp)
+        narr = "\n".join(s.get("narration", "").strip() for s in grp
+                         if (s.get("narration") or "").strip())
+        chars = len(re.sub(r"\s+", "", narr))
+        if chars > 0:
+            a = core.allocate_beat_cuts(chars, stock)
+            # ★rendered_sec（実描画尺）を使う＝非overflow時は narr_sec と一致。overflow（在庫に対しナレ過長で
+            #   物理的に描画尺<ナレ秒）でも 📐予定==実尺 とナレ配置の累積が実タイムラインと一致（ドリフトしない）。
+            #   ナレ音声が描画尺を超える分は run_tour_job の over>0.3 警告で原稿短縮を促す。
+            cuts, trims, nsec = a["cuts"], a["trims"], a["rendered_sec"]
+        else:                                    # ナレ無/still：固定 v_dur・実 _assemble_beats 描画尺に一致
+            cuts = [int(v_dur)] * stock
+            trims = [float(v_dur)] * stock
+            nsec = round(v_dur * stock - 0.6 * max(0, stock - 1), 2)
+        for j, sc in enumerate(grp):
+            sc["beat_id"] = bid
+            sc["gen_dur"] = int(cuts[j])
+            sc["trim"] = float(trims[j])
+        grp[0]["beat_narration"] = narr          # 先頭のみ（空でも run 側は尺だけ加算）
+        grp[0]["beat_narr_sec"] = float(nsec)
+        total += nsec
+    return round(total, 2)
 
 
 def _pl_stage_video():
@@ -2351,6 +2395,17 @@ def _pl_stage_video():
                 for _w in sorted(set(_ws)):
                     st.warning("🎙️ " + _w)
                 st.rerun()
+
+    # ── 🎬 ストーリー割り当て（story-v78 A0・検証中）──────────────────────────
+    #   ONで「部屋=ビート／画像=カット」割り当て：連続する同室を1ビートにまとめ、ナレ字数から尺を配分。
+    #   ビート境界=ハードカット・ビート内=0.6xfade（パディングで相殺）→ 実尺==Σ(予定ビート尺)。
+    #   ★既定OFF＝現行の一律尺＋全境界xfade（完全回帰）。谷合さんの実尺検証用ゲート。
+    v_story = st.checkbox(
+        "🎬 ストーリー割り当て（部屋=ビート／画像=カット・検証中）",
+        value=_pl_v_keep("pl_v_story", False), key="pl_v_story")
+    if v_story:
+        st.caption("実尺が『予定Σビート尺』に一致するかを、完成後の 📏／📐 で確認できます（A0検証）。"
+                   "OFFにすると現行どおり（完全回帰）。")
 
     _pl_v_save_settings()   # ★④設定widget生成後：現在の人の選択を影キーへ保存（tabkeep-v78）
 
@@ -2713,6 +2768,7 @@ def _pl_stage_video():
             "note": _note, "taste": _pl_resolve_taste(it, v_taste),
             "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
             "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit,
+            "room": it["room"],   # ★story-v78ビート化キー（連続する同roomを1ビートに）
             # ★シーン単位（ID基準）でナレを持たせる＝index基準の噛み合わせズレ(v68真因)を断つ
             "narration": (st.session_state.get(f"pl_narr_{it['id']}", "") if v_narr_on else "")})
         _images.append((_nm, it["gen_bytes"]))
@@ -2741,6 +2797,13 @@ def _pl_stage_video():
                         "top_tag": v_tag if v_caps else "", "room_type": "generic",
                         "flash": "", "fit": "contain"})
         _images.append((_fp_cap, _fp))
+    # ★story-v78 A0：ONのときだけビート割り当てを注入（scenesに beat_id/gen_dur/trim/beat_narration）。
+    #   OFF＝一切注入しない＝run_tour_jobで beat_id無し＝_xfade_concat（完全回帰）。
+    if v_story and _scenes:
+        _predicted = _pl_assign_story_beats(_scenes, v_dur)
+        st.session_state["_pl_v_predicted_sec"] = _predicted
+    else:
+        st.session_state.pop("_pl_v_predicted_sec", None)
     _ow, _oh = rtv.ASPECT_DIMS.get(v_aspect, (1080, 1920))
     _cov_bytes = None
     if v_cover_on and st.session_state.get("pl_cover_png"):
@@ -2845,7 +2908,14 @@ def _pl_stage_video():
             # ★実尺を表示（story-v78 A0疎通①：1カット×10秒指定で ≈10s か ≈5s か＝Klingが尺を丸めないかの実測）。
             #   「10秒で投げた」は「10秒返った」の証拠でない＝出力mp4の実尺を測る。
             _vpath = _sp if (_sp and _os.path.exists(_sp)) else _bp
-            st.caption(f"📏 完成動画の実尺: {rtv._dur(_vpath):.2f}秒")
+            _real_sec = rtv._dur(_vpath)
+            st.caption(f"📏 完成動画の実尺: {_real_sec:.2f}秒")
+            # ★story-v78 A0受入：予定Σビート尺を隣に出す＝暗算せず「実尺==予定」を目で判定（疎通①と同じ規律）。
+            _pred = st.session_state.get("_pl_v_predicted_sec")
+            if _pred is not None:
+                _diff_ms = (_real_sec - float(_pred)) * 1000
+                st.caption(f"📐 予定 Σビート尺（A0割り当て）: {float(_pred):.2f}秒 ／ "
+                           f"差: {_diff_ms:+.0f}ms")
         # #3 1シーン失敗の隔離：完成＋一部失敗でも警告バナー直下に独立の『続きから再開』を出す
         _jd = _vout.get("job_dir")
         _jst = rtv.read_job_state(_jd) if _jd else None
@@ -2950,4 +3020,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: tabkeep-v78 (④設定の往復リセットを修正：Streamlitが非描画widgetのstateを破棄→③↔④往復でナレ/表紙/BGM等が既定ONに戻る沈黙バグ。影キー(_keep_*)で人の選択を保存しcleanup分だけ復元(pl_style_auto同型)。defaults-v78pre2が悪化させた回帰)")
+    st.caption("build: story-a0-v78 (ビート割り当て＋タイムライン：部屋=ビート/画像=カット。🎬ストーリー割り当てONで連続する同室を1ビートに束ね、ナレ字数から尺配分→ビート境界ハードカット/ビート内0.6xfade(パディングで相殺)→実尺==Σ予定ビート尺。ナレ配置=Σ前ビート秒の単純化(durs/xfade不使用)。既定OFF=完全回帰。📏実尺の隣に📐予定Σを表示)")
