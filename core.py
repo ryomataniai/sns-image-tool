@@ -9,6 +9,7 @@ from __future__ import annotations  # Python 3.9 で str|None 注釈を許可
 
 import base64
 import csv
+import math
 import os
 import re
 import time
@@ -1952,6 +1953,55 @@ def narration_char_limit(dur_sec) -> int:
     except (TypeError, ValueError):
         d = 5.0
     return max(6, int(round(_NARR_CPS * (d - 0.3))))
+
+
+# ── ビート→カット割り当て＋タイムライン（story-v78 A0）─────────────────────────
+# ★ナレの単位(ビート=部屋)とカットの単位(画像)を分離。参照(tokyo.spectre)は「ナレの単位≠カットの単位」。
+# ★Kling生成尺は{5,10}のみ（app.py selectbox [5,10]・generate_clip_fal duration・コード確認済）。
+#   ceil(秒/5)は在庫を見ず破綻→字数の物理天井=在庫×10×係数。総尺はトリムでナレ秒に寄せる（速度変更でない）。
+# ★係数は narrmeas 実測待ちの暫定5.26（引数で受け、Eユニットで確定）。_NARR_CPS(=4.2)とは別（旧値）。
+_BEAT_COEF_PROVISIONAL = 5.26   # ★暫定（22字/4.18秒の1サンプル実測）。複数実測で確定するまで動かさない
+_BEAT_CLIP_SECS = (5, 10)       # Klingが公開している生成尺（任意秒は未確認＝ここに量子化＋トリム）
+
+
+def beat_ceiling_chars(stock, coefficient=_BEAT_COEF_PROVISIONAL, max_clip=10):
+    """ビートに物理的に入る最大字数 = 在庫画像数 × 最大クリップ尺 × 係数。★Aに渡す『天井』。"""
+    return int((stock or 0) * max_clip * coefficient)
+
+
+def allocate_beat_cuts(chars, stock, coefficient=_BEAT_COEF_PROVISIONAL):
+    """ビートの字数と在庫画像数からカット割り当てを返す（谷合さんQ2の順序）。
+    ① 在庫の5秒で足りる→5s ② 足りない→一部を10s生成→トリム ③ 在庫×10でも足りない→上限で防ぐ(overflow)。
+    ★ホールドは③が漏れた最後の砦のみ（演出でなくバグに見えるので選択肢にしない）。
+    返り値: {narr_sec, cuts:[5|10,...], display_sec, overflow:bool, hold_sec, fal_cost_units}。"""
+    narr = (chars or 0) / coefficient
+    stock = int(stock or 0)
+    if stock <= 0:
+        return {"narr_sec": round(narr, 2), "cuts": [], "display_sec": 0.0,
+                "overflow": narr > 0, "hold_sec": round(narr, 2), "fal_cost_units": 0.0}
+    if stock * 5 >= narr:                         # ① 5秒カットで足りる
+        cuts = [5] * min(max(1, math.ceil(narr / 5)), stock)
+    elif stock * 10 >= narr:                      # ② 足りない→最小数だけ10s生成→トリム
+        n10 = min(stock, math.ceil((narr - stock * 5) / 5))   # 5s→10sの格上げで+5s/枚
+        cuts = [10] * n10 + [5] * (stock - n10)
+    else:                                         # ③ 在庫×10でも足りない（A側の上限が漏れた）＝最後の砦
+        cuts = [10] * stock
+    total_clip = sum(cuts)
+    return {"narr_sec": round(narr, 2), "cuts": cuts,
+            "display_sec": round(min(narr, total_clip), 2),     # トリム：表示尺はナレ秒
+            "overflow": total_clip < narr,
+            "hold_sec": round(max(0.0, narr - total_clip), 2),  # ③漏れ時のみ>0（末尾フリーズ＋警告）
+            "fal_cost_units": sum(c / 5 for c in cuts)}         # 5s=1単位・10s=2単位
+
+
+def beat_generation_targets(beats, coefficient=_BEAT_COEF_PROVISIONAL):
+    """A（物語生成）へ渡す3つ。★天井だけ渡すと全ビートが天井に張り付き等長・単調（体言止めと同型）。
+    beats=[{room, stock}]。返り値:
+    {ceilings:{room:字数天井}, budget_chars:狙う総字数(水位≠天井), rhythm:『揃えない』指示}。"""
+    ceilings = {b["room"]: beat_ceiling_chars(b.get("stock", 0), coefficient) for b in beats}
+    budget = round(len(beats) * 35)   # 承認済みの1ビート平均≈35字(176/5)＝天井の半分。狙う水位。
+    return {"ceilings": ceilings, "budget_chars": budget,
+            "rhythm": "ビート長を揃えないこと（凸凹が物語のリズム。承認済み例=23/40/49/31/33字）"}
 
 
 def _narr_clip(s: str, limit: int) -> str:

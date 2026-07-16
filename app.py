@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: tsprobe-v78 (v78字幕同期の疎通=アプリ内一時デバッグ欄。本番鍵/HIRO/設定でwith-timestampsを1回叩き生JSON表示。文字単位か/要素数==入力長か/句読点数字の扱い/『。』1つのms を実レスポンスで確定してから設計。鍵非露出・後で外す)")
+    st.caption("build: story-a0p1-v78 (A0 part1：ビート→カット割り当てロジック+在庫込み単体テスト11/11+完成動画の実尺表示。ロジックは未配線(実行時影響ゼロ)。★疎通①=全OFF/1カット/10秒で 📏実尺 が≈10sか≈5s=Klingの丸めの実測。タイムラインは疎通後)")
 
 
 def _render_video_env_diagnostics():
@@ -2801,6 +2801,10 @@ def _pl_stage_video():
                        "お手数ですが最初から生成してください。")
         if (_sp and _os.path.exists(_sp)) or (_bp and _os.path.exists(_bp)):
             st.success("ルームツアーが完成しました。")
+            # ★実尺を表示（story-v78 A0疎通①：1カット×10秒指定で ≈10s か ≈5s か＝Klingが尺を丸めないかの実測）。
+            #   「10秒で投げた」は「10秒返った」の証拠でない＝出力mp4の実尺を測る。
+            _vpath = _sp if (_sp and _os.path.exists(_sp)) else _bp
+            st.caption(f"📏 完成動画の実尺: {rtv._dur(_vpath):.2f}秒")
         # #3 1シーン失敗の隔離：完成＋一部失敗でも警告バナー直下に独立の『続きから再開』を出す
         _jd = _vout.get("job_dir")
         _jst = rtv.read_job_state(_jd) if _jd else None
@@ -2905,4 +2909,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: tsprobe-v78 (v78字幕同期の疎通=アプリ内一時デバッグ欄。本番鍵/HIRO/設定でwith-timestampsを1回叩き生JSON表示。文字単位か/要素数==入力長か/句読点数字の扱い/『。』1つのms を実レスポンスで確定してから設計。鍵非露出・後で外す)")
+    st.caption("build: story-a0p1-v78 (A0 part1：ビート→カット割り当てロジック+在庫込み単体テスト11/11+完成動画の実尺表示。ロジックは未配線(実行時影響ゼロ)。★疎通①=全OFF/1カット/10秒で 📏実尺 が≈10sか≈5s=Klingの丸めの実測。タイムラインは疎通後)")
