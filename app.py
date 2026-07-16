@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-a0p1-v78 (A0 part1：ビート→カット割り当てロジック+在庫込み単体テスト11/11+完成動画の実尺表示。ロジックは未配線(実行時影響ゼロ)。★疎通①=全OFF/1カット/10秒で 📏実尺 が≈10sか≈5s=Klingの丸めの実測。タイムラインは疎通後)")
+    st.caption("build: tabkeep-v78 (④設定の往復リセットを修正：Streamlitが非描画widgetのstateを破棄→③↔④往復でナレ/表紙/BGM等が既定ONに戻る沈黙バグ。影キー(_keep_*)で人の選択を保存しcleanup分だけ復元(pl_style_auto同型)。defaults-v78pre2が悪化させた回帰)")
 
 
 def _render_video_env_diagnostics():
@@ -2175,6 +2175,35 @@ def _pl_v78_timestamp_probe(rtv):
             st.json(_pr)
 
 
+# ④の設定は往復(③↔④)で消える：Streamlitは『描画されなかったwidgetのstate』を破棄する。
+# ③滞在中に④のトグルwidgetが生成されない→keyが消える→④再訪でvalue=既定に戻る（無言・毎回踏む）。
+# ★影キー(_keep_*・非widget=往復で消えない)に人の選択を保存し、cleanupで消えたkeyだけ復元。
+# ★sticky(pl_style_auto)と同じ「widget生成前に代入」規律。pl_styleが効いたのは②で毎回描画されるから。
+_PL_V_KEEP_KEYS = ("pl_v_model", "pl_v_dur", "pl_v_bgm", "pl_v_aspect", "pl_v_caps",
+                   "pl_v_tag", "pl_v_note", "pl_v_flashcut", "pl_v_cover_on",
+                   "pl_v_cover_sec", "pl_v_narr_on")
+
+
+def _pl_v_keep(key, default):
+    """④設定の既定値を『影キー(_keep_*・往復で消えない) → 無ければdefault』で返す。
+    ★widgetの value=/index= にこれを渡す＝session_stateを先に代入しない＝『default値＋SessionState』警告を出さない。
+    往復でwidget stateがcleanupされても value=影キー で人の選択が復元される。"""
+    return st.session_state.get("_keep_" + key, default)
+
+
+def _pl_v_keep_idx(options, key, default):
+    """selectbox/radio 用：影キーの値の index を返す（無効値は0）。"""
+    v = _pl_v_keep(key, default)
+    return options.index(v) if v in options else 0
+
+
+def _pl_v_save_settings():
+    """④の設定widget生成後、現在値を影キーへ保存（往復で消えても value=影キー で復元できるように）。"""
+    for _k in _PL_V_KEEP_KEYS:
+        if _k in st.session_state:
+            st.session_state["_keep_" + _k] = st.session_state[_k]
+
+
 def _pl_stage_video():
     import os as _os
     import room_tour_video as rtv
@@ -2203,11 +2232,16 @@ def _pl_stage_video():
     st.caption(f"採用 {len(adopted)}枚 を順番に動画化して1本に連結します。（DL・再アップ不要）")
     _VID_ASPECT_LABEL = {"9:16": "9:16（リール/TikTok/ショート）", "1:1": "1:1（正方形）",
                          "16:9": "16:9（横）"}
+    # ★tabkeep-v78：value=/index= を影キーから読む＝③↔④往復でstateがcleanupされても人の選択を復元
     o1, o2, o3 = st.columns(3)
-    v_model = o1.selectbox("モデル", list(rtv.FAL_MODELS), index=0, key="pl_v_model")
-    v_dur = o2.selectbox("1本の長さ(秒)", [5, 10], index=0, key="pl_v_dur")
-    v_bgm = o3.checkbox("BGMを付ける", value=True, key="pl_v_bgm")
-    v_aspect = st.selectbox("動画の向き", ["9:16", "1:1", "16:9"], index=0, key="pl_v_aspect",
+    _fal_models = list(rtv.FAL_MODELS)
+    v_model = o1.selectbox("モデル", _fal_models, key="pl_v_model",
+                           index=_pl_v_keep_idx(_fal_models, "pl_v_model", _fal_models[0]))
+    v_dur = o2.selectbox("1本の長さ(秒)", [5, 10], key="pl_v_dur",
+                         index=_pl_v_keep_idx([5, 10], "pl_v_dur", 5))
+    v_bgm = o3.checkbox("BGMを付ける", value=_pl_v_keep("pl_v_bgm", True), key="pl_v_bgm")
+    v_aspect = st.selectbox("動画の向き", ["9:16", "1:1", "16:9"], key="pl_v_aspect",
+                            index=_pl_v_keep_idx(["9:16", "1:1", "16:9"], "pl_v_aspect", "9:16"),
                             format_func=lambda a: _VID_ASPECT_LABEL.get(a, a))
     _FIT_LABEL = {"fill": "埋める（余白なし・端が少し切れる）",
                   "contain": "全体を見せる（上下に余白）"}
@@ -2217,7 +2251,8 @@ def _pl_stage_video():
                "（正方形素材を9:16にすると左右が大きめに切れます）。")
     st.caption("正方形素材は 1:1 動画が最も無駄なし。横長できれいに見せたい場合は、"
                "元写真（横長の撮影原本）を『手持ち写真』の入口で取り込むと余白・トリミングが減ります。")
-    v_caps = st.checkbox("シーンテロップ（部屋名＋情感2行）を焼く", value=True, key="pl_v_caps")
+    v_caps = st.checkbox("シーンテロップ（部屋名＋情感2行）を焼く",
+                         value=_pl_v_keep("pl_v_caps", True), key="pl_v_caps")
     st.caption("下は「全体既定」。個別に変えたい写真だけ、下の各シーンで上書きできます。")
     t1, t2 = st.columns(2)
     v_taste = t1.radio("テロップの見た目（全体既定）", ["clean", "pop"], index=0, key="pl_telop_taste",
@@ -2245,10 +2280,13 @@ def _pl_stage_video():
         v_flash = st.text_input("フラッシュ文言（先頭に0.5秒だけ重畳・短く）",
                                 key="pl_flash_text", placeholder="例: ニューモート204 ｜ 2LDK")
     v_tag = st.text_input("上部タグ（物件名・間取り等／空欄で非表示）", key="pl_v_tag",
+                          value=_pl_v_keep("pl_v_tag", ""),
                           placeholder="例: ニューモート204 ｜ 2LDK 57.07㎡")
     v_note = st.text_input("画面注記（右下・景表法配慮／空欄で非表示）", key="pl_v_note",
+                           value=_pl_v_keep("pl_v_note", ""),
                            placeholder="例: ※画像はイメージです")
     v_flashcut = st.checkbox("カット境界に白フラッシュ（極短・0.2秒）", key="pl_v_flashcut",
+                             value=_pl_v_keep("pl_v_flashcut", False),
                              help="OFF＝従来のクロスフェード0.6秒。ON＝各カットの境界を0.2秒の"
                                   "白フラッシュに（メモリ特性は従来と同一・全結合には戻しません）。")
 
@@ -2263,8 +2301,8 @@ def _pl_stage_video():
         except Exception as e:  # noqa: BLE001  自動生成失敗は止めない（手動ボタンで作れる）
             st.session_state["_pl_cover_auto_err"] = f"{type(e).__name__}"
     _cov_ready = bool(st.session_state.get("pl_cover_png"))
-    v_cover_on = st.checkbox("表紙を冒頭に挿入", value=True, key="pl_v_cover_on",
-                             disabled=not _cov_ready,
+    v_cover_on = st.checkbox("表紙を冒頭に挿入", value=_pl_v_keep("pl_v_cover_on", True),
+                             key="pl_v_cover_on", disabled=not _cov_ready,
                              help="表紙は自動生成され既定ONです。素材/文言を変えたいときは"
                                   "下の「🖼️ 表紙特大」で作り直せます。")
     if not _cov_ready:
@@ -2272,7 +2310,8 @@ def _pl_stage_video():
                    "（表紙なしでも動画は生成できます）。")
     v_cover_sec = 1.5
     if v_cover_on and _cov_ready:
-        v_cover_sec = st.slider("表紙の表示秒数", 1.0, 3.0, 1.5, 0.5, key="pl_v_cover_sec")
+        v_cover_sec = st.slider("表紙の表示秒数", 1.0, 3.0, _pl_v_keep("pl_v_cover_sec", 1.5),
+                                0.5, key="pl_v_cover_sec")
         if st.session_state.get("pl_open_title") == "flash":
             st.caption("※ 表紙挿入中は冒頭の極短フラッシュ（タイトル文字）を自動でOFFにします（冒頭の重複回避）。")
 
@@ -2289,8 +2328,8 @@ def _pl_stage_video():
         if not _narr_ok:
             st.info("ElevenLabs の APIキー／ボイスIDが未設定です。Secrets に "
                     "ELEVENLABS_API_KEY と ELEVENLABS_VOICE_ID を追加すると有効化されます。", icon="🔒")
-        v_narr_on = st.checkbox("ナレーションを付ける", value=True, key="pl_v_narr_on",
-                                disabled=not _narr_ok)   # ★既定ON（v78前提2）
+        v_narr_on = st.checkbox("ナレーションを付ける", value=_pl_v_keep("pl_v_narr_on", True),
+                                key="pl_v_narr_on", disabled=not _narr_ok)   # ★既定ON（v78前提2）
         if v_narr_on and st.button("全シーンにAIで下書き（各ナレ欄へ流し込み）",
                                    key="pl_narr_all", disabled=not _narr_ok):
             try:
@@ -2312,6 +2351,8 @@ def _pl_stage_video():
                 for _w in sorted(set(_ws)):
                     st.warning("🎙️ " + _w)
                 st.rerun()
+
+    _pl_v_save_settings()   # ★④設定widget生成後：現在の人の選択を影キーへ保存（tabkeep-v78）
 
     # ── PRコピーをAIで下書き（Gemini 1回・押下時のみ）────────────────────────
     with st.expander("✍️ PRコピーをAIで下書き（タイトル3案・情感2行）", expanded=False):
@@ -2909,4 +2950,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-a0p1-v78 (A0 part1：ビート→カット割り当てロジック+在庫込み単体テスト11/11+完成動画の実尺表示。ロジックは未配線(実行時影響ゼロ)。★疎通①=全OFF/1カット/10秒で 📏実尺 が≈10sか≈5s=Klingの丸めの実測。タイムラインは疎通後)")
+    st.caption("build: tabkeep-v78 (④設定の往復リセットを修正：Streamlitが非描画widgetのstateを破棄→③↔④往復でナレ/表紙/BGM等が既定ONに戻る沈黙バグ。影キー(_keep_*)で人の選択を保存しcleanup分だけ復元(pl_style_auto同型)。defaults-v78pre2が悪化させた回帰)")
