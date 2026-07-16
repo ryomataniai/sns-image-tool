@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-a1-v78 (A物語の判定器を先に固定=measure-first。normalize_readingに笑いw/ｗ除去(音声のみ・字幕は別経路・www.とidentityで最長一致守る)。★測定でfactguard緩和/ban限定はno-op判明=この空間が落ち着くは既に通る/手が丁寧になるは既にban外→変更せずテストでロック。前=roomsort-v78:🔀部屋順に整列)")
+    st.caption("build: story-a2-v78 (core.story_narration=全ビート1コールで物語生成。few_shot谷合2本のみ(A2独白/B3語りかけ)・3点渡し(各ビート上限/総尺予算≈33s水位/ビート長揃えない)・現在形実況・物件情報は映るカットで(面積はLDK)・角部屋はfacts裏付けありのみ。後処理=fact_scrub+物語ban+上限超過は警告のみ。normalize_reading非適用=字幕忠実な生テキスト(TTS時正規化=A-3)。★未配線=実行時影響ゼロ。前=story-a1-v78:判定器)")
 
 
 def _render_video_env_diagnostics():
@@ -3016,4 +3016,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-a1-v78 (A物語の判定器を先に固定=measure-first。normalize_readingに笑いw/ｗ除去(音声のみ・字幕は別経路・www.とidentityで最長一致守る)。★測定でfactguard緩和/ban限定はno-op判明=この空間が落ち着くは既に通る/手が丁寧になるは既にban外→変更せずテストでロック。前=roomsort-v78:🔀部屋順に整列)")
+    st.caption("build: story-a2-v78 (core.story_narration=全ビート1コールで物語生成。few_shot谷合2本のみ(A2独白/B3語りかけ)・3点渡し(各ビート上限/総尺予算≈33s水位/ビート長揃えない)・現在形実況・物件情報は映るカットで(面積はLDK)・角部屋はfacts裏付けありのみ。後処理=fact_scrub+物語ban+上限超過は警告のみ。normalize_reading非適用=字幕忠実な生テキスト(TTS時正規化=A-3)。★未配線=実行時影響ゼロ。前=story-a1-v78:判定器)")

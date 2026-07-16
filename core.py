@@ -2057,6 +2057,125 @@ def _narr_clip(s: str, limit: int) -> str:
     return s[:limit]
 
 
+# ★few_shot＝谷合さん執筆の2本のみ（Claude作の例は1つも入れない＝癖の量産を防ぐ・story-v78 §2）。
+#   例1=A系(独白・誰にも言っていない) / 例2=B系(視聴者への語りかけ)。文体・水準の見本であり丸写し禁止。
+_STORY_FEWSHOT = (
+    "【例1｜「明日、あの子が来る」＝独白（A系・誰にも言っていない）】\n"
+    "玄関｜明日、あの子が来る。とりあえず、靴を整えてスリッパを用意。\n"
+    "LDK｜レコードを出してみる。彼女の好みは？コーヒー片手に妄想。1LDK、36平米。角部屋で良かった。\n"
+    "キッチン｜冷蔵庫に、ちょっとしたおつまみを今日のうちに作っておく。ワインはちょっといいやつ。\n"
+    "風呂｜風呂も、一応みがいた。シャンプーヨシ、トリートメントヨシ。\n"
+    "洋室｜慣れないベッドメイキング。……いや、何も起きないと思うけど。\n"
+    "\n"
+    "【例2｜「イケてる男のナイトルーティン」＝視聴者への語りかけ（B系）】\n"
+    "玄関｜21時、帰宅。靴を脱いで、ひと安心。引っ越したばかりなのにw\n"
+    "キッチン｜今日はパスタ。湯を沸かしてる間に、ワインを開ける。\n"
+    "LDK｜好きな音楽をかけてワインを片手に一息。この空間が落ち着く。1LDK、36平米。角部屋で良かった。\n"
+    "風呂｜湯船で音楽を1曲。ゆったりした曲でリラックス。\n"
+    "洋室｜明日も仕事。少し背伸びして買ったベッドでぐっすり眠る。おやすみなさい。\n"
+)
+
+
+def _story_ban_words():
+    """物語ナレの禁止語＝PRban（最上級/断定）＋SNSban＋容姿/性的ハードNG（来訪者の容姿・性的示唆）。
+    ★主人公自身の動作（手が丁寧になる 等）は含めない＝A-1で実測ロック済み。"""
+    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_ban_extra("mote")) + ["モテ", "モテ部屋"]
+
+
+def story_narration(client, beats, facts, situation, style="独白",
+                    budget_sec=33, coefficient=_BEAT_COEF_PROVISIONAL,
+                    model="gemini-2.5-flash") -> dict:
+    """★story-v78 A: 全ビートを『1回のGeminiコール』で1つの連続した物語として生成する。
+    beats=[{room, stock}] 部屋順（🔀整列後）。situation=シチュエーション文。style='独白'(A系)/'語りかけ'(B系)。
+    ★Aに渡すのは3つ（beat_generation_targets）: 各ビート字数上限／総字数予算(≈budget_sec秒)／ビート長を揃えない。
+      上限だけ渡すと全ビート天井に張り付き等長・単調（体言止めと同型）になるため。
+    後処理: JSON解析→beats順に整合→fact_scrub(事実外属性を節単位で除去)→物語ban除去→上限超過は警告(切らない)。
+    ★normalize_reading(音声用)は適用しない＝字幕に忠実な生テキストを返す（TTS時に正規化＝A-3/B）。
+    ★角部屋・最上階など位置属性は fact_scrub が facts裏付け無しなら落とす（プロンプトでも明示）。
+    返り値: {lines:[{room,text,ceiling,over}], warnings:[str], prompt:str, raw:str}。beats空/client無なら None。"""
+    import json as _json
+    beats = [b for b in (beats or []) if b.get("room")]
+    if not beats or client is None:
+        return None
+    n = len(beats)
+    tg = beat_generation_targets(beats, coefficient)
+    ceilings = tg["ceilings"]
+    facts_json = _json.dumps({k: v for k, v in (facts or {}).items()
+                              if k in ("madori", "area", "rent", "price", "fee",
+                                       "equipment", "features", "full_text")},
+                             ensure_ascii=False)
+    _addr = "視聴者への語りかけ（一人でも孤独にしない・見ている人がいる）" if style == "語りかけ" \
+        else "独白（誰にも言っていない。心の中の実況）"
+    beat_lines = "\n".join(f"{i+1}. {b['room']}（上限{ceilings.get(b['room'], 0)}字）"
+                           for i, b in enumerate(beats))
+    instr = (
+        "あなたは不動産ルームツアー動画の男性ナレーター（低い声・落ち着き・言い切り・煽らない）です。\n"
+        "以下のシチュエーションで、全ビートを『1つの連続した物語』として書いてください。"
+        "各ビートが前のビートを受けていること。断片的なポエムにしない。\n\n"
+        f"■ シチュエーション：{situation}\n"
+        f"■ 語りの立ち位置：{_addr}\n\n"
+        "■ 必ず守る書き方（谷合さんの承認例から抽出した規則）：\n"
+        "・時制は現在形／実況。「〜した」の報告にしない（✅出してみる・妄想・ヨシ・慣れない　❌出してみた・みがいた）。\n"
+        "・照れは話し方に出す。語彙で説明しない（やっていることは全然ちょっとじゃない。話し方だけが照れている）。\n"
+        "・物と時間で示す。言葉で説明・否定しない（✅トリートメントヨシ　❌見せる予定は、ない）。\n"
+        "・行末の形を揃えない（体言止めを強制しない。全行を名詞で終えると単調になる）。\n"
+        "・最初のビートで状況説明（視聴者は文脈ゼロで見に来る）。誰が・何が・どこ＋物件の数字を1つ。\n"
+        "・物件情報（間取り・面積・角部屋）は、それが画に映っているビートで言う（面積・広さはLDKで言う。"
+        "キッチンや風呂で面積を言わない＝言葉と画がズレる）。\n"
+        "・★角部屋・最上階などの『位置』は、下の物件事実に明記があるときだけ言う。無ければ書かない。\n"
+        "・眺望／方角／日当たり／静けさ／周辺環境は書かない（物件事実に無い属性の創作は禁止）。\n"
+        "・物件名・『モテ』等の内部語・誇大語・最上級は使わない。絵文字は使わない。\n\n"
+        "■ 承認済みの見本2本（この文体・この水準に合わせる。丸写ししない）：\n"
+        f"{_STORY_FEWSHOT}\n"
+        "■ ビート構成（この順番・部屋名・各ビートの字数上限）：\n"
+        f"{beat_lines}\n\n"
+        "■ 尺の狙い：\n"
+        f"・全体で約{budget_sec}秒（{tg['budget_chars']}字相当）を狙う。これは狙う水位であって天井ではない。\n"
+        f"・各ビートの上限を超えない。ただし上限に張り付かない。{tg['rhythm']}。\n\n"
+        f"■ 物件事実（この数字・属性だけ使う。無い属性を創作しない）：{facts_json}\n\n"
+        f"出力はJSON配列のみ（説明・前置きなし・要素数={n}・順番はビート構成どおり）：\n"
+        '[{"room":"…","text":"…"}, …]'
+    )
+    warnings, lines, raw = [], [], ""
+    try:
+        resp = client.models.generate_content(model=model, contents=[instr])
+        raw = getattr(resp, "text", "") or ""
+        m = re.search(r"\[.*\]", raw, re.S)
+        arr = _json.loads(m.group(0)) if m else []
+    except Exception as e:  # noqa: BLE001  握り潰さず記録（呼び出し側で簡易継続）
+        warnings.append(f"物語ナレの生成に失敗（{type(e).__name__}）。")
+        arr = []
+    by_room = {}
+    for o in arr if isinstance(arr, list) else []:
+        if isinstance(o, dict) and o.get("room"):
+            by_room.setdefault(str(o["room"]).strip(), str(o.get("text", "")).strip())
+    ban = _story_ban_words()
+    for i, b in enumerate(beats):
+        room = b["room"]
+        # 位置対応（room名一致）→ 無ければ index 対応の保険
+        text = by_room.get(room)
+        if text is None and i < len(arr) and isinstance(arr[i], dict):
+            text = str(arr[i].get("text", "")).strip()
+        text = text or ""
+        # ① 事実外属性を節単位で除去（角部屋を含む・facts照合）
+        text, removed = fact_scrub(text, facts)
+        for r in removed:
+            warnings.append(f"{room}: 事実外属性『{r}』を含む節を除去（factsに裏付けなし）。")
+        # ② 物語ban（容姿/性的/誇大）を除去。主人公の動作は対象外（A-1で実測）
+        for w in ban:
+            if w and w in text:
+                text = text.replace(w, "")
+                warnings.append(f"{room}: 禁止語『{w}』を除去。")
+        # ③ 上限超過は警告のみ（物語を壊さない・overflowは下流A0が防ぐ＋overで見える）
+        ceil = ceilings.get(room, 0)
+        _len = len(re.sub(r"\s+", "", text))
+        over = ceil > 0 and _len > ceil
+        if over:
+            warnings.append(f"{room}: 上限{ceil}字に対し{_len}字（超過。原稿短縮 or 在庫追加を）。")
+        lines.append({"room": room, "text": text, "ceiling": ceil, "over": over})
+    return {"lines": lines, "warnings": sorted(set(warnings)), "prompt": instr, "raw": raw}
+
+
 def draft_narration(client, facts: dict, scene_labels, dur_sec=5,
                     model="gemini-2.5-flash") -> dict:
     """各シーン1文のナレ原稿を生成。★字数上限を各行にハード適用（超過は打ち切り＝尺に収まる保証）。
