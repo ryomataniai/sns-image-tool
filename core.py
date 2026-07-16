@@ -1292,7 +1292,8 @@ CONCEPT_PRESETS = {
         "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
                     "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},   # ブランド共通に少量追加
         "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。",
-                  "default": "帰りたくない。角部屋。"},   # ★モテの既定コピー（normalは空＝人が書く）
+                  "default": "帰りたくない。角部屋。",     # ★モテの既定コピー（normalは空＝人が書く）
+                  "style": "magazine"},                   # ★表紙スタイル既定（mote=雑誌型/normal=simple）
         # 情感2行の静的既定（PRコピー下書きを押さない時に出る）。★家族でなく ふたり／単身 の世界観。
         # facts無関係の属性主張はしない（採光/眺望/角部屋等は fact_scrub が別途照合）。谷合さん調整可・往復前提。
         "sub_template": {
@@ -1359,6 +1360,12 @@ def concept_cover_default(cid):
     """表紙コピーの静的既定（コンセプト別）。mote='帰りたくない。角部屋。' / normal='' ＝人が書く/AIで一言。
     ★normalに同格コピーを発明しない（推測を避ける）。covercopy-v73が守る『既定に事実主張』穴もnormalでは消える。"""
     return str(concept_of(concept_eff(cid)).get("cover", {}).get("default", "")).strip()
+
+
+def concept_cover_style(cid):
+    """表紙スタイル既定（コンセプト別）。mote='magazine'（雑誌型=OSAKA ROOMS）/ normal='simple'。
+    wipは concept_eff で normal に倒れる。UI側で sticky 追従（人が変えたら停止・pl_style と同型）。"""
+    return str(concept_of(concept_eff(cid)).get("cover", {}).get("style", "simple")).strip() or "simple"
 
 
 def concept_sub_template(cid, room):

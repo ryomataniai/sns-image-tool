@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: crashfix-coverai (表紙『AIで一言』の生成後代入(地雷①)を on_click callback化＝StreamlitAPIExceptionで本番クラッシュしていたのを修正。全走査でバグ型はこの1箇所のみ確認。v78前提2/3は本ユニットに混ぜず別途)")
+    st.caption("build: defaults-v78pre2 (v78前提2/3独立ユニット：ナレ既定ON＋表紙スタイルをコンセプトsticky追従(pl_cover_style_auto影キー・mote=雑誌型/normal=simple・setdefaultでなく追従・人が変えたら停止＋『手動選択中』一行)。u1bと同型)")
 
 
 def _render_video_env_diagnostics():
@@ -681,6 +681,17 @@ def _pl_follow_concept_style():
         if st.session_state.get("pl_style") in (None, prev_auto):   # 未設定 or 前回自動値のまま＝未上書き
             st.session_state["pl_style"] = sd                       # ★スタイルwidget生成前に代入
         st.session_state["pl_style_auto"] = sd                      # 追跡値を更新（次回の追従判定用）
+
+
+def _pl_follow_concept_cover_style():
+    """コンセプト→表紙スタイル の sticky 追従（pl_style と同型・pl_cover_style_auto を影キーに）。
+    ★setdefault は静的既定で2回目以降に追従しない。人が明示変更したら停止。radio生成前に代入。"""
+    cs = core.concept_cover_style(st.session_state.get("pl_concept", "normal"))
+    if cs in ("simple", "magazine"):
+        prev_auto = st.session_state.get("pl_cover_style_auto")
+        if st.session_state.get("pl_cover_style") in (None, prev_auto):   # 未設定/未上書き→追従
+            st.session_state["pl_cover_style"] = cs
+        st.session_state["pl_cover_style_auto"] = cs                      # 追跡値を更新
 
 
 def _pl_sel_index(options, value, default=0):
@@ -2238,8 +2249,8 @@ def _pl_stage_video():
         if not _narr_ok:
             st.info("ElevenLabs の APIキー／ボイスIDが未設定です。Secrets に "
                     "ELEVENLABS_API_KEY と ELEVENLABS_VOICE_ID を追加すると有効化されます。", icon="🔒")
-        v_narr_on = st.checkbox("ナレーションを付ける", value=False, key="pl_v_narr_on",
-                                disabled=not _narr_ok)
+        v_narr_on = st.checkbox("ナレーションを付ける", value=True, key="pl_v_narr_on",
+                                disabled=not _narr_ok)   # ★既定ON（v78前提2）
         if v_narr_on and st.button("全シーンにAIで下書き（各ナレ欄へ流し込み）",
                                    key="pl_narr_all", disabled=not _narr_ok):
             try:
@@ -2381,9 +2392,13 @@ def _pl_stage_video():
         st.caption("素材＋事実から表紙1枚を生成。数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
                    "ffmpegのみ・fal課金なし。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
         _cfacts = st.session_state.get("pl_facts", {})
+        _pl_follow_concept_cover_style()   # ★radio生成前にコンセプト→表紙スタイルを sticky 追従（v78前提3）
         _cstyle = st.radio("スタイル", ["simple", "magazine"], horizontal=True, key="pl_cover_style",
                            format_func=lambda s: {"simple": "シンプル（現行）",
                                                   "magazine": "雑誌型（マガジン）"}.get(s, s))
+        # ★人が手で変更中は一行明示（追従停止=正常 を 追従漏れ=バグ と誤認させない・keynorm-v76と同型）
+        if st.session_state.get("pl_cover_style") != st.session_state.get("pl_cover_style_auto"):
+            st.caption("✋ 表紙スタイルを手動で選択中（コンセプトに追従しません）")
         # 素材画像：既定=最初のLDK→居室→先頭（生成前seed＋stale idガード）
         _copts = [it["id"] for it in adopted]
         if st.session_state.get("pl_cover_src") not in _copts:
@@ -2850,4 +2865,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: crashfix-coverai (表紙『AIで一言』の生成後代入(地雷①)を on_click callback化＝StreamlitAPIExceptionで本番クラッシュしていたのを修正。全走査でバグ型はこの1箇所のみ確認。v78前提2/3は本ユニットに混ぜず別途)")
+    st.caption("build: defaults-v78pre2 (v78前提2/3独立ユニット：ナレ既定ON＋表紙スタイルをコンセプトsticky追従(pl_cover_style_auto影キー・mote=雑誌型/normal=simple・setdefaultでなく追従・人が変えたら停止＋『手動選択中』一行)。u1bと同型)")
