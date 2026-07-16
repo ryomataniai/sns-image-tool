@@ -2176,6 +2176,37 @@ def story_narration(client, beats, facts, situation, style="独白",
     return {"lines": lines, "warnings": sorted(set(warnings)), "prompt": instr, "raw": raw}
 
 
+# ★シチュエーション（story-v78 §3・13→6に削減。軸＝「全部屋を回る口実になるか」）。
+#   need=必要な部屋（いずれか在れば提案・空=どんな物件でも）。style=独白(A系)/語りかけ(B系)。
+STORY_SITUATIONS = [
+    {"id": "A1", "style": "独白", "need": ["玄関"],
+     "text": "引っ越したって言ったら、気になってる女友達が来た",
+     "label": "A1｜気になってる女友達が来た（独白）"},
+    {"id": "A2", "style": "独白", "need": [],
+     "text": "明日、あの子が来る。そわそわしながら仕込んでいる",
+     "label": "A2｜明日、あの子が来る（独白・どんな物件でも）"},
+    {"id": "A3", "style": "独白", "need": ["玄関", "外観"],
+     "text": "飲みの帰り「近いんでしょ？」って言われた",
+     "label": "A3｜飲みの帰りに寄られた（独白）"},
+    {"id": "A4", "style": "独白", "need": ["玄関"],
+     "text": "駅まで送るつもりが、雨が降ってきた",
+     "label": "A4｜雨で戻ってきた（独白）"},
+    {"id": "B1", "style": "語りかけ", "need": [],
+     "text": "引っ越してきた初日。一人で、部屋を見て回っている",
+     "label": "B1｜引っ越し初日のルームツアー（語りかけ・どんな物件でも）"},
+    {"id": "B3", "style": "語りかけ", "need": ["キッチン"],
+     "text": "イケてる男のナイトルーティン",
+     "label": "B3｜ナイトルーティン（語りかけ）"},
+]
+
+
+def story_situations_for(rooms):
+    """検出部屋 rooms で成立するシチュエーションだけ返す（§4）。need空=常に／need有=いずれか在れば。
+    ★玄関が無ければ A1/A3/A4 を出さない・キッチンが無ければ B3 を出さない・A2/B1 はどんな物件でも出す。"""
+    rset = set(r for r in (rooms or []) if r)
+    return [s for s in STORY_SITUATIONS if not s["need"] or any(r in rset for r in s["need"])]
+
+
 def draft_narration(client, facts: dict, scene_labels, dur_sec=5,
                     model="gemini-2.5-flash") -> dict:
     """各シーン1文のナレ原稿を生成。★字数上限を各行にハード適用（超過は打ち切り＝尺に収まる保証）。

@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-a2-v78 (core.story_narration=全ビート1コールで物語生成。few_shot谷合2本のみ(A2独白/B3語りかけ)・3点渡し(各ビート上限/総尺予算≈33s水位/ビート長揃えない)・現在形実況・物件情報は映るカットで(面積はLDK)・角部屋はfacts裏付けありのみ。後処理=fact_scrub+物語ban+上限超過は警告のみ。normalize_reading非適用=字幕忠実な生テキスト(TTS時正規化=A-3)。★未配線=実行時影響ゼロ。前=story-a1-v78:判定器)")
+    st.caption("build: story-a3-v78 (物語生成を配線: ④の『全シーンに下書き』を廃止し、シチュエーション6+自由入力(検出部屋で絞る§4)→『🎬物語を生成』1コールに置換。各ビート先頭sceneのpl_narrに格納・pl_narr_auto更新しない=編集済み判定でテロップ追従停止(意図)・継続シーンは空+『1枚目にまとまっています』1行。実機提出用に生成プロンプト+生レスポンスのデバッグ欄(Fで撤去)。前=story-a2-v78:story_narration本体)")
 
 
 def _render_video_env_diagnostics():
@@ -600,6 +600,46 @@ def _pl_narr_polish_cb(nid, tel, dur):
     st.session_state[f"pl_narr_{nid}"] = pr["text"]
     st.session_state[f"_pl_narr_msg_{nid}"] = ("🎙️ " + "／".join(pr["warnings"])
                                                if pr.get("warnings") else "")
+
+
+def _pl_story_generate_cb(situation, style, dur):
+    """★story-v78 A-3『物語を生成』on_click。採用画像を部屋でビート化し、全ビートを1コールで物語生成。
+    各ビート先頭sceneの pl_narr に格納（★pl_narr_auto は更新しない＝編集済み判定でテロップ追従を止める＝意図）。
+    継続シーン（同ビートの2枚目以降）は空にする（1枚目にまとまる）。コールバック内＝ウィジェットキー代入が安全。"""
+    if not (situation or "").strip():
+        st.session_state["_pl_story_msg"] = "シチュエーションを選ぶか、自由入力してください。"
+        return
+    items = st.session_state.get("pl_items", [])
+    adopted = sorted([it for it in items if it.get("gen_bytes") and it.get("_adopt", True)],
+                     key=lambda it: it.get("order", 0))
+    if not adopted:
+        st.session_state["_pl_story_msg"] = "採用画像がありません。"
+        return
+    beats = []                                    # 連続する同roomを1ビートに（🔀整列後の順を尊重）
+    for it in adopted:
+        if beats and beats[-1]["room"] == it.get("room"):
+            beats[-1]["stock"] += 1
+            beats[-1]["ids"].append(it["id"])
+        else:
+            beats.append({"room": it.get("room"), "stock": 1, "ids": [it["id"]]})
+    try:
+        client = make_client()
+    except RuntimeError:
+        client = None
+    res = core.story_narration(
+        client, [{"room": b["room"], "stock": b["stock"]} for b in beats],
+        _pl_effective_facts(), situation.strip(), style=style, budget_sec=33)
+    if not res:
+        st.session_state["_pl_story_msg"] = "生成できませんでした（Gemini未設定など）。"
+        return
+    for b, line in zip(beats, res["lines"]):
+        st.session_state[f"pl_narr_{b['ids'][0]}"] = line["text"]   # ★auto更新しない＝追従停止
+        for mid in b["ids"][1:]:
+            st.session_state[f"pl_narr_{mid}"] = ""                 # 継続シーン＝空（1枚目にまとまる）
+    st.session_state["_pl_story_msg"] = ("🎙️ " + "／".join(res["warnings"]) if res["warnings"]
+                                         else "物語を生成しました（各ビート先頭にナレをまとめました）。")
+    st.session_state["_pl_story_prompt"] = res["prompt"]            # 実機検証で提出（後でFで撤去）
+    st.session_state["_pl_story_raw"] = res["raw"]
 
 
 # テロップのスタイル自動既定：水回りは座布団(pop)で可読性、居室・その他は clean
@@ -2370,27 +2410,40 @@ def _pl_stage_video():
                     "ELEVENLABS_API_KEY と ELEVENLABS_VOICE_ID を追加すると有効化されます。", icon="🔒")
         v_narr_on = st.checkbox("ナレーションを付ける", value=_pl_v_keep("pl_v_narr_on", True),
                                 key="pl_v_narr_on", disabled=not _narr_ok)   # ★既定ON（v78前提2）
-        if v_narr_on and st.button("全シーンにAIで下書き（各ナレ欄へ流し込み）",
-                                   key="pl_narr_all", disabled=not _narr_ok):
-            try:
-                _nclient = make_client()
-            except RuntimeError:
-                _nclient = None
-            if _nclient is None:
-                st.warning("Gemini APIキーが未設定です（設定ページで確認）。")
+        if v_narr_on:
+            # ★story-v78 A-3：シーン独立生成を廃止し、全ビートを1コールで物語生成。検出部屋でシチュを絞る（§4）。
+            _arooms = [it.get("room") for it in adopted]
+            _sits = core.story_situations_for(_arooms)
+            _opts = [s["id"] for s in _sits] + ["free"]
+            _labels = {s["id"]: s["label"] for s in _sits}
+            _labels["free"] = "自由入力（下の欄に書く）"
+            _sid = st.radio("シチュエーション（物語の設定・検出部屋で絞り込み）", _opts,
+                            key="pl_story_sit", format_func=lambda x: _labels.get(x, x))
+            if _sid == "free":
+                _sfree = st.text_input(
+                    "自由入力のシチュエーション", key="pl_story_sit_free",
+                    placeholder="例：週末、友達を呼んでたこ焼きパーティー")
+                _sstyle = st.radio("語りの立ち位置", ["独白", "語りかけ"], key="pl_story_style",
+                                   horizontal=True)
+                _situation, _style = _sfree.strip(), _sstyle
             else:
-                _ws = []
-                with st.spinner("各シーンのナレを下書き中…"):
-                    for _it in adopted:
-                        _tel = _pl_scene_telop_text(_it, v_lang)
-                        _p = core.polish_narration(_nclient, _tel, v_dur, _pl_effective_facts(),
-                                                   concept=st.session_state.get("pl_concept", "normal"))
-                        # ★narr のみ更新（auto は触らない）＝以後テロップ変更に追従せず人が直せる
-                        st.session_state[f"pl_narr_{_it['id']}"] = _p["text"]
-                        _ws += _p.get("warnings", [])
-                for _w in sorted(set(_ws)):
-                    st.warning("🎙️ " + _w)
-                st.rerun()
+                _s = next((s for s in _sits if s["id"] == _sid), None)
+                _situation, _style = (_s["text"], _s["style"]) if _s else ("", "独白")
+                if _s:
+                    st.caption(f"「{_situation}」／{_style}")
+            st.caption("★『🎬 ストーリー割り当て』をONにすると、この物語が部屋=ビートで正しく配置されます。")
+            st.button("🎬 物語を生成（1コール・全ビートを1つの物語で）", key="pl_story_gen",
+                      on_click=_pl_story_generate_cb, args=(_situation, _style, v_dur),
+                      disabled=not _narr_ok, use_container_width=True)
+            _smsg = st.session_state.get("_pl_story_msg")
+            if _smsg:
+                st.warning(_smsg)
+            if st.session_state.get("_pl_story_raw"):   # 実機検証：プロンプト＋生レスポンス提出（Fで撤去）
+                with st.expander("🧪 生成プロンプト＋生レスポンス（実機検証用・後で外す）", expanded=False):
+                    st.text_area("プロンプト", st.session_state.get("_pl_story_prompt", ""),
+                                 height=200, key="_pl_story_prompt_view")
+                    st.text_area("生レスポンス", st.session_state.get("_pl_story_raw", ""),
+                                 height=150, key="_pl_story_raw_view")
 
     # ── 🎬 ストーリー割り当て（story-v78 A0・検証中）──────────────────────────
     #   ONで「部屋=ビート／画像=カット」割り当て：連続する同室を1ビートにまとめ、ナレ字数から尺を配分。
@@ -2707,6 +2760,12 @@ def _pl_stage_video():
                         st.session_state[_akey] = _draft
                     st.text_area("🎙️ ナレーション（読み上げ内容・空欄＝このシーンは無音）",
                                  key=_nkey, height=68)
+                    # ★story-v78 A-3：継続シーン（同ビート2枚目以降）で空欄なら『1枚目にまとまる』を明示
+                    #   ＝空欄が「無音」なのか「まとめた」のか画面から分かるようにする（沈黙で変に見せない）。
+                    if (pos > 0 and adopted[pos - 1].get("room") == it.get("room")
+                            and not (st.session_state.get(_nkey) or "").strip()):
+                        st.caption("🎙️ このビートのナレは1枚目の画像にまとまっています"
+                                   "（この画像は無音で続けて再生されます）。個別に付けたいときはこの欄に入力できます。")
                     _nv = st.session_state.get(_nkey, "")
                     _ncnt = len(core.normalize_reading(_nv))               # ★字数は正規化後で数える
                     if _ncnt > _nlimit:
@@ -3016,4 +3075,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-a2-v78 (core.story_narration=全ビート1コールで物語生成。few_shot谷合2本のみ(A2独白/B3語りかけ)・3点渡し(各ビート上限/総尺予算≈33s水位/ビート長揃えない)・現在形実況・物件情報は映るカットで(面積はLDK)・角部屋はfacts裏付けありのみ。後処理=fact_scrub+物語ban+上限超過は警告のみ。normalize_reading非適用=字幕忠実な生テキスト(TTS時正規化=A-3)。★未配線=実行時影響ゼロ。前=story-a1-v78:判定器)")
+    st.caption("build: story-a3-v78 (物語生成を配線: ④の『全シーンに下書き』を廃止し、シチュエーション6+自由入力(検出部屋で絞る§4)→『🎬物語を生成』1コールに置換。各ビート先頭sceneのpl_narrに格納・pl_narr_auto更新しない=編集済み判定でテロップ追従停止(意図)・継続シーンは空+『1枚目にまとまっています』1行。実機提出用に生成プロンプト+生レスポンスのデバッグ欄(Fで撤去)。前=story-a2-v78:story_narration本体)")
