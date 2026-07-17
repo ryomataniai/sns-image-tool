@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-1-features-ng (v79動く雑誌の土台=core.FEATURES 3特集(mote_heya=GOLD/totonoeru=ROSE/hobby=SAGE・label/accent RGB/staging_prompt/cover_hooks/comment_tone・data駆動・CONCEPT_PRESETSと併存)＋factguard NG拡張。★v79-0実測で巻き添えゼロの20語だけ_SNS_BAN_EXTRAに部分一致追加(完ぺき/万全/日本初/抜群/厳選/最高級/特級/掘出/土地値/投売り/特安/バーゲン/安値/完売/最強/圧倒的/どこよりも等)・『完全』は完全分離に巻き添え→_NEEDS_REVIEW・『極』は積極的等を巻き込むため語自体入れない。needs_review()=止めず人力確認フラグ。既存48ban不変。未配線=v79-2でUI。前=story-b2-v78)")
+    st.caption("build: v79-2-layout (動く雑誌レイアウトビルダー・権威gen.py/ov.py/feat23.py座標に忠実・未配線。Bold明朝同梱(NotoSerifCJKjp-Bold/NotoSansCJKjp-Bold・need_stroke=False)。build_beat_overlay(ビート文字面透明PNG=部屋ラベルpill/big_text96px白+2行目accent色/comment/マストヘッド/情報バー)＋build_cover_v79(表紙 特集版=特集ラベル+2行コピー104px+price150accent / price_heroオプション=area96+price190+hook72)。frame検証済(明朝Boldウロコくっきり・accent連動GOLD/ROSE/SAGE・家賃管理費併記・AI注記時点注記)。前=v79-1-features-ng)")
 
 
 def _render_video_env_diagnostics():
@@ -3105,4 +3105,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-1-features-ng (v79動く雑誌の土台=core.FEATURES 3特集(mote_heya=GOLD/totonoeru=ROSE/hobby=SAGE・label/accent RGB/staging_prompt/cover_hooks/comment_tone・data駆動・CONCEPT_PRESETSと併存)＋factguard NG拡張。★v79-0実測で巻き添えゼロの20語だけ_SNS_BAN_EXTRAに部分一致追加(完ぺき/万全/日本初/抜群/厳選/最高級/特級/掘出/土地値/投売り/特安/バーゲン/安値/完売/最強/圧倒的/どこよりも等)・『完全』は完全分離に巻き添え→_NEEDS_REVIEW・『極』は積極的等を巻き込むため語自体入れない。needs_review()=止めず人力確認フラグ。既存48ban不変。未配線=v79-2でUI。前=story-b2-v78)")
+    st.caption("build: v79-2-layout (動く雑誌レイアウトビルダー・権威gen.py/ov.py/feat23.py座標に忠実・未配線。Bold明朝同梱(NotoSerifCJKjp-Bold/NotoSansCJKjp-Bold・need_stroke=False)。build_beat_overlay(ビート文字面透明PNG=部屋ラベルpill/big_text96px白+2行目accent色/comment/マストヘッド/情報バー)＋build_cover_v79(表紙 特集版=特集ラベル+2行コピー104px+price150accent / price_heroオプション=area96+price190+hook72)。frame検証済(明朝Boldウロコくっきり・accent連動GOLD/ROSE/SAGE・家賃管理費併記・AI注記時点注記)。前=v79-1-features-ng)")

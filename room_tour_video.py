@@ -1325,6 +1325,62 @@ def build_beat_overlay(room_label, l1, l2, comment, *, accent=_V79_GOLD,
     return buf.getvalue()
 
 
+def _v79_feature_label(canvas, feat_label, accent, y0=360):
+    """★特集ラベル箱（feat23.py cover）：rectangle（角丸なし）y360-432・fill(20,20,24,170)・枠accent w3・
+    SANS_B42px accent色・『特集　○○』。"""
+    from PIL import ImageDraw
+    W = canvas.size[0]
+    text = f"特集　{feat_label}"
+    f = _v79_sans_b(42)
+    d = ImageDraw.Draw(canvas)
+    tw = d.textlength(text, font=f)
+    d.rectangle([W / 2 - tw / 2 - 36, y0, W / 2 + tw / 2 + 36, y0 + 72],
+                fill=(20, 20, 24, 170), outline=accent, width=3)
+    _v79_shadow_text(canvas, (W // 2, y0 + 36), text, f, accent, blur=4)
+
+
+def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub="",
+                    copy1="", copy2="", area_line="", hook="",
+                    spec_line="", equip_line="", note_line="",
+                    layout="feature", aspect="9:16") -> bytes:
+    """★v79 表紙（動く雑誌カバー・権威=feat23.py(特集版)/gen.py(price_hero)）。
+    ★動画冒頭カバー=この表紙特大PNGと同一ソースに統一（1源2消費・配線はv79-3）。accentは feature の色。
+    layout='feature'（標準・特集版）: 特集ラベル＋copy1(y1000)＋copy2(y1140)白＋price(y1330)accent＋price_sub(y1440)。
+    layout='price_hero'（数字特大版オプション）: area_line(y1000)白＋price(y1180)accent＋price_sub(y1310)＋hook(y1470)白。
+    返り値=PNG bytes(RGB・写真背景で不透明)。"""
+    from PIL import Image, ImageOps
+    from io import BytesIO
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+    feat = None
+    try:
+        import core as _core
+        feat = _core.feature_of(feature_id)
+    except Exception:  # noqa: BLE001
+        pass
+    accent = tuple(feat["accent"]) if feat else _V79_GOLD
+    base = ImageOps.fit(Image.open(BytesIO(image_bytes)).convert("RGB"), (W, H), method=Image.LANCZOS)
+    canvas = base.convert("RGBA")
+    _v79_gradient(canvas, 0, 520, 190, 0)          # cover上グラデ（0→520）
+    _v79_gradient(canvas, 1200, H, 0, 235)
+    _v79_masthead(canvas, accent)
+    _v79_feature_label(canvas, feat["label"] if feat else "モテ部屋", accent)
+    if layout == "price_hero":
+        _v79_shadow_text(canvas, (W // 2, 1000), area_line, _v79_fit_serif(area_line, 96), _V79_WHITE)
+        _v79_shadow_text(canvas, (W // 2, 1180), price, _v79_serif(190), accent)
+        _v79_shadow_text(canvas, (W // 2, 1310), price_sub, _v79_sans_r(40), _V79_GREY)
+        _v79_shadow_text(canvas, (W // 2, 1470), hook, _v79_fit_serif(hook, 72), _V79_WHITE)
+    else:                                          # feature（標準・特集版）
+        _v79_shadow_text(canvas, (W // 2, 1000), copy1, _v79_fit_serif(copy1, 104), _V79_WHITE)
+        _v79_shadow_text(canvas, (W // 2, 1140), copy2, _v79_fit_serif(copy2, 104), _V79_WHITE)
+        _v79_shadow_text(canvas, (W // 2, 1330), price, _v79_serif(150), accent)
+        _v79_shadow_text(canvas, (W // 2, 1440), price_sub, _v79_sans_r(40), _V79_GREY)
+    if spec_line or equip_line or note_line:
+        _v79_infobar(canvas, spec_line, equip_line, note_line)
+    buf = BytesIO()
+    canvas.convert("RGB").save(buf, "PNG")
+    return buf.getvalue()
+
+
 def _v79_assert_resolution(img_w, img_h, min_w=1080, min_h=1920, factor=1.06):
     """★v79 画質アサート（フォールバック経路=編集系パン/ドリフト用）：オーバーレイ合成前の実効解像度が
     min×factor 以上か。不足＝パンで画質破綻（サンプルv10で実確認）。返り値 (ok, need_w, need_h)。
