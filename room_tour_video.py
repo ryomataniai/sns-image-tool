@@ -1200,6 +1200,85 @@ def build_cover(image_bytes: bytes, fields: dict, aspect: str = "9:16",
                 pass
 
 
+# ======================================================================
+# ★v79「動く雑誌」レイアウト（権威=OSAKA_ROOMSサンプル scripts/gen.py,ov.py,feat23.py の座標に忠実）
+#   1080×1920・明朝Bold特大＋キーワードaccent＋固定マストヘッド OSAKA ROOMS＋下部情報バー（常時）。
+# ======================================================================
+_V79_GOLD = (232, 196, 104)
+_V79_ROSE = (228, 170, 168)
+_V79_SAGE = (168, 205, 172)
+_V79_WHITE = (255, 255, 255)
+_V79_GREY = (200, 200, 200)
+_V79_NOTE = (150, 150, 150)
+
+
+def _v79_serif(size):
+    from PIL import ImageFont
+    return ImageFont.truetype(_serif_bold_font()[0], size)
+
+
+def _v79_sans_b(size):
+    from PIL import ImageFont
+    return ImageFont.truetype(_sans_bold_font()[0], size)
+
+
+def _v79_sans_r(size):
+    from PIL import ImageFont
+    return ImageFont.truetype(_font() or _sans_bold_font()[0], size)
+
+
+def _v79_shadow_text(canvas, xy, text, font, fill, anchor="mm", blur=8, ox=4, oy=6):
+    """影付きテキスト（gen.py shadow_text 準拠）：影(0,0,0,180)を(ox,oy)ずらしてblur→本文を上に描く。
+    canvas=RGBA Image。空文字は無視。"""
+    from PIL import Image, ImageDraw, ImageFilter
+    if not (text and str(text).strip()):
+        return
+    lay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    ImageDraw.Draw(lay).text((xy[0] + ox, xy[1] + oy), text, font=font,
+                             fill=(0, 0, 0, 180), anchor=anchor)
+    canvas.alpha_composite(lay.filter(ImageFilter.GaussianBlur(blur)))
+    ImageDraw.Draw(canvas).text(xy, text, font=font, fill=fill, anchor=anchor)
+
+
+def _v79_gradient(canvas, y0, y1, a0, a1):
+    """暗幕グラデ (8,8,10) を y0→y1 で α a0→a1 に線形（gen.py gradient 準拠）。canvas=RGBA。"""
+    from PIL import Image
+    W, H = canvas.size
+    ramp = np.clip((np.arange(H) - y0) / max(1, (y1 - y0)), 0, 1)
+    alpha = (a0 + (a1 - a0) * ramp).astype(np.uint8)
+    ov = np.zeros((H, W, 4), dtype=np.uint8)
+    ov[:, :, 0], ov[:, :, 1], ov[:, :, 2] = (8, 8, 10)
+    ov[:, :, 3] = alpha[:, None]
+    canvas.alpha_composite(Image.fromarray(ov, "RGBA"))
+
+
+def _v79_masthead(canvas, accent=_V79_GOLD):
+    """★固定マストヘッド：OSAKA ROOMS（字間・SERIF66px y205）＋ISSUE行（30px y268）＋accentライン（y308）。"""
+    from PIL import ImageDraw
+    W = canvas.size[0]
+    _v79_shadow_text(canvas, (W // 2, 205), "O S A K A   R O O M S", _v79_serif(66), _V79_WHITE, blur=6)
+    _v79_shadow_text(canvas, (W // 2, 268), "ISSUE 01  /  OSAKA・FUKUSHIMA", _v79_sans_r(30), _V79_GREY, blur=6)
+    ImageDraw.Draw(canvas).rectangle([W // 2 - 170, 306, W // 2 + 170, 310], fill=accent)
+
+
+def _v79_infobar(canvas, spec_line, equip_line, note_line):
+    """★下部情報バー（全ビート/表紙 常時3行）：スペック＋家賃管理費併記（SANS_B38px y1755）／
+    設備（SANS_R30px y1815）／AI注記＋時点注記（SANS_R26px y1872・(150,150,150)）。中央 anchor=mm。
+    ★家賃には管理費を必ず併記（呼出側で構造保証＝rentguard資産）。"""
+    W = canvas.size[0]
+    _v79_shadow_text(canvas, (W // 2, 1755), spec_line, _v79_sans_b(38), _V79_WHITE, blur=6)
+    _v79_shadow_text(canvas, (W // 2, 1815), equip_line, _v79_sans_r(30), _V79_GREY, blur=6)
+    _v79_shadow_text(canvas, (W // 2, 1872), note_line, _v79_sans_r(26), _V79_NOTE, blur=6)
+
+
+def _v79_assert_resolution(img_w, img_h, min_w=1080, min_h=1920, factor=1.06):
+    """★v79 画質アサート（フォールバック経路=編集系パン/ドリフト用）：オーバーレイ合成前の実効解像度が
+    min×factor 以上か。不足＝パンで画質破綻（サンプルv10で実確認）。返り値 (ok, need_w, need_h)。
+    主軸Klingは生成でモーション＝このアサートはフォールバック素材にのみ適用。"""
+    need_w, need_h = int(min_w * factor), int(min_h * factor)
+    return (img_w >= need_w and img_h >= need_h), need_w, need_h
+
+
 def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                sub_captions: Optional[list] = None,
                top_tag: str = "", with_captions: bool = True,
