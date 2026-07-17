@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4c-crashfix (実測デバッグ欄の生成後クラッシュ修正=NameError。表示部で_os.path.existsの_osが関数未import(別関数_pl_stage_videoのローカル・スコープ外)→生成完了後にNameError。★_os/_tf/_dtを関数先頭でimport。★二重課金回避: generate_clip_fal(subscribe・request_id無)→fal_submit_clip+fal_poll_clip+request_idをファイル保存に変更=クラッシュ/中断後にボタン再押下で再fetch(再課金なし)。安定パス(素材ごと)で既存mp4は再利用。billed_clics=今回実課金本数。前=v79-4c-probefix)")
+    st.caption("build: v79-4c-pollfix (★fal_poll_clipの経路バグ修正=本番run_tour_jobにも効く。fal_client.status/result(get_handle→from_request_id)はendpointのpath[v2.6/pro/image-to-video]を落としてbase appだけでstatus URLを組む→queueが404/HTTPError。subscribeはfal返却URL[path込]を使うので動く=この差分。★_fal_status_url()でpath込みURLを自前構築しSyncRequestHandleを直接作る。fal_poll_clipのエラーにURL/HTTPステータスを付与(1往復切り分け)。probeはsubmit/poll+request_id保存/表示+手動request_id再fetch(Rebootで消えた課金済みクリップ回収)。前=v79-4c-crashfix)")
 
 
 def _render_video_env_diagnostics():
@@ -2309,42 +2309,47 @@ def _pl_v79_focal_probe(rtv):
         st.caption(f"想定fal課金：未生成分のみ × ${_unit:.2f}（5秒）。"
                    + ("★この素材は生成済み＝再課金なしで表示。" if _have
                       else f"★2本で最大 ${_unit * 2:.2f}。生成前に fal 残高を控えてください。"))
-        _req_yes = _os.path.join(_dir, f"req_{_sid}_yes.txt")   # ★request_idをファイル保存＝クラッシュ後も再fetch
+        _req_yes = _os.path.join(_dir, f"req_{_sid}_yes.txt")   # ★request_idをファイル保存＝クラッシュ後に再fetch
         _req_no = _os.path.join(_dir, f"req_{_sid}_no.txt")
-        if st.button("🧪 あり/なし 生成（★未生成分のみ・request_id保存で二重課金回避）", key="_v79_probe_gen",
+        # ★手動 request_id 再fetch（Rebootで req file が消えた課金済みクリップの回収用・fal Usage/前回表示から貼る）
+        _mrid = st.text_input("（任意）課金済み request_id を貼って『あり』側を再fetch（追加課金なし）",
+                              key="_v79_manual_rid", placeholder="fal の request_id")
+        if st.button("🧪 あり/なし 生成（submit/poll・request_id保存＝再fetchで二重課金回避）", key="_v79_probe_gen",
                      disabled=not get_secret("FAL_KEY", "")):
             import time as _time
             _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
             _rec = {"started": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S"),
-                    "unit_usd": _unit, "room": _it["room"], "src_id": _sid, "billed_clips": 0}
+                    "unit_usd": _unit, "room": _it["room"], "src_id": _sid, "billed_clips": 0, "req": {}}
 
-            def _one(_prompt, _out, _req):
-                """1本: mp4あれば再利用／request_id保存済みなら再fetch（再課金なし）／無ければsubmit(課金)→保存→poll。"""
+            def _one(_prompt, _out, _req, _manual=""):
+                """1本: mp4あれば再利用／request_id(手入力 or 保存済)あれば再fetch(再課金なし)／無ければsubmit(課金)→保存→poll。"""
                 if _os.path.exists(_out):
                     return
-                _rid = ""
-                if _os.path.exists(_req):
-                    _rid = (open(_req).read().strip() or "")   # ★保存済み＝再fetch（再課金なし）
+                _rid = (_manual or "").strip() or (open(_req).read().strip() if _os.path.exists(_req) else "")
                 if not _rid:
                     _rid = rtv.fal_submit_clip(_it["gen_bytes"], _prompt, 5, "kling2.6_pro", rtv._V79_NEGATIVE)
                     open(_req, "w").write(_rid)                # ★submit直後にrequest_id永続化（死んでも回収可）
                     _rec["billed_clips"] += 1
+                _rec["req"][_os.path.basename(_out)] = _rid    # 表示（Reboot後の手動再fetch用に控える）
                 _w = 0
                 while _w < 720:
                     if rtv.fal_poll_clip("kling2.6_pro", _rid, _out) == "done":
                         return
                     _time.sleep(6); _w += 6
-                raise TimeoutError("生成タイムアウト（request_id保存済＝次回このボタンで再fetch＝再課金なし）")
+                raise TimeoutError(f"生成タイムアウト（request_id={_rid}・次回このrequest_idで再fetch可）")
             try:
-                with st.spinner("生成中…（fal queue・request_id保存＝クラッシュしても再fetchで拾える）"):
-                    _one(_yes, _p_yes, _req_yes)
+                with st.spinner("生成中…（fal queue submit/poll・request_id保存＝クラッシュしても再fetchで拾える）"):
+                    _one(_yes, _p_yes, _req_yes, _mrid)        # 手入力ridは『あり』側に使う
                     _one(_no, _p_no, _req_no)
                 _rec["ended"] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S")
                 _rec["est_usd"] = round(_unit * _rec["billed_clips"], 2)
                 st.session_state["_v79_probe_rec"] = _rec
-            except Exception as e:  # noqa: BLE001  ★鍵を含みうる詳細は型のみ
-                st.error(f"生成に失敗/中断（{type(e).__name__}）。"
-                         "★request_idは保存済み＝もう一度このボタンを押すと再fetchで拾い、再課金しません。")
+            except Exception as e:  # noqa: BLE001  ★鍵は含めない（型/HTTPステータス/URL＝fal_poll_clipが付与・デバッグ用）
+                _sc = getattr(getattr(e, "response", None), "status_code", None)
+                _detail = f"{type(e).__name__}" + (f" / HTTP {_sc}" if _sc else "")
+                st.error(f"生成に失敗/中断：{_detail}\n{str(e)[:400]}\n"
+                         f"request_id控え：{_rec.get('req')}\n"
+                         "★request_id保存済＝もう一度押すと再fetchで拾い再課金しません。鍵はこの表示に含めていません。")
         if _os.path.exists(_p_yes) and _os.path.exists(_p_no):
             _rec = st.session_state.get("_v79_probe_rec")
             if _rec:
@@ -3227,4 +3232,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4c-crashfix (実測デバッグ欄の生成後クラッシュ修正=NameError。表示部で_os.path.existsの_osが関数未import(別関数_pl_stage_videoのローカル・スコープ外)→生成完了後にNameError。★_os/_tf/_dtを関数先頭でimport。★二重課金回避: generate_clip_fal(subscribe・request_id無)→fal_submit_clip+fal_poll_clip+request_idをファイル保存に変更=クラッシュ/中断後にボタン再押下で再fetch(再課金なし)。安定パス(素材ごと)で既存mp4は再利用。billed_clics=今回実課金本数。前=v79-4c-probefix)")
+    st.caption("build: v79-4c-pollfix (★fal_poll_clipの経路バグ修正=本番run_tour_jobにも効く。fal_client.status/result(get_handle→from_request_id)はendpointのpath[v2.6/pro/image-to-video]を落としてbase appだけでstatus URLを組む→queueが404/HTTPError。subscribeはfal返却URL[path込]を使うので動く=この差分。★_fal_status_url()でpath込みURLを自前構築しSyncRequestHandleを直接作る。fal_poll_clipのエラーにURL/HTTPステータスを付与(1往復切り分け)。probeはsubmit/poll+request_id保存/表示+手動request_id再fetch(Rebootで消えた課金済みクリップ回収)。前=v79-4c-crashfix)")

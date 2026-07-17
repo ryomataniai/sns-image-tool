@@ -1635,16 +1635,36 @@ def fal_submit_clip(image_bytes, prompt, duration=5, model_key="kling2.6_pro",
             pass
 
 
+def _fal_status_url(model_key, request_id):
+    """★submit時に fal が返す status_url 相当（path込み）を自前構築。返り値 (status_url, response_url, base)。
+    ★fal_client.status/result（get_handle→from_request_id）は endpoint の path（例 v2.6/pro/image-to-video）を
+    落として base app だけで組むため queue が 404/HTTPError になる。subscribe は fal返却URLを使うので動く＝この差分。"""
+    from fal_client.client import AppId, QUEUE_URL_FORMAT
+    endpoint = FAL_MODELS.get(model_key, FAL_MODELS["kling2.6_pro"])["endpoint"]
+    app = AppId.from_endpoint_id(endpoint)
+    prefix = f"{app.namespace}/" if app.namespace else ""
+    path = f"{app.path}/" if getattr(app, "path", "") else ""   # ★from_request_id が落とす path をここで含める
+    base = f"{QUEUE_URL_FORMAT}{prefix}{app.owner}/{app.alias}/{path}requests/{request_id}"
+    return base + "/status", base, base
+
+
 def fal_poll_clip(model_key, request_id, out_path) -> str:
     """submit済み request_id の状態を確認。完了なら結果動画を out_path へストリーミングDLして
-    'done' を返す。未完了なら 'pending'。失敗（またはfal側で見つからない）なら例外。要 FAL_KEY。"""
+    'done' を返す。未完了なら 'pending'。失敗（またはfal側で見つからない）なら例外（URL/HTTP status付き）。要 FAL_KEY。
+    ★status/result は fal_client.status（path欠落）でなく fal返却相当の path込みURLで handle を自前構築（subscribe整合）。"""
     import fal_client
-    cfg = FAL_MODELS.get(model_key, FAL_MODELS["kling2.6_pro"])
-    endpoint = cfg["endpoint"]
-    status = fal_client.status(endpoint, request_id, with_logs=False)
+    _status_url, _response_url, _base = _fal_status_url(model_key, request_id)
+    handle = fal_client.SyncRequestHandle(
+        request_id=request_id, response_url=_response_url, status_url=_status_url,
+        cancel_url=_base + "/cancel", client=fal_client.sync_client._client)
+    try:
+        status = handle.status(with_logs=False)
+    except Exception as e:  # noqa: BLE001  ★URL/HTTPステータスを載せて1往復で切り分け可能に（鍵は含まない）
+        _sc = getattr(getattr(e, "response", None), "status_code", None)
+        raise RuntimeError(f"fal status失敗 HTTP{_sc} url={_status_url} ({type(e).__name__})") from e
     if not isinstance(status, fal_client.Completed):
         return "pending"
-    result = fal_client.result(endpoint, request_id)
+    result = handle.get()
     url = (result or {}).get("video", {}).get("url")
     if not url:
         raise RuntimeError(f"完了したが動画URLが取得できません: {result}")
