@@ -366,6 +366,39 @@ ROOM_PROMPTS = {
 }
 
 
+# ★v79-4 焦点(focal)主語指向のKlingプロンプト。大原則＝モーションは必ず『そのビートの文字の主語focal』に向かう
+#   （無目的な動き禁止・v11実機で確定）。room_facts_map の focal を注入。編集系(パン/ドリフト)は棄却＝主軸Kling。
+_V79_NEGATIVE = ("no people, no camera shake, no warping walls, no morphing furniture, "
+                 "no changing layout, no text, no flickering")
+
+_V79_KLING_ROOM = {   # 部屋別カメラワーク（依頼文§4.5）。focal は共通の『Ending settled on {focal}』で一本化（重複回避）
+    "entrance": "camera slowly dollies forward through the entrance, as if walking in",
+    "ldk":      "camera slowly pushes forward into the living room, with subtle parallax between furniture",
+    "kitchen":  "camera slowly moves toward the kitchen window",
+    "bedroom":  "camera slowly dollies in toward the window light",
+    "bathroom": "very slight push-in with minimal movement",
+    "washroom": "very slight push-in with minimal movement",
+    "toilet":   "very slight push-in with minimal movement",
+    "balcony":  "camera slowly pushes toward the balcony opening",
+    "exterior": "camera slowly dollies forward toward the building facade, revealing depth and parallax",
+    "generic":  "slow smooth push-in across the room",
+}
+_V79_MOTION_AMT = {"minimal": "very slight, barely-there", "normal": "slow, smooth",
+                   "strong": "slow but clearly noticeable"}
+
+
+def build_kling_prompt(video_type, focal="the room", motion="normal"):
+    """★v79-4：焦点(focal)主語指向のKling image-to-videoプロンプトを合成。
+    共通『… ending settled on {focal}. No people.』＋部屋別カメラワーク＋動き量(minimal/normal/strong)。
+    ★モーションは必ず文字の主語(focal)に向かう＝無目的な動きを指示しない。狭室のminimalは呼出側(room_facts_map)で指定。"""
+    focal = (str(focal or "the room")).strip() or "the room"
+    room = _V79_KLING_ROOM.get(video_type, _V79_KLING_ROOM["generic"]).format(focal=focal)
+    amt = _V79_MOTION_AMT.get(motion, _V79_MOTION_AMT["normal"])
+    return (f"Real estate room tour. {amt.capitalize()} cinematic camera movement: {room}. "
+            f"Ending settled on {focal}. Furniture and architecture stay completely still. "
+            "No people. Photorealistic, stable camera, no morphing, no warping.")
+
+
 # ======================================================================
 # ffmpeg 後処理
 # ======================================================================

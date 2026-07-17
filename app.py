@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-3.1-coverfit (表紙情報バーの幅あふれ修正=全物件系統バグ。設備行は主要最大4件をpriority順(セキュリティ→水回り→通信→その他)で選び、描画幅1000px超は件数を減らす(★文字サイズ固定=雑誌質感維持)_pl_cover_equip_line。間取タイプ生値(10x6等・LDK/R等を含まない)はspecに出さず非表示(整形はv79-5)。表紙特大の説明文を1源2消費の実態(動画冒頭1.5sにも使う)に更新。前=v79-3-cover:表紙1源2消費)")
+    st.caption("build: v79-4a-klingprompt (Klingプロンプトの土台=focal主語指向・未配線。core.ROOM_FACTS_MAP(★3用途スキーマ:facts→ビート割当/タグ・focal注入v79-4・big_text主語v79-5=video_type/focal/focal_ja/motion/facts_keys・狭室既定minimal・キッチン専用video_type)＋rtv.build_kling_prompt(共通Ending settled on{focal}+部屋別カメラワーク+動き量3段階)＋_V79_NEGATIVE。配線v79-4b・あり/なし実測v79-4c(fal残高後)。★設備priorityをカテゴリ制(セキュリティ→水回り2件→通信→残り)に微調整=ネット無料が入る。前=v79-3.1-coverfit)")
 
 
 def _render_video_env_diagnostics():
@@ -2162,28 +2162,36 @@ def _pl_v79_area_line(facts):
     return _pl_cover_madori_area(facts) or "OSAKA ROOMS"
 
 
-# ★v79-3.1：情報バー設備行の主要設備 priority（セキュリティ→水回り→通信→その他）。表紙の幅あふれ対策。
-_PL_EQUIP_PRIORITY = [
-    "オートロック", "モニター付インターホン", "カメラ付きインターホン", "TVモニターホン", "宅配ボックス",
-    "バス・トイレ別", "バストイレ別", "独立洗面台", "追焚", "追い焚き", "浴室乾燥", "室内洗濯機置場",
-    "温水洗浄便座", "ウォシュレット",
-    "インターネット無料", "ネット無料", "光ファイバー", "光配線",
-    "エアコン", "システムキッチン", "都市ガス", "宅配ボックス", "フローリング", "収納",
+# ★v79-3.1/v79-4：情報バー設備行のカテゴリ別優先（セキュリティ→水回り2件→通信→残り）。訴求力順（ネット無料を確保）。
+#   各カテゴリ (語リスト, 上限件数)。上から順に、facts に含まれる語を上限まで拾い、合計 max_items で打ち切り。
+_PL_EQUIP_CATEGORIES = [
+    (["オートロック", "モニター付インターホン", "カメラ付きインターホン", "TVモニターホン", "宅配ボックス"], 1),   # セキュリティ
+    (["バス・トイレ別", "バストイレ別", "独立洗面台", "追焚", "追い焚き", "浴室乾燥",
+      "室内洗濯機置場", "温水洗浄便座", "ウォシュレット"], 2),                                                # 水回り（最大2）
+    (["インターネット無料", "ネット無料", "光ファイバー", "光配線"], 1),                                       # 通信（ネット無料）
+    (["エアコン", "システムキッチン", "都市ガス", "フローリング", "収納", "宅配ボックス"], 4),                  # 残り
 ]
 
 
 def _pl_cover_equip_line(facts, max_items=4, max_w=1000, font_size=30):
-    """★v79-3.1：情報バーの設備行を『主要設備 最大max_items（priority順）→描画幅(max_w)超なら件数を減らす』で組む。
-    ★文字サイズは固定（雑誌の質感維持）＝縮小せず件数で収める。マイソク設備の全文垂れ流し（幅あふれ）を防ぐ。"""
+    """★v79-3.1/v79-4：情報バーの設備行を『カテゴリ別優先（セキュリティ→水回り2件→通信→残り）で最大max_items
+    →描画幅(max_w)超なら件数を減らす』で組む。★文字サイズは固定（雑誌の質感維持）＝縮小せず件数で収める。"""
     raw = facts.get("equipment")
     text = "／".join(raw) if isinstance(raw, list) else str(raw or "")
     picked = []
-    for term in _PL_EQUIP_PRIORITY:                 # priority順に facts に含まれる語を拾う（重複除去）
-        if term in text and not any((term in p or p in term) for p in picked):
-            picked.append(term)
+    for terms, cap in _PL_EQUIP_CATEGORIES:         # カテゴリ順・各カテゴリは上限まで
+        _n = 0
+        for term in terms:
+            if len(picked) >= max_items:
+                break
+            if term in text and not any((term in p or p in term) for p in picked):
+                picked.append(term)
+                _n += 1
+            if _n >= cap:
+                break
         if len(picked) >= max_items:
             break
-    if not picked and isinstance(raw, list):        # priority外でもリストなら先頭から
+    if not picked and isinstance(raw, list):        # カテゴリ外でもリストなら先頭から
         picked = [p for p in raw if p][:max_items]
     if not picked:
         return ""
@@ -3128,4 +3136,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-3.1-coverfit (表紙情報バーの幅あふれ修正=全物件系統バグ。設備行は主要最大4件をpriority順(セキュリティ→水回り→通信→その他)で選び、描画幅1000px超は件数を減らす(★文字サイズ固定=雑誌質感維持)_pl_cover_equip_line。間取タイプ生値(10x6等・LDK/R等を含まない)はspecに出さず非表示(整形はv79-5)。表紙特大の説明文を1源2消費の実態(動画冒頭1.5sにも使う)に更新。前=v79-3-cover:表紙1源2消費)")
+    st.caption("build: v79-4a-klingprompt (Klingプロンプトの土台=focal主語指向・未配線。core.ROOM_FACTS_MAP(★3用途スキーマ:facts→ビート割当/タグ・focal注入v79-4・big_text主語v79-5=video_type/focal/focal_ja/motion/facts_keys・狭室既定minimal・キッチン専用video_type)＋rtv.build_kling_prompt(共通Ending settled on{focal}+部屋別カメラワーク+動き量3段階)＋_V79_NEGATIVE。配線v79-4b・あり/なし実測v79-4c(fal残高後)。★設備priorityをカテゴリ制(セキュリティ→水回り2件→通信→残り)に微調整=ネット無料が入る。前=v79-3.1-coverfit)")

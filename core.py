@@ -1859,6 +1859,43 @@ def feature_of(fid):
     """特集id の定義を返す（未知は None）。下流は これだけ参照＝単一の情報源（CONCEPT_PRESETSと同型）。"""
     return FEATURES.get(fid)
 
+
+# ★v79 room_facts_map（部屋⇔映像/文字/設備の対応表・★最初から3用途スキーマ）:
+#   ①facts→ビート割当・タグ(v79-5=facts_keys) ②focal注入(v79-4=focal・Kling主語) ③big_text主語(v79-5=focal_ja)。
+#   video_type=ROOM_PROMPTS/build_kling_prompt のキー。motion=動き量既定（狭室=minimal）。
+ROOM_FACTS_MAP = {
+    "外観":   {"video_type": "exterior", "focal": "the building facade and entrance", "focal_ja": "外観",
+               "motion": "normal", "facts_keys": ["オートロック", "宅配ボックス", "駐輪場", "エレベーター"]},
+    "玄関":   {"video_type": "entrance", "focal": "the entrance and shoe cabinet", "focal_ja": "玄関",
+               "motion": "minimal", "facts_keys": ["オートロック", "モニター付インターホン",
+                                                    "カメラ付きインターホン", "宅配ボックス", "シューズボックス"]},
+    "LDK":    {"video_type": "ldk", "focal": "the sofa area by the window", "focal_ja": "リビング",
+               "motion": "normal", "facts_keys": ["エアコン", "ネット無料", "インターネット無料",
+                                                   "角部屋", "フローリング"]},
+    "キッチン": {"video_type": "kitchen", "focal": "the kitchen counter and window", "focal_ja": "キッチン",
+                "motion": "normal", "facts_keys": ["システムキッチン", "都市ガス", "ガスコンロ", "IH", "給湯"]},
+    "洋室":   {"video_type": "bedroom", "focal": "the bed and the window light", "focal_ja": "洋室",
+               "motion": "normal", "facts_keys": ["クローゼット", "収納", "エアコン"]},
+    "寝室":   {"video_type": "bedroom", "focal": "the bed and the window light", "focal_ja": "寝室",
+               "motion": "normal", "facts_keys": ["クローゼット", "収納", "エアコン"]},
+    "浴室":   {"video_type": "bathroom", "focal": "the bathtub", "focal_ja": "浴室",
+               "motion": "minimal", "facts_keys": ["バス・トイレ別", "追焚", "浴室乾燥"]},
+    "洗面":   {"video_type": "washroom", "focal": "the vanity and mirror", "focal_ja": "洗面",
+               "motion": "minimal", "facts_keys": ["独立洗面台", "室内洗濯機置場"]},
+    "トイレ": {"video_type": "toilet", "focal": "the toilet", "focal_ja": "トイレ",
+               "motion": "minimal", "facts_keys": ["温水洗浄便座", "ウォシュレット"]},
+    "バルコニー": {"video_type": "balcony", "focal": "the balcony and the outside view", "focal_ja": "バルコニー",
+                 "motion": "normal", "facts_keys": ["バルコニー", "南向き"]},
+    "クローゼット": {"video_type": "generic", "focal": "the closet storage", "focal_ja": "収納",
+                 "motion": "minimal", "facts_keys": ["クローゼット", "ウォークインクローゼット", "収納"]},
+}
+
+
+def room_facts_map(room):
+    """★v79 room_facts_map（3用途: facts→ビート割当/タグ／focal注入(v79-4)／big_text主語(v79-5)）。未知は generic 既定。"""
+    return ROOM_FACTS_MAP.get(room, {"video_type": "generic", "focal": "the room",
+                                     "focal_ja": room or "部屋", "motion": "normal", "facts_keys": []})
+
 # ── 投稿文テンプレ（設定画面で編集可・caption_templates.json がデフォルト）──────────
 # footer は{date}を含む複数行。生成時にJST当日へ置換（Geminiに書かせない＝法務注記の改変防止）。
 _DEFAULT_CAPTION_TEMPLATES = {
