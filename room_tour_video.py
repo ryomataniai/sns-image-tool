@@ -1271,6 +1271,60 @@ def _v79_infobar(canvas, spec_line, equip_line, note_line):
     _v79_shadow_text(canvas, (W // 2, 1872), note_line, _v79_sans_r(26), _V79_NOTE, blur=6)
 
 
+def _v79_fit_serif(text, base=96, min_size=64, max_w=1000):
+    """特大明朝を max_w に収める（長い big_text の溢れ防止・権威は96px固定だが安全網）。"""
+    from PIL import ImageDraw, Image
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    for s in range(base, min_size - 1, -4):
+        f = _v79_serif(s)
+        if d.textlength(text, font=f) <= max_w:
+            return f
+    return _v79_serif(min_size)
+
+
+def _v79_room_pill(canvas, label, y0=368):
+    """★部屋ラベルピル（ov.py label()）：角丸ボックス(20,20,24,150)＋白枠(255,255,255,180)w2＋
+    SANS_B40px WHITE。箱 y0=368→432、テキストは y0+32。"""
+    from PIL import ImageDraw
+    W = canvas.size[0]
+    f = _v79_sans_b(40)
+    d = ImageDraw.Draw(canvas)
+    tw = d.textlength(label, font=f)
+    d.rounded_rectangle([W / 2 - tw / 2 - 28, y0, W / 2 + tw / 2 + 28, y0 + 64],
+                        radius=8, fill=(20, 20, 24, 150), outline=(255, 255, 255, 180), width=2)
+    _v79_shadow_text(canvas, (W // 2, y0 + 32), label, f, _V79_WHITE, blur=4)
+
+
+def build_beat_overlay(room_label, l1, l2, comment, *, accent=_V79_GOLD,
+                       spec_line="", equip_line="", note_line="", aspect="9:16") -> bytes:
+    """★v79 ビート文字面（透明PNG・背景=Kling映像に重ねる）。権威=ov.py の座標。
+    big_text: l1=白(y1330) ／ l2=accent色(y1465・2行目まるごとがaccent_word)。l2空→1行(1330白)＋commentを1470へ。
+    comment: 2行時 y1590 ／ 1行時 y1470（SANS_R42px GREY）。マストヘッド＋情報バー常時。返り値=PNG bytes(RGBA)。"""
+    from PIL import Image
+    from io import BytesIO
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    _v79_gradient(canvas, 0, 460, 190, 0)         # 上グラデ（ビート面 0→460）
+    _v79_gradient(canvas, 1200, H, 0, 235)        # 下グラデ
+    _v79_masthead(canvas, accent)
+    _v79_room_pill(canvas, room_label)
+    _l2 = (l2 or "").strip()
+    if _l2:
+        _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
+        _v79_shadow_text(canvas, (W // 2, 1465), _l2, _v79_fit_serif(_l2), accent)
+        _cy = 1590
+    else:
+        _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
+        _cy = 1470
+    if comment and comment.strip():
+        _v79_shadow_text(canvas, (W // 2, _cy), comment, _v79_sans_r(42), _V79_GREY)
+    if spec_line or equip_line or note_line:
+        _v79_infobar(canvas, spec_line, equip_line, note_line)
+    buf = BytesIO()
+    canvas.save(buf, "PNG")                       # RGBA（透明背景を保持）
+    return buf.getvalue()
+
+
 def _v79_assert_resolution(img_w, img_h, min_w=1080, min_h=1920, factor=1.06):
     """★v79 画質アサート（フォールバック経路=編集系パン/ドリフト用）：オーバーレイ合成前の実効解像度が
     min×factor 以上か。不足＝パンで画質破綻（サンプルv10で実確認）。返り値 (ok, need_w, need_h)。
