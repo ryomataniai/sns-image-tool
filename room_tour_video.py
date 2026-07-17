@@ -167,6 +167,22 @@ def _dur(path: str) -> float:
         return 5.0
 
 
+def _adur(path: str) -> float:
+    """★音声ファイルの尺（ffprobe format=duration）。★_dur は `-select_streams v:0`＝動画ストリーム選択で
+    音声onlyファイル(mp3/wav)では空→例外→5.0s固定を返す（narr_actualが測れない穴）。ナレ音声はこちらで測る。
+    失敗時 0.0（無音扱い＝MIN_BEATへ落ちる・偽の尺を作らない）。"""
+    fp = _ffprobe()
+    if not fp:
+        return 0.0
+    try:
+        out = subprocess.run(
+            [fp, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+            capture_output=True, text=True, timeout=30)
+        return float(out.stdout.strip())
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
 def _esc(text: str) -> str:
     """drawtext 用エスケープ（コロン/バックスラッシュ/シングルクォート/カンマ/%）。"""
     return (text.replace("\\", r"\\").replace(":", r"\:")
@@ -651,6 +667,27 @@ def _assemble_beats(beat_groups: list[list[str]], out_path: str,
         return _concat_hard(beat_clips, out_path)             # ★ビート間はハードカット
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ★narr-fix-b：実尺先行（measure-first）の定数。ビート最終尺 d_i = max(_MIN_BEAT, narr_actual + _TAIL_PAD)。
+#   _MIN_BEAT=big_text2行+タグを読める最低尺（4.0s仮・実映像でCOO目視調整）。_TAIL_PAD=発話後の余白。
+_MIN_BEAT_SEC = 4.0
+_NARR_TAIL_PAD = 0.5
+_FREEZE_WARN_SEC = 2.5   # フリーズ延長がこれを超えたら警告（背景静止長→スライドショー感）
+
+
+def _freeze_extend(src: str, seconds: float, out_path: str) -> str:
+    """★narr-fix-b：src を seconds 尺へ。src<seconds は末尾フレームを静止延長（tpad=clone・文字面/背景を保持）、
+    src>=seconds は通常トリム。返り値=out_path。無音（-an）＝音声は後段で別mux。"""
+    _sd = _dur(src)
+    if seconds <= _sd + 0.05:
+        return _trim_clip(src, out_path, seconds)
+    pad = seconds - _sd
+    subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", "-i", src,
+                    "-vf", f"tpad=stop_mode=clone:stop_duration={pad:.3f}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "30",
+                    "-an", "-movflags", "+faststart", out_path], check=True, timeout=300)
+    return out_path
 
 
 def _burn_subtitles(video_path: str, events, out_path: str,
@@ -1829,6 +1866,10 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         return os.path.join(job_dir, path)
 
     _unified = bool(glob.get("unified_subtitle"))   # ★B: ナレ=字幕一本化時はメイン/情感を焼かない（字幕は動画レベルで③時刻焼き）
+    # ★narr-fix-b：実尺先行（measure-first）＝narration ON ＋ beatモード。segを予測trimせずフル正規化で残し、
+    #   フェーズCでTTS実尺測定→d_i=max(_MIN_BEAT, narr+_TAIL_PAD)→segfitへtrim/フリーズ延長→組立（予測係数に依存しない）。
+    _measure_first = bool(glob.get("narration_on")) and any(
+        sc.get("beat_id") is not None for sc in scenes)
 
     def _make_seg(sc):   # raw → seg（テロップ・注記込み normalize）。冪等
         _normalize_clip(_jp(sc["raw"]), _jp(sc["seg"]),
@@ -1838,10 +1879,10 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                         taste=sc.get("taste", "clean"), pos=sc.get("pos", "下中央"),
                         flash=sc.get("flash", ""), out_w=out_w, out_h=out_h,
                         fit_mode=sc.get("fit", "fill"))
-        # ★story-v78ビートモード：生成尺→トリム尺へ切り出す（尺切り出し＝速度変更でない・atempo0）。
-        #   seg を trim済で置換＝冪等（done後の再入場では _make_seg 自体が呼ばれない）。
+        # ★通常＝予測trim(sc['trim'])をsegへ適用（尺切り出し＝速度変更でない・atempo0）。
+        #   ★measure-first＝trimせずフル正規化segを残す（TTS実尺測定後にsegfitへ切る＝素材を先に捨てない）。冪等。
         _tr = sc.get("trim")
-        if _tr:
+        if _tr and not _measure_first:
             _tmp = _jp(f"segtrim_{sc['i']}.mp4")
             _trim_clip(_jp(sc["seg"]), _tmp, float(_tr))
             shutil.move(_tmp, _jp(sc["seg"]))
@@ -1914,6 +1955,85 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         raise RuntimeError(f"全シーン失敗: {_detail}")
     state["phase"] = "concatenating"
     _save_job_state(job_dir, state)
+
+    # ── ★narr-fix-b：実尺先行（measure-first）＝TTS実尺を測ってから映像尺 d_i を決める（予測係数5.26に依存しない）──
+    #   narration ON ＋ beatモードのみ。フル正規化seg（無trim）を d_i へ trim/フリーズ延長した segfit を作る。
+    #   d_i = max(_MIN_BEAT_SEC, narr_actual + _NARR_TAIL_PAD)。overlay窓・ナレ開始・総尺は Σd_i を共有（逐次＝被り0）。
+    narr_warn = []
+    _beat_durations = None     # {bid: d_i}（measure-first成功時のみ非None）
+    _beat_audio = {}           # {bid: apath}（TTS済みmp3・後段muxで再利用）
+    _fitpath = {}              # {sc['i']: segfit path}（組立が読む・無ければsegそのもの）
+    _mf_fallback = False
+    if _measure_first:
+        try:
+            import core as _core
+            _grp, _prev = [], object()
+            for sc in ordered:
+                _bid = sc.get("beat_id")
+                if _bid != _prev:
+                    _grp.append((_bid, []))
+                    _prev = _bid
+                _grp[-1][1].append(sc)
+            _beat_durations, _mf_rows = {}, []
+            for bid, scs in _grp:
+                _txt = (scs[0].get("beat_narration") or "").strip()   # narration_text=comment（narr-fix-a）
+                _na = 0.0
+                if _txt:
+                    _ap = _jp(f"narrbeat_{bid}.mp3")
+                    try:
+                        if not os.path.exists(_ap):
+                            tts_elevenlabs(_core.normalize_reading(_txt), _ap)   # ★キーはenvのみ・例外に載せない
+                        _na = _adur(_ap)                          # ★音声尺は_adur（_durは動画v:0で音声を測れない）
+                        _beat_audio[bid] = _ap
+                    except Exception as e:  # noqa: BLE001  1本失敗＝そのビート無音で継続（全体は止めない）
+                        narr_warn.append(_log_failure(f"tts(beat {bid})", e) + "＝このビートは無音で継続")
+                        _na = 0.0
+                _di = max(_MIN_BEAT_SEC, _na + _NARR_TAIL_PAD)
+                _floor = (_na + _NARR_TAIL_PAD) < _MIN_BEAT_SEC
+                _beat_durations[bid] = _di
+                # d_i を各シーンへ配分（xfade補償 padded=d_i+0.6×境界）→ segfit（trim / 末尾フリーズ延長）
+                _nn = len(scs)
+                _per = (_di + 0.6 * max(0, _nn - 1)) / _nn
+                _freeze = 0.0
+                for sc in scs:
+                    _srcd = _dur(_jp(sc["seg"]))
+                    _fp = _jp(f"segfit_{sc['i']}.mp4")
+                    _freeze_extend(_jp(sc["seg"]), _per, _fp)     # フル正規化segから毎回作る＝冪等
+                    _fitpath[sc["i"]] = _fp
+                    _freeze = max(_freeze, _per - _srcd)
+                if _freeze > _FREEZE_WARN_SEC:
+                    narr_warn.append(f"ビート{bid + 1}: 背景を約{_freeze:.1f}s静止延長（commentが長い→"
+                                     "スライドショー感／字数短縮を・恒久策はcomment字数ガイド）")
+                _mf_rows.append((bid, _di, _na, _floor, max(0.0, _freeze)))
+            for bid, _di, _na, _floor, _fz in _mf_rows:   # 偽装不能な検証表（実尺配置の内訳）
+                narr_warn.append(
+                    f"📏 ビート{bid + 1} 実尺配置: d={_di:.1f}s ／ ナレ実尺{_na:.1f}s ／ "
+                    f"フロア{'発動' if _floor else '—'} ／ 静止延長{_fz:.1f}s")
+        except Exception as e:  # noqa: BLE001  ★measure-first全体の失敗＝旧経路へ・ただし隠さない（黙って被り残りは最も危険）
+            _mf_fallback = True
+            _measure_first = False
+            _beat_durations, _beat_audio, _fitpath = None, {}, {}
+            narr_warn.append("⚠️ 実尺配置に失敗し旧経路（予測尺）で生成しました（"
+                             + _log_failure("measure_first", e)
+                             + "）。音声被りが残る可能性があります。")
+            for sc in ordered:   # フォールバック：未trimのフル正規化segを予測trimへ切る
+                _tr = sc.get("trim")
+                if _tr:
+                    _tmp = _jp(f"segtrim_{sc['i']}.mp4")
+                    _trim_clip(_jp(sc["seg"]), _tmp, float(_tr))
+                    shutil.move(_tmp, _jp(sc["seg"]))
+
+    def _beat_d(sc):
+        """ビート尺：measure-first成功＝実測 d_i ／ それ以外＝予測 beat_narr_sec。overlay窓・ナレ開始が同一式を共有。"""
+        bid = sc.get("beat_id")
+        if _beat_durations is not None and bid in _beat_durations:
+            return _beat_durations[bid]
+        return float(sc.get("beat_narr_sec") or 0.0)
+
+    def _segpath(sc):
+        """組立が読むクリップ：measure-first＝segfit（d_iへ調整済）／それ以外＝seg（予測trim済 or 無trim）。"""
+        return _fitpath.get(sc["i"], _jp(sc["seg"]))
+
     body = _jp("room_tour_silent.mp4")
     # ★story-v78ビートモード：どれか1シーンでも beat_id を持てばビートモード。
     #   ビート境界=ハードカット（食われない）／ビート内=0.6xfade（allocateのxfade=0.6と一致）。
@@ -1927,10 +2047,10 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             if bid != _prev:
                 beat_groups.append([])
                 _prev = bid
-            beat_groups[-1].append(_jp(sc["seg"]))
+            beat_groups[-1].append(_segpath(sc))   # ★narr-fix-b：measure-first時はd_i調整済segfit
         _assemble_beats(beat_groups, body, t=0.6, flash_cut=False)  # 内xfadeは0.6固定（allocate整合）
     else:
-        _xfade_concat([_jp(sc["seg"]) for sc in ordered], body,
+        _xfade_concat([_segpath(sc) for sc in ordered], body,
                       flash_cut=bool(glob.get("flash_cut", False)))
 
     # ── 冒頭表紙の挿入（本編前に静止クリップを連結・全出力版に反映）──
@@ -1968,7 +2088,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 if bid == _prev:
                     continue                          # 同ビート2枚目以降＝先頭のみ文字面
                 _prev = bid
-                _nsec = float(sc.get("beat_narr_sec") or 0.0)
+                _nsec = _beat_d(sc)                    # ★narr-fix-b：measure-first時は実測d_i（予測beat_narr_secでなく）
                 _s = _cover_off + _acc
                 _acc += _nsec                          # ナレ有無に関わらず尺を積む（stillビートも前進）
                 if not sc.get("big_text"):
@@ -2016,16 +2136,15 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         out["bgm"] = withbgm
 
     # ── AIナレーション（各シーン/ビート頭に音声を配置・★速度変更しない）──
-    narr_warn = []
+    #   ★narr_warn は上のmeasure-firstパスで初期化済み（実尺配置の📏検証表・フォールバック警告を保持）。
     if bool(glob.get("narration_on")):
         audio_starts = []
         cover_off = cover_sec if cover_on else 0.0
         _beat_mode_n = any(sc.get("beat_id") is not None for sc in ordered)
         if _beat_mode_n:
-            # ★story-v78 単純化：durs も xfade も見ない。各ビートの描画尺 == beat_narr_sec（パディング後）
-            #   なので ビートi のナレ開始 = cover_off + Σ(前ビートの beat_narr_sec)。ナレ秒を足すだけ。
-            #   ★これを _scene_start_times(全境界0.6仮定) で代用すると、総尺全OFF検証は通るがナレON時に静かにズレる。
-            #   ビートのメタ(beat_narration/beat_narr_sec)は各ビート先頭sceneに載る。stillビートは narr空・尺だけ加算。
+            # ★narr-fix-b：ビート開始 = cover_off + Σ前ビートの d_i（measure-first=実測 _beat_durations／fallback=予測beat_narr_sec）。
+            #   measure-firstではmp3は測定時にTTS済み（_beat_audio）＝再利用。d_i≧narr_actual+TAIL_PAD＝構造的に非重複。
+            #   ★_beat_d と _beat_audio を overlay窓と共有＝窓・ナレ開始・総尺が同一のΣd_iを見る（二重算入/ズレなし）。
             acc = 0.0
             _prev = object()
             for sc in ordered:
@@ -2033,28 +2152,25 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 if bid == _prev:
                     continue                        # 同ビートの2枚目以降はスキップ（先頭のみ配置）
                 _prev = bid
-                nsec = float(sc.get("beat_narr_sec") or 0.0)
+                dsec = _beat_d(sc)
                 txt = (sc.get("beat_narration") or "").strip()
-                if txt:
+                apath = _beat_audio.get(bid)        # ★measure-firstで測定時にTTS済み＝再利用（二重TTS/二重課金しない）
+                if txt and not apath:               # fallback（予測経路）：ここでTTS
                     apath = _jp(f"narrbeat_{bid}.mp3")
                     try:
                         if not os.path.exists(apath):
                             import core as _core
-                            # ★B一本化の音声側：字幕は生テキスト(w残す)／音声は normalize_reading(w除去・LDK→エルディーケー・㎡→平米)。
                             tts_elevenlabs(_core.normalize_reading(txt), apath)  # ★キーは env のみ・例外に載せない
-                        _sec = _dur(apath)
-                        _chars = len(re.sub(r"\s+", "", txt))
-                        _cps = (_chars / _sec) if _sec > 0 else 0.0
-                        narr_warn.append(
-                            f"📏 ビート{bid + 1} 実測: {_chars}字 ÷ 実尺{_sec:.1f}s = {_cps:.1f}字/秒"
-                            f"（予定{nsec:.1f}s・開始{cover_off + acc:.1f}s）")
-                        over = _sec - nsec
-                        if over > 0.3:               # 予定尺超過は原稿短縮を促す（自動速度変更しない）
-                            narr_warn.append(f"ビート{bid + 1}: ナレ音声が予定尺を{over:.1f}s超過（原稿短縮を）")
-                        audio_starts.append((apath, cover_off + acc))
                     except Exception as e:  # noqa: BLE001  1本失敗は隔離＝logger/stateへ
                         narr_warn.append(_log_failure(f"tts(beat {bid})", e))
-                acc += nsec                          # ★ナレ有無に関わらず尺を積む（stillビートも前進）
+                        apath = None
+                if apath and os.path.exists(apath):
+                    _sec = _adur(apath)              # ★音声尺は_adur（_durは動画v:0で音声を測れない＝旧CPSログの5.0s固定バグも解消）
+                    audio_starts.append((apath, cover_off + acc))
+                    _over = _sec - dsec              # d_i超過（measure-first下では本来起きない・監視用）
+                    if _over > 0.3:
+                        narr_warn.append(f"ビート{bid + 1}: ナレ音声がビート尺を{_over:.1f}s超過（要確認）")
+                acc += dsec                          # ★ナレ有無に関わらず d_i を積む（stillビートも前進）
         else:
             durs = [_dur(_jp(sc["seg"])) for sc in ordered]
             flash_title = bool(ordered and ordered[0].get("flash"))
@@ -2073,7 +2189,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                     narr_warn.append(_log_failure(f"tts(scene {sc['i']})", e))
                     continue
                 # ★実測CPS（係数_NARR_CPSは推測でなく実測で決める・factguard期の教訓）。実尺と無音を毎シーンUIへ。
-                _sec = _dur(apath)
+                _sec = _adur(apath)              # ★音声尺は_adur（_durは動画v:0でmp3を測れず5.0s固定を返す穴）
                 _chars = len(re.sub(r"\s+", "", txt))
                 _cps = (_chars / _sec) if _sec > 0 else 0.0
                 _silence = max(0.0, durs[k] - _sec)
