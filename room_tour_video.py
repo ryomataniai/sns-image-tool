@@ -97,6 +97,38 @@ def _serif_font() -> str:
     return _font()
 
 
+# ★v79「動く雑誌」：特大明朝Bold（見出し96-190px）＋ゴシックBold（情報バー38px/ラベル）。
+#   権威サンプルと同一実体を fonts/ に配置（NotoSerifCJKjp-Bold.otf / NotoSansCJKjp-Bold.otf・SIL OFL）。
+#   ★同梱の NotoSerifJP-Regular.ttf は実体 ExtraLight＝特大明朝に細すぎ→Bold実体が要る。
+_SERIF_BOLD_CANDIDATES = [
+    str(Path(__file__).parent / "fonts" / "NotoSerifCJKjp-Bold.otf"),   # ★v79権威（同梱）
+    str(Path(__file__).parent / "fonts" / "NotoSerifJP-Bold.otf"),
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Bold.ttc",             # Cloud apt（あれば）
+]
+_SANS_BOLD_CANDIDATES = [
+    str(Path(__file__).parent / "fonts" / "NotoSansCJKjp-Bold.otf"),    # ★v79権威（同梱）
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",              # Cloud apt
+    str(Path(__file__).parent / "fonts" / "NotoSansJP-Bold.otf"),
+]
+
+
+def _serif_bold_font():
+    """★v79 特大明朝Bold。返り値 (path, need_stroke)。Bold実体あり→(path, False)＝そのまま描く。
+    無し→(Regular明朝, True)＝描画側で stroke_width の擬似Bold（ウロコが落ちるが動作継続・Bold配置で自動解消）。"""
+    for p in _SERIF_BOLD_CANDIDATES:
+        if os.path.exists(p):
+            return p, False
+    return _serif_font(), True
+
+
+def _sans_bold_font():
+    """★v79 ゴシックBold（情報バー/ラベル）。返り値 (path, need_stroke)。Regularだと情報バー38pxが弱い。"""
+    for p in _SANS_BOLD_CANDIDATES:
+        if os.path.exists(p):
+            return p, False
+    return _font(), True
+
+
 def env_diagnostics() -> dict:
     """描画環境の自己診断（Cloudでのフォント/drawtext欠如を可視化）。設定画面で表示。
     冒頭タイトル・テロップは drawtext と日本語フォントの両方が要る。どちらか欠けると文字が出ない。
