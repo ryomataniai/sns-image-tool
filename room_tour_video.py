@@ -1431,7 +1431,8 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                notes: Optional[list] = None, still_flags: Optional[list] = None,
                taste: str = "clean", tastes: Optional[list] = None,
                positions: Optional[list] = None, flash_text: str = "",
-               negative_prompt: str = DEFAULT_NEGATIVE_PROMPT, cfg_scale: Optional[float] = None,
+               focals: Optional[list] = None, motions: Optional[list] = None,   # ★v79-4 focal主語/動き量
+               negative_prompt: str = _V79_NEGATIVE, cfg_scale: Optional[float] = None,
                aspect: str = "9:16", fit_mode: str = "fill", flash_cut: bool = False,
                durations: Optional[list] = None, trims: Optional[list] = None,
                beat_ids: Optional[list] = None, progress=None) -> dict:
@@ -1482,7 +1483,10 @@ def build_tour(images: list[tuple], *, captions: Optional[list] = None,
                 _fit = "contain"                       # 全体表示（図面の端を切らない）
             else:
                 rt = room_types[i] if i < len(room_types) else "generic"
-                prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
+                # ★v79-4：focal主語指向のKlingプロンプト。focals/motions が無ければ既定focal/normal。
+                _foc = focals[i] if (focals and i < len(focals)) else None
+                _mot = motions[i] if (motions and i < len(motions)) else "normal"
+                prompt = build_kling_prompt(rt, _foc, _mot)
                 # ストリーミングで raw へ直接書き込み（mp4を変数に載せない＝OOM対策）
                 generate_clip_fal(img, prompt, duration=_gen_dur, model_key=model_key,
                                   negative_prompt=negative_prompt, cfg_scale=cfg_scale,
@@ -1762,7 +1766,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             _save_job_state(job_dir, state)
         elif sc.get("status") in ("pending", "failed"):
             rt = sc.get("room_type", "generic")
-            prompt = ROOM_PROMPTS.get(rt, ROOM_PROMPTS["generic"])
+            # ★v79-4：focal主語指向のKlingプロンプト（sceneのfocal/motion＝room_facts_map由来）。無ければ既定focal/normal。
+            prompt = build_kling_prompt(rt, sc.get("focal"), sc.get("motion", "normal"))
             try:
                 rid = fal_submit_clip(img_bytes, prompt, _gen_dur, glob["model_key"],
                                       glob.get("negative_prompt", ""), glob.get("cfg_scale"))

@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4a-klingprompt (Klingプロンプトの土台=focal主語指向・未配線。core.ROOM_FACTS_MAP(★3用途スキーマ:facts→ビート割当/タグ・focal注入v79-4・big_text主語v79-5=video_type/focal/focal_ja/motion/facts_keys・狭室既定minimal・キッチン専用video_type)＋rtv.build_kling_prompt(共通Ending settled on{focal}+部屋別カメラワーク+動き量3段階)＋_V79_NEGATIVE。配線v79-4b・あり/なし実測v79-4c(fal残高後)。★設備priorityをカテゴリ制(セキュリティ→水回り2件→通信→残り)に微調整=ネット無料が入る。前=v79-3.1-coverfit)")
+    st.caption("build: v79-4b-klingwire (Klingプロンプトを配線: run_tour_job/build_tourのROOM_PROMPTS.get→build_kling_prompt(focal主語指向)・scene focal/motion=room_facts_map由来(狭室minimal)・negative→_V79_NEGATIVE。build_tourにfocals/motions引数追加。still経由で回帰なし完走。全9部屋の旧→新プロンプト差分一覧をCowork v79-4_frame検証/に保存(E2E前に谷合さん目視)。★あり/なし実測はv79-4c(fal残高後)。前=v79-4a-klingprompt)")
 
 
 def _render_video_env_diagnostics():
@@ -2855,6 +2855,9 @@ def _pl_stage_video():
             "pos": _pl_resolve_pos(it, v_pos), "top_tag": v_tag if v_caps else "",
             "room_type": _pl_video_room_type(it["room"]), "flash": "", "fit": v_fit,
             "room": it["room"],   # ★story-v78ビート化キー（連続する同roomを1ビートに）
+            # ★v79-4：focal主語/動き量（room_facts_map由来・狭室minimal）。focalはv79-5 magtextがビート毎に上書き。
+            "focal": core.room_facts_map(it["room"]).get("focal"),
+            "motion": core.room_facts_map(it["room"]).get("motion", "normal"),
             # ★シーン単位（ID基準）でナレを持たせる＝index基準の噛み合わせズレ(v68真因)を断つ
             "narration": (st.session_state.get(f"pl_narr_{it['id']}", "") if v_narr_on else "")})
         _images.append((_nm, it["gen_bytes"]))
@@ -2926,7 +2929,7 @@ def _pl_stage_video():
              "with_bgm": v_bgm, "also_silent": True, "flash_cut": bool(v_flashcut),
              "narration_on": bool(v_narr_on),
              "cover_on": bool(v_cover_on and _cov_bytes), "cover_sec": float(v_cover_sec),
-             "negative_prompt": rtv.DEFAULT_NEGATIVE_PROMPT, "cfg_scale": None,
+             "negative_prompt": rtv._V79_NEGATIVE, "cfg_scale": None,   # ★v79-4：動く雑誌のnegative
              # ★story-v78 B：ナレ字幕の一本化。subtitle_beats=③焼込用[{lines,dur}]／unified=メイン/情感を焼かない。
              "subtitle_beats": _sub_beats, "unified_subtitle": bool(_sub_beats)}
     import tempfile as _tf
@@ -3136,4 +3139,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4a-klingprompt (Klingプロンプトの土台=focal主語指向・未配線。core.ROOM_FACTS_MAP(★3用途スキーマ:facts→ビート割当/タグ・focal注入v79-4・big_text主語v79-5=video_type/focal/focal_ja/motion/facts_keys・狭室既定minimal・キッチン専用video_type)＋rtv.build_kling_prompt(共通Ending settled on{focal}+部屋別カメラワーク+動き量3段階)＋_V79_NEGATIVE。配線v79-4b・あり/なし実測v79-4c(fal残高後)。★設備priorityをカテゴリ制(セキュリティ→水回り2件→通信→残り)に微調整=ネット無料が入る。前=v79-3.1-coverfit)")
+    st.caption("build: v79-4b-klingwire (Klingプロンプトを配線: run_tour_job/build_tourのROOM_PROMPTS.get→build_kling_prompt(focal主語指向)・scene focal/motion=room_facts_map由来(狭室minimal)・negative→_V79_NEGATIVE。build_tourにfocals/motions引数追加。still経由で回帰なし完走。全9部屋の旧→新プロンプト差分一覧をCowork v79-4_frame検証/に保存(E2E前に谷合さん目視)。★あり/なし実測はv79-4c(fal残高後)。前=v79-4a-klingprompt)")
