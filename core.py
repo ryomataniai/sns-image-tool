@@ -2362,6 +2362,159 @@ def story_situations_for(rooms):
     return [s for s in STORY_SITUATIONS if not s["need"] or any(r in rset for r in s["need"])]
 
 
+def _mag_price_fields(facts):
+    """★v79-5 表紙の facts由来3要素（price/price_sub/area_line・deterministic）。hookはfeatureから選択（AI自由生成しない）。"""
+    import re
+    rent = (facts.get("rent", "") or "").strip()
+    fee = (facts.get("fee", "") or "").strip()
+    price = ("¥" + rent.replace("円", "").strip()) if rent else ""
+    price_sub = (f"管理費 {fee}/月" if fee else "")
+    # area_line：access最短徒歩から『{駅}、駅{n}分。』／無ければ間取り・面積
+    band = ""
+    for a in (facts.get("access") or []):
+        if "バス" not in a and re.search(r"徒歩\s*\d+\s*分", a):
+            band = a
+            break
+    m_st = re.search(r"([^\s　]+?)駅", band)
+    m_wk = re.search(r"徒歩\s*(\d+)\s*分", band)
+    if m_st and m_wk:
+        area_line = f"{m_st.group(1)}、駅{m_wk.group(1)}分。"
+    else:
+        _mad = (facts.get("madori", "") or "").split("[")[0].strip()
+        area_line = " ".join(x for x in (_mad, (facts.get("area", "") or "").strip()) if x) or "OSAKA ROOMS"
+    return {"price": price, "price_sub": price_sub, "area_line": area_line}
+
+
+def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash") -> dict:
+    """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
+    beats=[{room, stock}]（部屋順・🔀後）。返り値:
+      {beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}],
+       cover:{area_line,price,price_sub,hook,hook_alt,needs_review}, data_rows:[str], warnings:[str], prompt, raw}
+    ★big_text/comment=facts由来（数字は映るカットで＝面積/角部屋はLDK・帖数は各室）。room_facts_map の focal_ja/facts_keys を使う。
+    ★cover.hook は feature.cover_hooks[] から選択（AI自由生成しない＝型承認面積固定）・独自案は hook_alt＋needs_review。
+    ★few_shot 2本＋抽出規則は mote_heya の comment 規則として使う（削除しない）。後処理: fact_scrub/ban/needs_review/タグ最大3差分。"""
+    import json as _json
+    beats = [b for b in (beats or []) if b.get("room")]
+    if not beats or client is None:
+        return None
+    feat = feature_of(feature_id) or {}
+    hooks = feat.get("cover_hooks") or []
+    _equip = facts.get("equipment")
+    _equip_text = "／".join(_equip) if isinstance(_equip, list) else str(_equip or "")
+    _feat_text = str(facts.get("features", "")) + " " + str(facts.get("full_text", ""))
+    # 各beat：room_facts_map の focal_ja と、facts に実在する facts_keys（この部屋に映る設備）
+    _binfo = []
+    for b in beats:
+        m = room_facts_map(b["room"])
+        present = [k for k in m["facts_keys"] if (k in _equip_text or k in _feat_text)]
+        _binfo.append({"room": b["room"], "focal_ja": m["focal_ja"], "facts_keys": present})
+    facts_json = _json.dumps({k: v for k, v in (facts or {}).items()
+                              if k in ("madori", "area", "rent", "fee", "access", "equipment",
+                                       "features", "full_text")}, ensure_ascii=False)
+    _mote = feature_id == "mote_heya"
+    instr = (
+        "あなたは不動産SNS『動く雑誌 OSAKA ROOMS』の編集者です。各ビートの画面文字を作ります。\n"
+        f"■ 特集：{feat.get('label','')}（トーン：{feat.get('comment_tone','')}）\n\n"
+        "■ 必ず守る（景表法・雑誌トーン）：\n"
+        "・big_text＝そのビートに映る事実のみ（例『リビング10帖、角部屋。』）。★数字は映っているカットでだけ言う"
+        "（面積㎡・角部屋はLDK／帖数は各部屋）。キッチンで面積を言わない。\n"
+        "・accent_word＝big_text 中のキーワード1語だけ（色を変える対象。例『角部屋』）。big_textに必ず含まれる語。\n"
+        "・comment＝facts由来の編集コメント1行・現在形（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
+        "・行末の形を揃えない。眺望/方角/日当たり/静けさ/周辺環境は書かない（facts明示が無ければ）。\n"
+        "・★角部屋・最上階などの位置は、物件事実に明記があるときだけ言う。物件名・誇大語・最上級は使わない。\n"
+        + ("・comment のトーンは下の承認例2本に合わせる（現在形・照れは話し方に・物と時間で示す・説明しない）。\n"
+           f"{_STORY_FEWSHOT}\n" if _mote else "")
+        + "■ 表紙（cover）：\n"
+        f"・hook は必ず次の候補から1つ選ぶ（AIで新しく作らない）：{_json.dumps(hooks, ensure_ascii=False)}\n"
+        "・物件に合う独自案があれば hook_alt に入れる（採用は人が判断＝任意・無ければ空文字）。\n\n"
+        "■ ビート構成（この順・部屋名・主語focal・その部屋に映る設備facts）：\n"
+        f"{_json.dumps(_binfo, ensure_ascii=False)}\n\n"
+        f"■ 物件事実（この数字・属性だけ使う）：{facts_json}\n\n"
+        "出力はJSONのみ（説明なし）。形式：\n"
+        '{"cover":{"hook":"…","hook_alt":""},'
+        '"beats":[{"room":"…","big_text":"…","accent_word":"…","comment":"…"}]}'
+    )
+    warnings, cover_out, beats_out, raw = [], {}, [], ""
+    parsed = None
+    for _try in range(2):   # ★malformed JSON は1回リトライ（story_narration同型）
+        try:
+            resp = client.models.generate_content(model=model, contents=[instr])
+            raw = getattr(resp, "text", "") or ""
+            m = re.search(r"\{.*\}", raw, re.S)
+            parsed = _json.loads(m.group(0)) if m else None
+            if isinstance(parsed, dict):
+                break
+        except Exception as e:  # noqa: BLE001
+            if _try == 1:
+                warnings.append(f"文字面の生成に失敗（{type(e).__name__}）。")
+    parsed = parsed if isinstance(parsed, dict) else {}
+    _ban = _story_ban_words()
+
+    def _clean(text):
+        """fact_scrub＋ban除去。返り値 (clean, removed[], banned[])。"""
+        t, rm = fact_scrub(text or "", facts)
+        bn = [w for w in _ban if w and w in t]
+        for w in bn:
+            t = t.replace(w, "")
+        return t.strip(), rm, bn
+    _by = {}
+    for o in (parsed.get("beats") or []):
+        if isinstance(o, dict) and o.get("room"):
+            _by.setdefault(str(o["room"]).strip(), o)
+    for i, b in enumerate(beats):
+        room = b["room"]
+        o = _by.get(room) or ((parsed.get("beats") or [])[i]
+                              if i < len(parsed.get("beats") or []) else {}) or {}
+        big, _rm1, _bn1 = _clean(str(o.get("big_text", "")))
+        cmt, _rm2, _bn2 = _clean(str(o.get("comment", "")))
+        acc = str(o.get("accent_word", "")).strip()
+        if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
+            acc = ""
+        nr = sorted(set(needs_review(big) + needs_review(cmt)))
+        for r in set(_rm1 + _rm2):
+            warnings.append(f"{room}: 事実外属性『{r}』を除去。")
+        for w in set(_bn1 + _bn2):
+            warnings.append(f"{room}: 禁止語『{w}』を除去。")
+        # ★タグ：room_facts_map の facts_keys で facts に実在するもの・最大3・超過は over_tags（DATAへ）
+        m = room_facts_map(room)
+        _present = [k for k in m["facts_keys"] if (k in _equip_text or k in _feat_text)]
+        _seen, _tags = set(), []
+        for k in _present:
+            if not any(k in t or t in k for t in _tags):
+                _tags.append(k)
+        beats_out.append({
+            "room_label": room, "big_text": big, "accent_word": acc, "comment": cmt,
+            "narration_text": (big + ("　" + cmt if cmt else "")).strip(),
+            "tags": _tags[:3], "over_tags": _tags[3:], "needs_review": nr})
+    # cover：hook は候補から選択（外れたら hook_alt へ回し needs_review）／price系は facts由来
+    _c = parsed.get("cover") or {}
+    _hook = str(_c.get("hook", "")).strip()
+    _hook_alt = str(_c.get("hook_alt", "")).strip()
+    _cov_nr = []
+    if _hook and _hook not in hooks:          # ★候補外＝AI自由生成→hook_altへ回し人力確認
+        _hook_alt = _hook_alt or _hook
+        _hook = hooks[0] if hooks else ""
+        _cov_nr.append("hookが候補外→hook_altへ（人力確認）")
+        warnings.append("表紙hookが候補外のため候補既定に置換（独自案はhook_altに保持）。")
+    if not _hook:
+        _hook = hooks[0] if hooks else ""
+    if _hook_alt:
+        _cov_nr.append("hook_alt候補あり（採用は人力）")
+    cover_out = {**_mag_price_fields(facts), "hook": _hook, "hook_alt": _hook_alt, "needs_review": _cov_nr}
+    # data_rows：どのビートにも割り当てられなかった設備（差分方式・over_tags含む）＝DATAビート素材（描画はv79-6）
+    _used = set()
+    for bo in beats_out:
+        _used.update(bo["tags"])
+    _all_present = []
+    for b in beats:
+        for k in room_facts_map(b["room"])["facts_keys"]:
+            if (k in _equip_text or k in _feat_text) and k not in _all_present:
+                _all_present.append(k)
+    data_rows = [k for k in _all_present if k not in _used]
+    return {"beats": beats_out, "cover": cover_out, "data_rows": data_rows,
+            "warnings": sorted(set(warnings)), "prompt": instr, "raw": raw}
+
+
 def draft_narration(client, facts: dict, scene_labels, dur_sec=5,
                     model="gemini-2.5-flash") -> dict:
     """各シーン1文のナレ原稿を生成。★字数上限を各行にハード適用（超過は打ち切り＝尺に収まる保証）。

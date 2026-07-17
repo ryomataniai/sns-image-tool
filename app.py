@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4c-urlfix (★measure-first訂正: 前回の『path込みURL自前構築』は実測405で反証(推測でURL確定した誤り)。★本命=submitレスポンスのstatus_url/response_urlを永続化しpollはそれをそのままGET(URLを組まない=subscribe整合・仕様変更に強い)。fal_submit_clip→dict{request_id,status_url,response_url}・run_tour_jobもstate.jsonにURL保存・fal_poll_clip(…,status_url,response_url)。手動request_id回収だけroot形式(fal-ai/kling-video/requests/{id})フォールバック。エラーにURL/HTTPステータス。課金済み019f6eb5(あり側)は手動欄で回収。前=v79-4c-pollfix)")
+    st.caption("build: v79-5a-magtext (magtext=A-unit刷新の文字面生成・未配線。core.magtext(client,beats,facts,feature_id)=1コールで beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}]+cover:{area_line,price,price_sub,hook,hook_alt,needs_review}+data_rows(残余facts差分)。big_text/comment=facts由来(数字は映るカット=面積/角部屋はLDK)・room_facts_mapのfocal_ja/facts_keys使用・mote commentはfew_shot2本移植。★cover.hookはfeature.cover_hooks[]から選択(AI自由生成しない=型承認面積固定)・候補外はhook_alt+needs_review。後処理=fact_scrub/ban/needs_review/タグ最大3+over_tags差分。malformed JSON 1回リトライ。モック16/16。実Gemini品質はv79-5b実機。前=v79-4c-urlfix)")
 
 
 def _render_video_env_diagnostics():
@@ -3239,4 +3239,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4c-urlfix (★measure-first訂正: 前回の『path込みURL自前構築』は実測405で反証(推測でURL確定した誤り)。★本命=submitレスポンスのstatus_url/response_urlを永続化しpollはそれをそのままGET(URLを組まない=subscribe整合・仕様変更に強い)。fal_submit_clip→dict{request_id,status_url,response_url}・run_tour_jobもstate.jsonにURL保存・fal_poll_clip(…,status_url,response_url)。手動request_id回収だけroot形式(fal-ai/kling-video/requests/{id})フォールバック。エラーにURL/HTTPステータス。課金済み019f6eb5(あり側)は手動欄で回収。前=v79-4c-pollfix)")
+    st.caption("build: v79-5a-magtext (magtext=A-unit刷新の文字面生成・未配線。core.magtext(client,beats,facts,feature_id)=1コールで beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}]+cover:{area_line,price,price_sub,hook,hook_alt,needs_review}+data_rows(残余facts差分)。big_text/comment=facts由来(数字は映るカット=面積/角部屋はLDK)・room_facts_mapのfocal_ja/facts_keys使用・mote commentはfew_shot2本移植。★cover.hookはfeature.cover_hooks[]から選択(AI自由生成しない=型承認面積固定)・候補外はhook_alt+needs_review。後処理=fact_scrub/ban/needs_review/タグ最大3+over_tags差分。malformed JSON 1回リトライ。モック16/16。実Gemini品質はv79-5b実機。前=v79-4c-urlfix)")
