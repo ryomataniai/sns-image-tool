@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: story-b2-v78 (テキスト一本化を配線: ナレを字幕へ。③字数比の1行ずつ切替(core.subtitle_events=行の字数比でビート尺を按分・②等分割1213msより118ms・with-timestamps不要=DのフォールバックにもなるB作り込みゼロ)。rtv._burn_subtitles(動画レベルで時刻焼き・clean下部)。unified時はメイン/情感を焼かない・note(景表法)保持・表紙は字幕なし。★音声側=TTS直前にnormalize_reading(w除去/LDK→エルディーケー・字幕は生text=w残す=一本化)。丸め…発火で⚠️。前=story-b1-v78:判定器)")
+    st.caption("build: v79-1-features-ng (v79動く雑誌の土台=core.FEATURES 3特集(mote_heya=GOLD/totonoeru=ROSE/hobby=SAGE・label/accent RGB/staging_prompt/cover_hooks/comment_tone・data駆動・CONCEPT_PRESETSと併存)＋factguard NG拡張。★v79-0実測で巻き添えゼロの20語だけ_SNS_BAN_EXTRAに部分一致追加(完ぺき/万全/日本初/抜群/厳選/最高級/特級/掘出/土地値/投売り/特安/バーゲン/安値/完売/最強/圧倒的/どこよりも等)・『完全』は完全分離に巻き添え→_NEEDS_REVIEW・『極』は積極的等を巻き込むため語自体入れない。needs_review()=止めず人力確認フラグ。既存48ban不変。未配線=v79-2でUI。前=story-b2-v78)")
 
 
 def _render_video_env_diagnostics():
@@ -3105,4 +3105,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: story-b2-v78 (テキスト一本化を配線: ナレを字幕へ。③字数比の1行ずつ切替(core.subtitle_events=行の字数比でビート尺を按分・②等分割1213msより118ms・with-timestamps不要=DのフォールバックにもなるB作り込みゼロ)。rtv._burn_subtitles(動画レベルで時刻焼き・clean下部)。unified時はメイン/情感を焼かない・note(景表法)保持・表紙は字幕なし。★音声側=TTS直前にnormalize_reading(w除去/LDK→エルディーケー・字幕は生text=w残す=一本化)。丸め…発火で⚠️。前=story-b1-v78:判定器)")
+    st.caption("build: v79-1-features-ng (v79動く雑誌の土台=core.FEATURES 3特集(mote_heya=GOLD/totonoeru=ROSE/hobby=SAGE・label/accent RGB/staging_prompt/cover_hooks/comment_tone・data駆動・CONCEPT_PRESETSと併存)＋factguard NG拡張。★v79-0実測で巻き添えゼロの20語だけ_SNS_BAN_EXTRAに部分一致追加(完ぺき/万全/日本初/抜群/厳選/最高級/特級/掘出/土地値/投売り/特安/バーゲン/安値/完売/最強/圧倒的/どこよりも等)・『完全』は完全分離に巻き添え→_NEEDS_REVIEW・『極』は積極的等を巻き込むため語自体入れない。needs_review()=止めず人力確認フラグ。既存48ban不変。未配線=v79-2でUI。前=story-b2-v78)")
