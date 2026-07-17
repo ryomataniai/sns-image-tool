@@ -2392,7 +2392,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
        cover:{area_line,price,price_sub,hook,hook_alt,needs_review}, data_rows:[str], warnings:[str], prompt, raw}
     ★big_text/comment=facts由来（数字は映るカットで＝面積/角部屋はLDK・帖数は各室）。room_facts_map の focal_ja/facts_keys を使う。
     ★cover.hook は feature.cover_hooks[] から選択（AI自由生成しない＝型承認面積固定）・独自案は hook_alt＋needs_review。
-    ★few_shot 2本＋抽出規則は mote_heya の comment 規則として使う（削除しない）。後処理: fact_scrub/ban/needs_review/タグ最大3差分。"""
+    ★few_shot 2本＋抽出規則は mote_heya の comment 規則として使う（削除しない）。後処理: fact_scrub/ban/needs_review/タグ最大3差分。
+    ★narr-fix-a：narration_text = comment のみ（big_textは読まない＝特大文字は視聴者が読む・声はコメントを添えるだけ）。comment空＝ナレ無。"""
     import json as _json
     beats = [b for b in (beats or []) if b.get("room")]
     if not beats or client is None:
@@ -2484,7 +2485,9 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
                 _tags.append(k)
         beats_out.append({
             "room_label": room, "big_text": big, "accent_word": acc, "comment": cmt,
-            "narration_text": (big + ("　" + cmt if cmt else "")).strip(),
+            # ★narr-fix-a：ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）。
+            #   発話量が半減し音声被りの主因が消える。comment空＝narration_text空＝そのビートはナレ無（無音＋BGM）。
+            "narration_text": cmt,
             "tags": _tags[:3], "over_tags": _tags[3:], "needs_review": nr})
     # cover：hook は候補から選択（外れたら hook_alt へ回し needs_review）／price系は facts由来
     _c = parsed.get("cover") or {}
