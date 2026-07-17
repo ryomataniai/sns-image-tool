@@ -2622,6 +2622,24 @@ _READ_TABLE = {
     # ── 記号 ──
     "＋": "、プラス", "+": "、プラス",
 }
+# ── ★narr-fix-c：ふりがな辞書（誤読補正）を外部JSONから読み込みマージ（データ駆動＝コード変更なしで追記可能）──
+#   reading_dict.json = {表記: 読み}。ElevenLabsの誤読を1行足すだけで直せる。無い/壊れ→空（既存表で継続・止めない）。
+#   __で始まるキーは注記としてスキップ。最長一致の枠組み（_READ_RE）は下で全キーから再構築＝JSON語も守られる。
+def _load_reading_dict() -> dict:
+    """reading_dict.json（core.pyと同ディレクトリ）から {表記:読み} を読む。失敗時は空dict（フェイルセーフ）。"""
+    import json as _json
+    import os as _os
+    p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "reading_dict.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            d = _json.load(f)
+        return {str(k): str(v) for k, v in d.items()
+                if k and v and not str(k).startswith("__")}
+    except Exception:  # noqa: BLE001  辞書が無い/壊れても読み正規化自体は止めない
+        return {}
+
+
+_READ_TABLE.update(_load_reading_dict())   # ★外部ふりがな辞書を既存表にマージ（同キーはJSON優先＝上書きで修正可能）
 # 長い順に並べた単一正規表現＝各位置で長い候補を先に試す＝最長一致。
 _READ_RE = re.compile("|".join(re.escape(k) for k in
                                 sorted(_READ_TABLE.keys(), key=len, reverse=True)))
