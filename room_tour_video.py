@@ -1613,9 +1613,11 @@ def _fal_args(image_url, prompt, duration, model_key, negative_prompt, cfg_scale
 
 
 def fal_submit_clip(image_bytes, prompt, duration=5, model_key="kling2.6_pro",
-                    negative_prompt="", cfg_scale=None) -> str:
-    """1シーンを fal queue へ submit し request_id を返す（結果は待たない）。要 FAL_KEY。
-    submit 直後に呼び出し側が request_id を state.json へ書けば、以後死んでも回収できる。"""
+                    negative_prompt="", cfg_scale=None) -> dict:
+    """1シーンを fal queue へ submit。★fal が返す request_id / status_url / response_url を dict で返す。要 FAL_KEY。
+    ★status/result は この status_url/response_url を保存してそのままGETする（URLを推測で組まない＝subscribeと同理屈・
+    仕様変更にも強い。※過去に path込み/path欠落を推測で組んで404/405を踏んだ＝measure-firstをURLにも適用）。
+    ★後方互換: 呼び出し側は返り値["request_id"] を使う（旧は文字列を返していた）。"""
     import fal_client
     if not os.environ.get("FAL_KEY"):
         raise RuntimeError("FAL_KEY が未設定です。")
@@ -1627,7 +1629,8 @@ def fal_submit_clip(image_bytes, prompt, duration=5, model_key="kling2.6_pro",
         endpoint, args = _fal_args(image_url, prompt, duration, model_key,
                                    negative_prompt, cfg_scale)
         handle = fal_client.submit(endpoint, arguments=args)
-        return handle.request_id
+        return {"request_id": handle.request_id, "status_url": handle.status_url,
+                "response_url": handle.response_url}
     finally:
         try:
             os.unlink(img_path)
@@ -1635,33 +1638,32 @@ def fal_submit_clip(image_bytes, prompt, duration=5, model_key="kling2.6_pro",
             pass
 
 
-def _fal_status_url(model_key, request_id):
-    """★submit時に fal が返す status_url 相当（path込み）を自前構築。返り値 (status_url, response_url, base)。
-    ★fal_client.status/result（get_handle→from_request_id）は endpoint の path（例 v2.6/pro/image-to-video）を
-    落として base app だけで組むため queue が 404/HTTPError になる。subscribe は fal返却URLを使うので動く＝この差分。"""
+def _fal_root_status_url(model_key, request_id):
+    """★手動 request_id 回収のフォールバック用 root形式URL（fal-ai/kling-video/requests/{id}・サブパスなし）。
+    ★本命は submit返却の status_url を保存してそのまま使う（fal_poll_clip の status_url引数）。これは保存が無い時だけ。"""
     from fal_client.client import AppId, QUEUE_URL_FORMAT
     endpoint = FAL_MODELS.get(model_key, FAL_MODELS["kling2.6_pro"])["endpoint"]
     app = AppId.from_endpoint_id(endpoint)
     prefix = f"{app.namespace}/" if app.namespace else ""
-    path = f"{app.path}/" if getattr(app, "path", "") else ""   # ★from_request_id が落とす path をここで含める
-    base = f"{QUEUE_URL_FORMAT}{prefix}{app.owner}/{app.alias}/{path}requests/{request_id}"
-    return base + "/status", base, base
+    base = f"{QUEUE_URL_FORMAT}{prefix}{app.owner}/{app.alias}/requests/{request_id}"
+    return base + "/status", base
 
 
-def fal_poll_clip(model_key, request_id, out_path) -> str:
-    """submit済み request_id の状態を確認。完了なら結果動画を out_path へストリーミングDLして
-    'done' を返す。未完了なら 'pending'。失敗（またはfal側で見つからない）なら例外（URL/HTTP status付き）。要 FAL_KEY。
-    ★status/result は fal_client.status（path欠落）でなく fal返却相当の path込みURLで handle を自前構築（subscribe整合）。"""
+def fal_poll_clip(model_key, request_id, out_path, status_url=None, response_url=None) -> str:
+    """submit済みの状態確認→完了なら out_path へDLし 'done'／未完 'pending'／失敗は例外（URL/HTTP status付き）。要 FAL_KEY。
+    ★status_url/response_url を渡せば それをそのままGET（=submitの返却URL・推測しない・subscribe整合・本命）。
+    無ければ root形式で組む（手動 request_id 回収のフォールバックのみ）。"""
     import fal_client
-    _status_url, _response_url, _base = _fal_status_url(model_key, request_id)
+    if not status_url:                       # 保存URLが無い＝手動回収フォールバック（root形式）
+        status_url, response_url = _fal_root_status_url(model_key, request_id)
     handle = fal_client.SyncRequestHandle(
-        request_id=request_id, response_url=_response_url, status_url=_status_url,
-        cancel_url=_base + "/cancel", client=fal_client.sync_client._client)
+        request_id=request_id, response_url=response_url, status_url=status_url,
+        cancel_url=(response_url or status_url) + "/cancel", client=fal_client.sync_client._client)
     try:
         status = handle.status(with_logs=False)
     except Exception as e:  # noqa: BLE001  ★URL/HTTPステータスを載せて1往復で切り分け可能に（鍵は含まない）
         _sc = getattr(getattr(e, "response", None), "status_code", None)
-        raise RuntimeError(f"fal status失敗 HTTP{_sc} url={_status_url} ({type(e).__name__})") from e
+        raise RuntimeError(f"fal status失敗 HTTP{_sc} url={status_url} ({type(e).__name__})") from e
     if not isinstance(status, fal_client.Completed):
         return "pending"
     result = handle.get()
@@ -1795,9 +1797,11 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             # ★v79-4：focal主語指向のKlingプロンプト（sceneのfocal/motion＝room_facts_map由来）。無ければ既定focal/normal。
             prompt = build_kling_prompt(rt, sc.get("focal"), sc.get("motion", "normal"))
             try:
-                rid = fal_submit_clip(img_bytes, prompt, _gen_dur, glob["model_key"],
-                                      glob.get("negative_prompt", ""), glob.get("cfg_scale"))
-                sc["request_id"] = rid
+                _sub = fal_submit_clip(img_bytes, prompt, _gen_dur, glob["model_key"],
+                                       glob.get("negative_prompt", ""), glob.get("cfg_scale"))
+                sc["request_id"] = _sub["request_id"]
+                sc["status_url"] = _sub["status_url"]     # ★fal返却URLを永続化＝pollは推測せずこれをGET
+                sc["response_url"] = _sub["response_url"]
                 sc["status"] = "submitted"
                 sc["error"] = ""
             except Exception as e:  # noqa: BLE001  1本失敗は隔離（全体を殺さない）＝logger/state/UIへ
@@ -1810,7 +1814,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     while any(sc.get("status") == "submitted" for sc in scenes):
         for sc in [s for s in scenes if s.get("status") == "submitted"]:
             try:
-                if fal_poll_clip(glob["model_key"], sc["request_id"], _jp(sc["raw"])) == "done":
+                if fal_poll_clip(glob["model_key"], sc["request_id"], _jp(sc["raw"]),
+                                 sc.get("status_url"), sc.get("response_url")) == "done":
                     _make_seg(sc)
                     sc["status"] = "done"
                     _save_job_state(job_dir, state)
