@@ -368,8 +368,10 @@ ROOM_PROMPTS = {
 
 # ★v79-4 焦点(focal)主語指向のKlingプロンプト。大原則＝モーションは必ず『そのビートの文字の主語focal』に向かう
 #   （無目的な動き禁止・v11実機で確定）。room_facts_map の focal を注入。編集系(パン/ドリフト)は棄却＝主軸Kling。
+#   ★v79-4c：旧negativeの構造保持資産を復元（窓の増減・階数/建築変化はKlingの定番破綻）。
 _V79_NEGATIVE = ("no people, no camera shake, no warping walls, no morphing furniture, "
-                 "no changing layout, no text, no flickering")
+                 "no changing layout, no extra or missing windows, no changing architecture, "
+                 "no bending structure, no text, no flickering")
 
 _V79_KLING_ROOM = {   # 部屋別カメラワーク（依頼文§4.5）。focal は共通の『Ending settled on {focal}』で一本化（重複回避）
     "entrance": "camera slowly dollies forward through the entrance, as if walking in",
@@ -380,7 +382,10 @@ _V79_KLING_ROOM = {   # 部屋別カメラワーク（依頼文§4.5）。focal 
     "washroom": "very slight push-in with minimal movement",
     "toilet":   "very slight push-in with minimal movement",
     "balcony":  "camera slowly pushes toward the balcony opening",
-    "exterior": "camera slowly dollies forward toward the building facade, revealing depth and parallax",
+    # ★v79-4c：外観は構造保持を本文にも明記（旧・外観プロンプトの資産を残す）
+    "exterior": ("camera slowly dollies forward toward the building facade, revealing depth and parallax; "
+                 "keep the architecture, walls, windows and number of floors exactly as-is, "
+                 "do not change, add or remove any structural detail"),
     "generic":  "slow smooth push-in across the room",
 }
 _V79_MOTION_AMT = {"minimal": "very slight, barely-there", "normal": "slow, smooth",
@@ -396,6 +401,7 @@ def build_kling_prompt(video_type, focal="the room", motion="normal"):
     amt = _V79_MOTION_AMT.get(motion, _V79_MOTION_AMT["normal"])
     return (f"Real estate room tour. {amt.capitalize()} cinematic camera movement: {room}. "
             f"Ending settled on {focal}. Furniture and architecture stay completely still. "
+            "Lighting stays constant. "   # ★v79-4c：staging照明(モテの夜間接照明等)が動画化で変わると世界観が壊れる
             "No people. Photorealistic, stable camera, no morphing, no warping.")
 
 

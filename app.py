@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4b-klingwire (Klingプロンプトを配線: run_tour_job/build_tourのROOM_PROMPTS.get→build_kling_prompt(focal主語指向)・scene focal/motion=room_facts_map由来(狭室minimal)・negative→_V79_NEGATIVE。build_tourにfocals/motions引数追加。still経由で回帰なし完走。全9部屋の旧→新プロンプト差分一覧をCowork v79-4_frame検証/に保存(E2E前に谷合さん目視)。★あり/なし実測はv79-4c(fal残高後)。前=v79-4a-klingprompt)")
+    st.caption("build: v79-4c-promptfix (v79-4cの実測前に旧プロンプトの安全資産を復元: ①_V79_NEGATIVEに no extra or missing windows/no changing architecture/no bending structure 追加(窓増減・階数変化のKling定番破綻を抑止) ②build_kling_prompt共通に Lighting stays constant 追加(staging照明=モテ夜間接照明等が動画化で変わり世界観が壊れるのを防ぐ) ③外観本文に構造保持(keep architecture/windows/floors as-is・do not change/add/remove structural detail)を残置。差分一覧Cowork更新。前=v79-4b-klingwire)")
 
 
 def _render_video_env_diagnostics():
@@ -3139,4 +3139,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4b-klingwire (Klingプロンプトを配線: run_tour_job/build_tourのROOM_PROMPTS.get→build_kling_prompt(focal主語指向)・scene focal/motion=room_facts_map由来(狭室minimal)・negative→_V79_NEGATIVE。build_tourにfocals/motions引数追加。still経由で回帰なし完走。全9部屋の旧→新プロンプト差分一覧をCowork v79-4_frame検証/に保存(E2E前に谷合さん目視)。★あり/なし実測はv79-4c(fal残高後)。前=v79-4a-klingprompt)")
+    st.caption("build: v79-4c-promptfix (v79-4cの実測前に旧プロンプトの安全資産を復元: ①_V79_NEGATIVEに no extra or missing windows/no changing architecture/no bending structure 追加(窓増減・階数変化のKling定番破綻を抑止) ②build_kling_prompt共通に Lighting stays constant 追加(staging照明=モテ夜間接照明等が動画化で変わり世界観が壊れるのを防ぐ) ③外観本文に構造保持(keep architecture/windows/floors as-is・do not change/add/remove structural detail)を残置。差分一覧Cowork更新。前=v79-4b-klingwire)")
