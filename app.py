@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-2-layout (動く雑誌レイアウトビルダー・権威gen.py/ov.py/feat23.py座標に忠実・未配線。Bold明朝同梱(NotoSerifCJKjp-Bold/NotoSansCJKjp-Bold・need_stroke=False)。build_beat_overlay(ビート文字面透明PNG=部屋ラベルpill/big_text96px白+2行目accent色/comment/マストヘッド/情報バー)＋build_cover_v79(表紙 特集版=特集ラベル+2行コピー104px+price150accent / price_heroオプション=area96+price190+hook72)。frame検証済(明朝Boldウロコくっきり・accent連動GOLD/ROSE/SAGE・家賃管理費併記・AI注記時点注記)。前=v79-1-features-ng)")
+    st.caption("build: v79-3-cover (表紙1源2消費修正: autoカバー(_pl_auto_cover_bytes)と手動表紙特大を同一ビルダー_pl_build_cover_v79→build_cover_v79に統一。simple/magazine分岐撤去。特集セレクタpl_feature(既定mote_heya)＋表紙レイアウトpl_cover_layout(copy_hero/price_hero・★新キーで旧pl_cover_styleのoptions差替え地雷を回避)。fields1源=_pl_cover_v79_fields(家賃管理費併記rentguard・角部屋タグ・時点注記・copyは特集cover_hooks[0]を読点分割の暫定)。タイムラインはA0 part2で算入済=不変(二重算入回避)。ピクセル同一(同一引数→同一bytes)・特集切替でaccent追従(GOLD/ROSE/SAGE)検証済。前=v79-2-layout)")
 
 
 def _render_video_env_diagnostics():
@@ -2151,25 +2151,79 @@ def _pl_cover_default_src(adopted):
     return adopted[0]["id"] if adopted else None
 
 
-def _pl_auto_cover_bytes(adopted):
-    """表紙を既定素材＋facts で自動生成（simpleカバー・ffmpegのみ課金なし）。v70b 4-1。
-    素材＝既定(LDK/居室/先頭)、タイトル＝設定済み or 間取り、数値はマイソク事実のみ。作れなければ None。"""
+def _pl_v79_area_line(facts):
+    """★v79 表紙エリア行（暫定・正式文面はv79-5 magtext）。access最短徒歩から『{駅}、駅{n}分。』。無ければ間取り・面積。"""
+    import re
+    band = _pl_cover_access_band(facts.get("access"))
+    m_st = re.search(r"([^\s　]+?)駅", band or "")
+    m_wk = re.search(r"徒歩\s*(\d+)\s*分", band or "")
+    if m_st and m_wk:
+        return f"{m_st.group(1)}、駅{m_wk.group(1)}分。"
+    return _pl_cover_madori_area(facts) or "OSAKA ROOMS"
+
+
+def _pl_cover_v79_fields(facts, feature_id, layout):
+    """★v79-3：build_cover_v79 に渡す fields を facts＋特集から組む1源（auto/手動が共有＝ピクセル同一の担保）。
+    ★暫定：copy は feature.cover_hooks[0]（読点『、』優先で2行分割）・area_lineは駅アクセス由来（正式はv79-5 magtext）。
+    ★家賃には管理費を必ず併記（rentguard資産）。返り値=build_cover_v79 の kwargs dict。"""
+    from datetime import datetime, timezone, timedelta
+    feat = core.feature_of(feature_id) or {}
+    rent = (facts.get("rent", "") or "").strip()
+    fee = (facts.get("fee", "") or "").strip()
+    _madori_raw = facts.get("madori", "") or ""
+    madori = _madori_raw.split("[")[0].strip()
+    _tag = re.search(r"\[(.+?)\]", _madori_raw)   # madoriの[角部屋]等のタグを情報バーの1節へ
+    tag = _tag.group(1).strip() if _tag else ""
+    area = (facts.get("area", "") or "").strip()
+    _equip = facts.get("equipment")
+    equip_line = "／".join(_equip[:6]) if isinstance(_equip, list) else (str(_equip or "").strip())
+    _jst = datetime.now(timezone(timedelta(hours=9)))
+    note_line = f"※家具・小物はAI生成のイメージ　※{_jst.year}年{_jst.month}月時点の情報"
+    # 家賃管理費併記（数字形式の生値をそのまま・混入検知は呼出側 warning）
+    _rentfee = (f"賃料{rent}" + (f"＋管理費{fee}/月" if fee else "")) if rent else ""
+    spec_line = " ｜ ".join(x for x in (f"{madori} {area}".strip(), tag, _rentfee) if x.strip())
+    price = ("¥" + rent.replace("円", "").strip()) if rent else ""
+    hooks = feat.get("cover_hooks") or []
+    hook = hooks[0] if hooks else ""
+    area_line = _pl_v79_area_line(facts)
+    kw = {"price": price, "spec_line": spec_line, "equip_line": equip_line, "note_line": note_line}
+    if layout == "price_hero":
+        kw.update({"area_line": area_line, "hook": hook,
+                   "price_sub": (f"管理費 {fee}/月" if fee else "")})
+    else:                                    # copy_hero（標準）：hookを読点で2行分割
+        parts = [p for p in re.split(r"(?<=、)", hook) if p.strip()]   # 『、』の後ろで割る（読点は前行に残す）
+        copy1 = parts[0] if parts else hook
+        copy2 = "".join(parts[1:]) if len(parts) > 1 else ""
+        kw.update({"copy1": copy1, "copy2": copy2,
+                   "price_sub": (f"管理費 {fee}/月 ／ {area_line}" if fee else area_line)})
+    return kw
+
+
+def _pl_build_cover_v79(src_bytes, facts, feature_id, layout, aspect="9:16"):
+    """★v79-3 共有カバービルダー（auto も手動も これ1本）＝1源2消費。build_cover_v79 に一元委譲。"""
     import room_tour_video as rtv
+    kw = _pl_cover_v79_fields(facts, feature_id, layout)
+    return rtv.build_cover_v79(src_bytes, feature_id=feature_id, layout=layout, aspect=aspect, **kw)
+
+
+def _pl_cover_layout():
+    """★v79-3 表紙レイアウト（新キー pl_cover_layout＝旧 pl_cover_style の options差替え地雷を回避）。
+    既定 copy_hero。旧値/未知値は copy_hero へサニタイズ。"""
+    v = st.session_state.get("pl_cover_layout")
+    return v if v in ("copy_hero", "price_hero") else "copy_hero"
+
+
+def _pl_auto_cover_bytes(adopted):
+    """★v79-3：表紙を既定素材＋facts＋選択特集で自動生成（build_cover_v79・ffmpegのみ課金なし）。
+    ★手動『表紙特大』と同一ビルダー・同一fields＝1源2消費（ピクセル同一）。作れなければ None。"""
+    import re  # noqa: F401
     _sid = _pl_cover_default_src(adopted)
     _src = next((it for it in adopted if it["id"] == _sid), None)
     if not _src or not _src.get("gen_bytes"):
         return None
     _f = _pl_effective_facts()
-    _title = (st.session_state.get("pl_cover_title") or "").strip() \
-        or (_f.get("madori", "") or "").split("[")[0].strip()
-    _fields = {
-        "title": _title, "subtitle": st.session_state.get("pl_cover_sub", ""),
-        "highlights": ((st.session_state.get("pl_prcopy") or {}).get("highlights") or [])[:3],
-        "access_band": _pl_cover_access_band(_f.get("access")),
-        "madori_area": _pl_cover_madori_area(_f),
-        "note": "※家具・小物はAI生成のイメージ",
-    }
-    return rtv.build_cover(_src["gen_bytes"], _fields, aspect="9:16")
+    _fid = st.session_state.get("pl_feature", "mote_heya")
+    return _pl_build_cover_v79(_src["gen_bytes"], _f, _fid, _pl_cover_layout(), aspect="9:16")
 
 
 def _pl_v78_timestamp_probe(rtv):
@@ -2373,11 +2427,17 @@ def _pl_stage_video():
     # ── 冒頭に表紙を挿入（narration-v68 / v70b 4-1：毎回自動生成＋既定ON）──
     # 谷合さんが「表紙が追加されない」を繰返し踏んだため、表紙を自動生成しトグル既定ONに。
     # 表紙生成は ffmpeg のみ・課金なし＝毎回作ってもコスト影響なし。失敗しても止めない（付加価値）。
-    if "pl_cover_png" not in st.session_state and adopted:
+    # ★v79-3：特集/レイアウトが変わったら auto カバーを再生成（accent/ラベル追従）。手動生成後は追従停止（sig=None）。
+    _feat_sig = (st.session_state.get("pl_feature", "mote_heya"), _pl_cover_layout())
+    _need_auto = ("pl_cover_png" not in st.session_state) or (
+        st.session_state.get("_pl_cover_auto_sig") is not None
+        and st.session_state.get("_pl_cover_auto_sig") != _feat_sig)
+    if _need_auto and adopted:
         try:
             _acov = _pl_auto_cover_bytes(adopted)
             if _acov:
                 st.session_state["pl_cover_png"] = {"aspect": "9:16", "bytes": _acov}
+                st.session_state["_pl_cover_auto_sig"] = _feat_sig   # ★autoの追従判定用（手動でNoneにする）
         except Exception as e:  # noqa: BLE001  自動生成失敗は止めない（手動ボタンで作れる）
             st.session_state["_pl_cover_auto_err"] = f"{type(e).__name__}"
     _cov_ready = bool(st.session_state.get("pl_cover_png"))
@@ -2577,13 +2637,15 @@ def _pl_stage_video():
         st.caption("素材＋事実から表紙1枚を生成。数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
                    "ffmpegのみ・fal課金なし。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
         _cfacts = st.session_state.get("pl_facts", {})
-        _pl_follow_concept_cover_style()   # ★radio生成前にコンセプト→表紙スタイルを sticky 追従（v78前提3）
-        _cstyle = st.radio("スタイル", ["simple", "magazine"], horizontal=True, key="pl_cover_style",
-                           format_func=lambda s: {"simple": "シンプル（現行）",
-                                                  "magazine": "雑誌型（マガジン）"}.get(s, s))
-        # ★人が手で変更中は一行明示（追従停止=正常 を 追従漏れ=バグ と誤認させない・keynorm-v76と同型）
-        if st.session_state.get("pl_cover_style") != st.session_state.get("pl_cover_style_auto"):
-            st.caption("✋ 表紙スタイルを手動で選択中（コンセプトに追従しません）")
+        # ★v79-3 特集セレクタ（1源＝auto/手動/staging が参照。既定 mote_heya＝「迷ったらモテ部屋」）
+        st.session_state.setdefault("pl_feature", "mote_heya")
+        _fid = st.selectbox("特集（テイスト）", list(core.FEATURES.keys()), key="pl_feature",
+                            format_func=lambda k: core.FEATURES[k]["label"])
+        # ★表紙レイアウト（新キー pl_cover_layout＝旧 pl_cover_style の options差替え地雷を回避）。既定 copy_hero。
+        _clayout = st.radio("表紙レイアウト", ["copy_hero", "price_hero"], horizontal=True,
+                            key="pl_cover_layout",
+                            format_func=lambda s: {"copy_hero": "コピー主役（標準）",
+                                                   "price_hero": "価格主役（数字特大）"}.get(s, s))
         # 素材画像：既定=最初のLDK→居室→先頭（生成前seed＋stale idガード）
         _copts = [it["id"] for it in adopted]
         if st.session_state.get("pl_cover_src") not in _copts:
@@ -2596,61 +2658,9 @@ def _pl_stage_video():
         cs2.radio("比率", ["9:16", "4:5"], key="pl_cover_aspect", horizontal=True,
                   format_func=lambda a: {"9:16": "9:16（カバー）",
                                          "4:5": "4:5（1枚目）"}.get(a, a))
-        _chl = ((st.session_state.get("pl_prcopy") or {}).get("highlights") or [])[:3]
-        _cband = _pl_cover_access_band(_cfacts.get("access"))
-        _cma = _pl_cover_madori_area(_cfacts)
-
-        if _cstyle == "simple":
-            # タイトル/サブ：PRコピーで選んだ値を既定に（生成前seed・未設定時のみ＝地雷1回避）
-            if "pl_cover_title" not in st.session_state:
-                st.session_state["pl_cover_title"] = st.session_state.get("pl_title_edit", "")
-            if "pl_cover_sub" not in st.session_state:
-                st.session_state["pl_cover_sub"] = st.session_state.get("pl_sub_edit", "")
-            cc1, cc2 = st.columns(2)
-            cc1.text_input("タイトル（特大）", key="pl_cover_title",
-                           placeholder="PRコピー下書きで選ぶと自動で入ります")
-            cc2.text_input("サブタイトル（小）", key="pl_cover_sub")
-            if _chl:
-                st.caption("◎ " + "　".join(_chl))
-            st.caption(f"駅徒歩：{_cband or '（省略）'}　／　間取り・面積：{_cma or '（取れず）'}")
-            _ctitle = st.session_state.get("pl_cover_title", "").strip()
-            _csub = st.session_state.get("pl_cover_sub", "").strip()
-            _cbad = [w for w in core._PR_BANNED if w in (_ctitle + " " + _csub)]
-            if _cbad:
-                st.warning(f"⚠️ 誇大・断定の可能性がある語：{'、'.join(_cbad)}（景表法・掲載前に見直しを）")
-        else:
-            # 雑誌型：①誌名（Secrets既定OSAKA ROOMS）②通番 ③コピー ④AIで一言
-            st.session_state.setdefault("pl_cover_masthead",
-                                        get_secret("COVER_MASTHEAD", "OSAKA ROOMS"))
-            st.session_state.setdefault("pl_cover_issue", "01")
-            # ★表紙コピー既定もコンセプト追従（mote=帰りたくない。角部屋。／normal=空＝人が書く/AIで一言）
-            st.session_state.setdefault(
-                "pl_cover_copy",
-                core.concept_cover_default(st.session_state.get("pl_concept", "normal")))
-            mc1, mc2 = st.columns([3, 1])
-            mc1.text_input("誌名（マスト）", key="pl_cover_masthead",
-                           help="IGアカウント名と表記統一。Secretsの COVER_MASTHEAD が既定。")
-            mc2.text_input("通番", key="pl_cover_issue", placeholder="01")
-            st.text_input("コピー（キャッチ・12字目安）", key="pl_cover_copy")
-            mb1, _mb2 = st.columns([1, 2])
-            # ★on_click コールバック＝widget生成前に代入（body-flowでの生成後代入は地雷①でクラッシュ）
-            mb1.button("✨ AIで一言（12字）", key="pl_cover_ai", on_click=_pl_cover_ai_cb)
-            _cai_msg = st.session_state.get("_pl_cover_ai_msg", "")
-            if _cai_msg:
-                st.warning(_cai_msg)
-            _mcopy = st.session_state.get("pl_cover_copy", "").strip()
-            _mclen = len("".join(_mcopy.split()))
-            if _mclen > 12:
-                st.warning(f"コピーが{_mclen}字（12字目安を超過）。表紙内で自動縮小しますが短い方が映えます。")
-            _mbad = [w for w in (list(core._PR_BANNED) + core._SNS_BAN_EXTRA + ["モテ"])
-                     if w and w in _mcopy]
-            _mname = (_cfacts.get("name") or "").strip()
-            if _mbad or (_mname and _mname in _mcopy):
-                st.warning("⚠️ コピーにban語/物件名の可能性："
-                           + "、".join(_mbad + ([_mname] if _mname and _mname in _mcopy else []))
-                           + "（生成時に自動除去＋景表法・型承認の確認を）")
-            st.caption(f"サブライン（自動）：{_pl_cover_subline(_cfacts, st.session_state.get('pl_cover_issue','01'))}"
-                       f"　／　スペック：{_cma or '（取れず）'}・管理費を必ず併記")
+        _hook0 = (core.FEATURES.get(_fid, {}).get("cover_hooks") or [""])[0]
+        st.caption(f"コピー（暫定・{core.FEATURES[_fid]['label']}）：{_hook0}"
+                   "　※正式な文面生成は今後（magtext・v79-5）。家賃には管理費を必ず併記します。")
 
         if st.button("表紙を生成（ffmpegのみ・課金なし）", key="pl_cover_gen"):
             _csrc = next((it for it in adopted
@@ -2661,47 +2671,21 @@ def _pl_stage_video():
                 _casp = st.session_state.get("pl_cover_aspect", "9:16")
                 try:
                     with st.spinner("表紙を生成中…（ffmpeg/PIL）"):
-                        if _cstyle == "magazine":
-                            _mst, _mwk = core._sns_access_pick(_cfacts.get("access"))
-                            # ★賃料ガード（景表法）：数字以外(漢数字等)が混入したら描画を止め人に返す。
-                            #   正規化(漢数字→数値)はしない＝機械が金額を勝手に作らない。沈黙破損の防止。
-                            _bad = [lbl for lbl, v in (("賃料", _cfacts.get("rent", "")),
-                                                       ("管理費", _cfacts.get("fee", "")))
-                                    if not core.money_is_clean(v)]
-                            if _bad:
-                                raise ValueError(
-                                    f"{' / '.join(_bad)}に数字以外の文字が含まれます"
-                                    f"（抽出値『{_cfacts.get('rent','')} / {_cfacts.get('fee','')}』）。"
-                                    "金額が正しく表示できないため表紙生成を中止しました。取り込みの抽出値を"
-                                    "確認してください（自動での数値化はしません＝賃料は正確な額で出す必要があります）")
-                            # ★表紙コピーの事実外属性ガード（静的既定『…角部屋。』もfacts照合）。除去を可視化。
-                            _cin = st.session_state.get("pl_cover_copy", "")
-                            _cclean, _crm = core.fact_scrub(_cin, _cfacts)
-                            if _crm:
-                                st.warning(f"🛡️ 表紙コピーから事実外の属性『{'・'.join(_crm)}』を除去しました"
-                                           "（マイソクに明示なし・掲載前にコピーを見直してください）")
-                            _mfields = {
-                                "masthead": st.session_state.get("pl_cover_masthead", "OSAKA ROOMS"),
-                                "subline": _pl_cover_subline(_cfacts,
-                                                             st.session_state.get("pl_cover_issue", "01")),
-                                "copy": _pl_cover_clean_copy(st.session_state.get("pl_cover_copy", ""),
-                                                             _cfacts),
-                                "madori": _cfacts.get("madori", ""), "area_sqm": _cfacts.get("area", ""),
-                                "station": (_mst or "").replace("駅", ""), "walk": _mwk,
-                                "rent": _cfacts.get("rent", ""), "fee": _cfacts.get("fee", ""),
-                                "note": "※家具・小物はAI生成のイメージ",
-                            }
-                            _cpng = rtv.build_cover_magazine(_csrc["gen_bytes"], _mfields, aspect=_casp)
-                        else:
-                            _cfields = {
-                                "title": st.session_state.get("pl_cover_title", ""),
-                                "subtitle": st.session_state.get("pl_cover_sub", ""),
-                                "highlights": _chl, "access_band": _cband, "madori_area": _cma,
-                                "note": st.session_state.get("pl_v_note", "") or "※AI加工のイメージ",
-                            }
-                            _cpng = rtv.build_cover(_csrc["gen_bytes"], _cfields, aspect=_casp)
+                        # ★賃料ガード（rentguard・景表法）：数字以外(漢数字等)混入で描画を止め人に返す。
+                        #   自動での数値化はしない＝機械が金額を勝手に作らない（沈黙破損の防止）。
+                        _bad = [lbl for lbl, v in (("賃料", _cfacts.get("rent", "")),
+                                                   ("管理費", _cfacts.get("fee", "")))
+                                if v and not core.money_is_clean(v)]
+                        if _bad:
+                            raise ValueError(
+                                f"{' / '.join(_bad)}に数字以外の文字が含まれます"
+                                f"（抽出値『{_cfacts.get('rent','')} / {_cfacts.get('fee','')}』）。"
+                                "金額が正しく表示できないため表紙生成を中止しました（自動での数値化はしません）。")
+                        # ★v79-3：auto と同一の共有ビルダー（1源2消費＝ピクセル同一）。特集/レイアウトを渡す。
+                        _cpng = _pl_build_cover_v79(_csrc["gen_bytes"], _cfacts, _fid, _clayout, aspect=_casp)
                     # 生成結果は非ウィジェットキーへ（地雷1回避）。取り込み時に削除される物件固有キー
                     st.session_state["pl_cover_png"] = {"aspect": _casp, "bytes": _cpng}
+                    st.session_state["_pl_cover_auto_sig"] = None   # ★手動生成＝以後 auto で上書きしない
                 except Exception as e:  # noqa: BLE001
                     st.error(f"表紙の生成に失敗しました: {e}")
         _cov = st.session_state.get("pl_cover_png")
@@ -3105,4 +3089,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-2-layout (動く雑誌レイアウトビルダー・権威gen.py/ov.py/feat23.py座標に忠実・未配線。Bold明朝同梱(NotoSerifCJKjp-Bold/NotoSansCJKjp-Bold・need_stroke=False)。build_beat_overlay(ビート文字面透明PNG=部屋ラベルpill/big_text96px白+2行目accent色/comment/マストヘッド/情報バー)＋build_cover_v79(表紙 特集版=特集ラベル+2行コピー104px+price150accent / price_heroオプション=area96+price190+hook72)。frame検証済(明朝Boldウロコくっきり・accent連動GOLD/ROSE/SAGE・家賃管理費併記・AI注記時点注記)。前=v79-1-features-ng)")
+    st.caption("build: v79-3-cover (表紙1源2消費修正: autoカバー(_pl_auto_cover_bytes)と手動表紙特大を同一ビルダー_pl_build_cover_v79→build_cover_v79に統一。simple/magazine分岐撤去。特集セレクタpl_feature(既定mote_heya)＋表紙レイアウトpl_cover_layout(copy_hero/price_hero・★新キーで旧pl_cover_styleのoptions差替え地雷を回避)。fields1源=_pl_cover_v79_fields(家賃管理費併記rentguard・角部屋タグ・時点注記・copyは特集cover_hooks[0]を読点分割の暫定)。タイムラインはA0 part2で算入済=不変(二重算入回避)。ピクセル同一(同一引数→同一bytes)・特集切替でaccent追従(GOLD/ROSE/SAGE)検証済。前=v79-2-layout)")
