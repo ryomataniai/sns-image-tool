@@ -2385,6 +2385,58 @@ def _mag_price_fields(facts):
     return {"price": price, "price_sub": price_sub, "area_line": area_line}
 
 
+# ★否定文脈ガード（景表法）：設備語が「満車/厳禁/不可/なし」等と近接して現れる＝『無い/使えない』
+#   →タグ/big_text/commentから除外（偽の可用性を作らない）。強マーカー=近接8字／弱マーカー(なし系)=近接3字。
+#   ★『無』単体・『無料』は除外語に入れない（駐輪場無料をポジティブのまま残す）。
+_FACT_NEG_STRONG = ("満車", "空きなし", "空き無し", "空無し", "厳禁", "禁止", "利用不可",
+                    "使用不可", "利用できません", "使用できません", "ご遠慮", "不可",
+                    "×", "✕", "✗", "✖")
+_FACT_NEG_WEAK = ("なし", "無し", "ありません")   # ★近接必須（他設備の否定を誤爆しない・『無料』は含まない）
+
+
+def fact_negated(key: str, text: str) -> bool:
+    """key が text 中で否定文脈と近接して現れるか（景表法：偽の可用性を作らない）。
+    強マーカー(満車/厳禁/禁止/不可/×等)=key出現の直前4字～直後8字／弱マーカー(なし/無し/ありません)=直後3字のみ。
+    ★複数出現のいずれかが否定なら True（保守的＝一度でも『無い/使えない』記載があれば主張しない）。
+    ★『駐輪場無料』は否定にしない（無料は_FACT_NEG_*に無い）。key空/未出現→False。"""
+    key = str(key or "").strip()
+    text = str(text or "")
+    if not key or key not in text:
+        return False
+    start = 0
+    while True:
+        i = text.find(key, start)
+        if i < 0:
+            return False
+        end = i + len(key)
+        strong_win = text[max(0, i - 4): end + 8]         # 強マーカーは前後に広め
+        weak_win = text[end: end + 3]                     # 弱マーカーは直後のみ（誤爆防止）
+        if any(mk in strong_win for mk in _FACT_NEG_STRONG) or \
+           any(mk in weak_win for mk in _FACT_NEG_WEAK):
+            return True
+        start = end
+
+
+def _drop_neg_clauses(text: str, neg_words) -> tuple:
+    """text から、否定設備語(neg_words)を含む節（。/、/／/　区切り）を落とす。返り値 (clean, removed[])。
+    ★big_text/comment が否定設備を『ある』かのように書いた場合の防波堤（節単位・fact_scrub同型）。"""
+    if not text or not neg_words:
+        return text, []
+    import re as _re
+    parts = _re.split(r"([。、／　\n])", str(text))
+    kept, removed, i = [], [], 0
+    while i < len(parts):
+        seg = parts[i]
+        sep = parts[i + 1] if i + 1 < len(parts) else ""
+        hit = next((w for w in neg_words if w and w in seg), None)
+        if hit:
+            removed.append(hit)
+        else:
+            kept.append(seg + sep)
+        i += 2
+    return "".join(kept).strip("、。／　\n "), removed
+
+
 def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash") -> dict:
     """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
     beats=[{room, stock}]（部屋順・🔀後）。返り値:
@@ -2403,11 +2455,24 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
     _equip = facts.get("equipment")
     _equip_text = "／".join(_equip) if isinstance(_equip, list) else str(_equip or "")
     _feat_text = str(facts.get("features", "")) + " " + str(facts.get("full_text", ""))
-    # 各beat：room_facts_map の focal_ja と、facts に実在する facts_keys（この部屋に映る設備）
+    warnings = []                                      # ★否定ガード等の警告を早期から溜める
+    _src_neg = _equip_text + " " + _feat_text          # ★否定文脈照合用（full_text＝マイソク原文を含む）
+    # ★否定文脈ガード（景表法）：設備語が満車/厳禁/不可/なし等と近接＝『無い/使えない』→タグ・文面から除外。
+    #   候補語＝全room_facts_mapのfacts_keys ∪ equipment項目。除外語は magtext 全経路で使わない。
+    _amenities = set()
+    for _rm in ROOM_FACTS_MAP.values():
+        _amenities.update(_rm.get("facts_keys", []))
+    if isinstance(_equip, list):
+        _amenities.update(_equip)
+    _negated = sorted(w for w in _amenities if w and fact_negated(w, _src_neg))
+    for w in _negated:
+        warnings.append(f"『{w}』は満車/不可/なし等の否定記載があるため除外しました（景表法）。")
+    # 各beat：room_facts_map の focal_ja と、facts に実在し否定でない facts_keys（この部屋に映る設備）
     _binfo = []
     for b in beats:
         m = room_facts_map(b["room"])
-        present = [k for k in m["facts_keys"] if (k in _equip_text or k in _feat_text)]
+        present = [k for k in m["facts_keys"]
+                   if (k in _equip_text or k in _feat_text) and k not in _negated]
         _binfo.append({"room": b["room"], "focal_ja": m["focal_ja"], "facts_keys": present})
     facts_json = _json.dumps({k: v for k, v in (facts or {}).items()
                               if k in ("madori", "area", "rent", "fee", "access", "equipment",
@@ -2423,6 +2488,9 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         "・comment＝facts由来の編集コメント1行・現在形（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
         "・行末の形を揃えない。眺望/方角/日当たり/静けさ/周辺環境は書かない（facts明示が無ければ）。\n"
         "・★角部屋・最上階などの位置は、物件事実に明記があるときだけ言う。物件名・誇大語・最上級は使わない。\n"
+        + (f"・★次の設備・条件は『満車/不可/なし/厳禁』等の否定記載があるため、"
+           f"『ある』『使える』かのように書かない（景表法）：{_json.dumps(_negated, ensure_ascii=False)}\n"
+           if _negated else "")
         + ("・comment のトーンは下の承認例2本に合わせる（現在形・照れは話し方に・物と時間で示す・説明しない）。\n"
            f"{_STORY_FEWSHOT}\n" if _mote else "")
         + "■ 表紙（cover）：\n"
@@ -2435,7 +2503,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         '{"cover":{"hook":"…","hook_alt":""},'
         '"beats":[{"room":"…","big_text":"…","accent_word":"…","comment":"…"}]}'
     )
-    warnings, cover_out, beats_out, raw = [], {}, [], ""
+    cover_out, beats_out, raw = {}, [], ""   # ★warnings は上で初期化済み（否定ガード警告を保持）
     parsed = None
     for _try in range(2):   # ★malformed JSON は1回リトライ（story_narration同型）
         try:
@@ -2468,6 +2536,9 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
                               if i < len(parsed.get("beats") or []) else {}) or {}
         big, _rm1, _bn1 = _clean(str(o.get("big_text", "")))
         cmt, _rm2, _bn2 = _clean(str(o.get("comment", "")))
+        # ★否定文脈ガード：AIが否定設備を『ある』かのように書いた節を落とす（景表法・タグと同じ_negated基準）。
+        big, _ng1 = _drop_neg_clauses(big, _negated)
+        cmt, _ng2 = _drop_neg_clauses(cmt, _negated)
         acc = str(o.get("accent_word", "")).strip()
         if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
             acc = ""
@@ -2476,9 +2547,12 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
             warnings.append(f"{room}: 事実外属性『{r}』を除去。")
         for w in set(_bn1 + _bn2):
             warnings.append(f"{room}: 禁止語『{w}』を除去。")
-        # ★タグ：room_facts_map の facts_keys で facts に実在するもの・最大3・超過は over_tags（DATAへ）
+        for w in set(_ng1 + _ng2):
+            warnings.append(f"{room}: 否定記載の設備『{w}』を文面から除去（景表法）。")
+        # ★タグ：room_facts_map の facts_keys で facts に実在し否定でないもの・最大3・超過は over_tags（DATAへ）
         m = room_facts_map(room)
-        _present = [k for k in m["facts_keys"] if (k in _equip_text or k in _feat_text)]
+        _present = [k for k in m["facts_keys"]
+                    if (k in _equip_text or k in _feat_text) and k not in _negated]
         _seen, _tags = set(), []
         for k in _present:
             if not any(k in t or t in k for t in _tags):
