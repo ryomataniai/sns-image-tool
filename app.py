@@ -2230,6 +2230,12 @@ _PL_EQUIP_CATEGORIES = [
 ]
 
 
+def _strip_raw_dim(s):
+    """★v79-4b(バグ②)：『10x6』『10.5×6.0』等の生寸法トークン（整形前の帖寸法）を表示文字列から除去。
+    madori/area/tag のどのフィールドに紛れても情報バーに出さない（v79-3.1のmadori単体ガードの穴を塞ぐ）。"""
+    return re.sub(r"\s*\d+(?:\.\d+)?\s*[xX×✕]\s*\d+(?:\.\d+)?\s*", " ", str(s or "")).strip()
+
+
 def _pl_cover_equip_line(facts, max_items=4, max_w=1000, font_size=30):
     """★v79-3.1/v79-4：情報バーの設備行を『カテゴリ別優先（セキュリティ→水回り2件→通信→残り）で最大max_items
     →描画幅(max_w)超なら件数を減らす』で組む。★文字サイズは固定（雑誌の質感維持）＝縮小せず件数で収める。"""
@@ -2280,6 +2286,8 @@ def _pl_cover_v79_fields(facts, feature_id, layout):
     _tag = re.search(r"\[(.+?)\]", _madori_raw)   # madoriの[角部屋]等のタグを情報バーの1節へ
     tag = _tag.group(1).strip() if _tag else ""
     area = (facts.get("area", "") or "").strip()
+    # ★v79-4b(バグ②)：どのフィールドに紛れても生寸法『10x6』を情報バーに出さない（『1LDK 10x6』/area/tag経由も塞ぐ）
+    madori, area, tag = _strip_raw_dim(madori), _strip_raw_dim(area), _strip_raw_dim(tag)
     equip_line = _pl_cover_equip_line(facts)      # ★主要最大4件＋幅フィット（垂れ流し防止）
     _jst = datetime.now(timezone(timedelta(hours=9)))
     note_line = f"※家具・小物はAI生成のイメージ　※{_jst.year}年{_jst.month}月時点の情報"
