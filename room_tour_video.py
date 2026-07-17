@@ -677,6 +677,43 @@ def _burn_subtitles(video_path: str, events, out_path: str,
     return out_path
 
 
+def _burn_beat_overlays(video_path: str, overlays, out_path: str,
+                        out_w: int = 1080, out_h: int = 1920) -> str:
+    """★v79「動く雑誌」：各ビートの文字面PNG（全画面透明RGBA＝build_beat_overlay）を時間範囲で背景映像に重ねる。
+    overlays=[(png_bytes, start_sec, end_sec)]。1パス（N枚を enable=between(t,s,e) で連鎖overlay）。字幕焼きの全画面版。
+    PNGはビート尺のあいだ静止表示（背景=Kling動画だけが動く）。overlays空なら素通し（表紙のみ等）。メモリ安全＝1パス。"""
+    ov = [(b, float(s), float(e)) for b, s, e in (overlays or [])
+          if b and float(e) > float(s)]
+    if not ov:
+        shutil.copy(video_path, out_path)
+        return out_path
+    tmp = tempfile.mkdtemp(prefix="beatov_")
+    try:
+        inputs = ["-i", video_path]
+        for k, (b, _s, _e) in enumerate(ov):
+            p = os.path.join(tmp, f"ov{k}.png")
+            with open(p, "wb") as f:
+                f.write(b)
+            inputs += ["-i", p]
+        # 連鎖overlay：各PNGを実解像度へscale(保険)→時間窓enableで前段に重ねる
+        chain, prev = [], "[0:v]"
+        for k, (_b, s, e) in enumerate(ov):
+            scaled = f"[p{k}]"
+            chain.append(f"[{k + 1}:v]scale={out_w}:{out_h}{scaled}")
+            nxt = f"[v{k}]"
+            chain.append(f"{prev}{scaled}overlay=0:0:"
+                         f"enable='between(t\\,{s:.3f}\\,{e:.3f})'{nxt}")
+            prev = nxt
+        fc = ";".join(chain)
+        subprocess.run([_ffmpeg(), "-y", "-loglevel", "error", *inputs,
+                        "-filter_complex", fc, "-map", prev, "-map", "0:a?",
+                        "-c:a", "copy", "-r", "30", "-pix_fmt", "yuv420p",
+                        "-movflags", "+faststart", out_path], check=True, timeout=900)
+        return out_path
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _mux_bgm(video_path: str, bgm_wav: str, out_path: str) -> str:
     ff = _ffmpeg()
     subprocess.run([ff, "-y", "-loglevel", "error", "-i", video_path, "-i", bgm_wav,
@@ -1334,11 +1371,40 @@ def _v79_room_pill(canvas, label, y0=368):
     _v79_shadow_text(canvas, (W // 2, y0 + 32), label, f, _V79_WHITE, blur=4)
 
 
-def build_beat_overlay(room_label, l1, l2, comment, *, accent=_V79_GOLD,
-                       spec_line="", equip_line="", note_line="", aspect="9:16") -> bytes:
+def _v79_tag_pills(canvas, tags, accent=_V79_GOLD, x=110, y0=700, gap=100):
+    """★追加情報タグ（角丸ダーク半透明＋左端 accent バー＋白Sans38px）。最大3・中央左余白に縦積み。
+    ★静的描画（stamp-in演出＝anim2.py tag_sprite は v79-6）。映像の見どころ（中央）は塞がない。"""
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(canvas)
+    f = _v79_sans_b(38)
+    for i, t in enumerate([str(x) for x in (tags or []) if x and str(x).strip()][:3]):
+        y = y0 + i * gap
+        tw = d.textlength(t, font=f)
+        d.rounded_rectangle([x, y, x + 30 + tw + 24, y + 64], radius=10, fill=(20, 20, 24, 180))
+        d.rectangle([x, y, x + 6, y + 64], fill=accent)          # 左端 accent バー
+        _v79_shadow_text(canvas, (x + 30, y + 32), t, f, _V79_WHITE, anchor="lm", blur=3)
+
+
+def _v79_split_accent(big_text, accent_word):
+    """big_text を accent_word の直前の句読点で2行に割る。l1=白（accent前）／l2=accent色（accent_word以降）。
+    accent_word が無い/含まれない→ (big_text, '')。"""
+    big = (big_text or "").strip()
+    aw = (accent_word or "").strip()
+    if not aw or aw not in big:
+        return big, ""
+    idx = big.find(aw)
+    cut = max(big.rfind("、", 0, idx), big.rfind("。", 0, idx), big.rfind("／", 0, idx),
+              big.rfind("　", 0, idx)) + 1
+    return big[:cut], big[cut:]
+
+
+def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
+                       accent=_V79_GOLD, spec_line="", equip_line="", note_line="",
+                       aspect="9:16") -> bytes:
     """★v79 ビート文字面（透明PNG・背景=Kling映像に重ねる）。権威=ov.py の座標。
-    big_text: l1=白(y1330) ／ l2=accent色(y1465・2行目まるごとがaccent_word)。l2空→1行(1330白)＋commentを1470へ。
-    comment: 2行時 y1590 ／ 1行時 y1470（SANS_R42px GREY）。マストヘッド＋情報バー常時。返り値=PNG bytes(RGBA)。"""
+    big_text の accent_word を色分けし2行に割る（l1=白 y1330 ／ l2=accent色 y1465）。単一行なら 1330白＋comment上げ。
+    comment: 2行時 y1590 ／ 1行時 y1470（SANS_R42px GREY）。タグ（最大3・左余白）＋マストヘッド＋情報バー常時。
+    返り値=PNG bytes(RGBA・透明背景)。"""
     from PIL import Image
     from io import BytesIO
     W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
@@ -1347,10 +1413,11 @@ def build_beat_overlay(room_label, l1, l2, comment, *, accent=_V79_GOLD,
     _v79_gradient(canvas, 1200, H, 0, 235)        # 下グラデ
     _v79_masthead(canvas, accent)
     _v79_room_pill(canvas, room_label)
-    _l2 = (l2 or "").strip()
-    if _l2:
+    _v79_tag_pills(canvas, tags, accent=accent)   # 追加情報タグ（最大3・左余白・静的）
+    l1, l2 = _v79_split_accent(big_text, accent_word)
+    if l2:
         _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
-        _v79_shadow_text(canvas, (W // 2, 1465), _l2, _v79_fit_serif(_l2), accent)
+        _v79_shadow_text(canvas, (W // 2, 1465), l2, _v79_fit_serif(l2), accent)
         _cy = 1590
     else:
         _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
@@ -1886,10 +1953,47 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             cover_warn.append("表紙の挿入に失敗したため、表紙なしで動画を生成しました（"
                               + _log_failure("cover_prepend", e) + "）。")
 
+    # ── ★v79「動く雑誌」：ビート文字面（big_text/accent/comment/tags）を全画面overlayで焼く ──
+    #   背景=Kling動画、前景=build_beat_overlay。ナレは画面の文字を読み上げる。v78字幕焼きの代替（big_text保持時のみ発火）。
+    #   ビート開始=cover_off+Σ前ビートbeat_narr_sec（＝ナレ配置と同一式）。表紙区間は文字面なし。文字面フィールドは各ビート先頭sceneに載る。
+    _v79_mag = any(sc.get("big_text") for sc in ordered)
+    if _v79_mag:
+        try:
+            _accent = tuple(glob.get("v79_accent") or _V79_GOLD)
+            _aspect = glob.get("aspect", "9:16")
+            _cover_off = cover_sec if cover_on else 0.0
+            _ov, _acc, _prev = [], 0.0, object()
+            for sc in ordered:
+                bid = sc.get("beat_id")
+                if bid == _prev:
+                    continue                          # 同ビート2枚目以降＝先頭のみ文字面
+                _prev = bid
+                _nsec = float(sc.get("beat_narr_sec") or 0.0)
+                _s = _cover_off + _acc
+                _acc += _nsec                          # ナレ有無に関わらず尺を積む（stillビートも前進）
+                if not sc.get("big_text"):
+                    continue                           # DATAビート等（big_text無）は素の背景
+                _png = build_beat_overlay(
+                    sc.get("room_label") or sc.get("room") or "",   # 表示名優先（magtext由来・LDK→リビング）
+                    sc.get("big_text") or "", sc.get("accent_word") or "",
+                    sc.get("comment") or "", tags=sc.get("beat_tags") or [],
+                    accent=_accent, spec_line=sc.get("spec_line") or "",
+                    equip_line=sc.get("equip_line") or "", note_line=sc.get("note_line") or "",
+                    aspect=_aspect)
+                _ov.append((_png, _s, _s + _nsec))
+            _mag = _jp("_tmp_magazine.mp4")
+            _burn_beat_overlays(body, _ov, _mag, out_w, out_h)
+            shutil.move(_mag, _jp("room_tour_silent.mp4"))
+            body = _jp("room_tour_silent.mp4")
+        except Exception as e:  # noqa: BLE001  文字面はフェイルセーフ（失敗しても動画は止めない）
+            cover_warn.append("文字面の焼き込みに失敗したため文字なしで生成しました（"
+                              + _log_failure("burn_beat_overlays", e) + "）。")
+
     # ── ★story-v78 B ③：ナレ字幕を『字数比の1行ずつ切替』で無音bodyに焼く（with-timestamps不要のフォールバック水準）──
     #   ビート開始=cover_off+Σ前ビートdur（＝ナレ音声の配置と同一・A0の単純化）。表紙区間は字幕なし（唯一の例外）。
+    #   ★v79文字面が焼かれた場合はスキップ（big_textが画面の主役＝字幕と二重にしない）。
     _sub_beats = glob.get("subtitle_beats")
-    if _sub_beats:
+    if _sub_beats and not _v79_mag:
         try:
             import core as _core
             _events = _core.subtitle_events(_sub_beats, cover_sec if cover_on else 0.0)

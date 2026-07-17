@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-5a-magtext (magtext=A-unit刷新の文字面生成・未配線。core.magtext(client,beats,facts,feature_id)=1コールで beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}]+cover:{area_line,price,price_sub,hook,hook_alt,needs_review}+data_rows(残余facts差分)。big_text/comment=facts由来(数字は映るカット=面積/角部屋はLDK)・room_facts_mapのfocal_ja/facts_keys使用・mote commentはfew_shot2本移植。★cover.hookはfeature.cover_hooks[]から選択(AI自由生成しない=型承認面積固定)・候補外はhook_alt+needs_review。後処理=fact_scrub/ban/needs_review/タグ最大3+over_tags差分。malformed JSON 1回リトライ。モック16/16。実Gemini品質はv79-5b実機。前=v79-4c-urlfix)")
+    st.caption("build: v79-5b-magwire (magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
 
 
 def _render_video_env_diagnostics():
@@ -640,6 +640,63 @@ def _pl_story_generate_cb(situation, style, dur):
                                          else "物語を生成しました（各ビート先頭にナレをまとめました）。")
     st.session_state["_pl_story_prompt"] = res["prompt"]            # 実機検証で提出（後でFで撤去）
     st.session_state["_pl_story_raw"] = res["raw"]
+
+
+def _pl_mag_generate_cb(feature_id):
+    """★v79-5b『雑誌の文字を生成』on_click。採用画像を部屋でビート化し、magtextで文字面を1コール生成。
+    各ビート先頭sceneに pl_mag_{id}（big_text/accent_word/comment/tags/needs_review）＋pl_narr_{id}（narration_text＝
+    画面の文字を読み上げる）。継続シーンは pl_narr 空・pl_mag 消去。cover/data_rows は pl_mag_cover/pl_mag_data へ。
+    ★pl_narr_auto は更新しない（テロップ追従を止める＝story-v78と同じ意図）。needs_review は型承認ゲート用に集約表示。"""
+    items = st.session_state.get("pl_items", [])
+    adopted = sorted([it for it in items if it.get("gen_bytes") and it.get("_adopt", True)],
+                     key=lambda it: it.get("order", 0))
+    if not adopted:
+        st.session_state["_pl_mag_msg"] = "採用画像がありません。"
+        return
+    beats = []                                    # 連続する同roomを1ビートに（🔀整列後の順を尊重）
+    for it in adopted:
+        if beats and beats[-1]["room"] == it.get("room"):
+            beats[-1]["stock"] += 1
+            beats[-1]["ids"].append(it["id"])
+        else:
+            beats.append({"room": it.get("room"), "stock": 1, "ids": [it["id"]]})
+    try:
+        client = make_client()
+    except RuntimeError:
+        client = None
+    res = core.magtext(
+        client, [{"room": b["room"], "stock": b["stock"]} for b in beats],
+        _pl_effective_facts(), feature_id, budget_sec=33)
+    if not res:
+        st.session_state["_pl_mag_msg"] = "生成できませんでした（Gemini未設定など）。"
+        return
+    _flags = []                                    # needs_review（型承認・人力採用）を集約
+    for b, beat in zip(beats, res["beats"]):
+        fid0 = b["ids"][0]
+        st.session_state[f"pl_mag_{fid0}"] = {
+            "room_label": beat.get("room_label", ""),
+            "big_text": beat["big_text"], "accent_word": beat["accent_word"],
+            "comment": beat["comment"], "tags": beat["tags"],
+            "needs_review": beat["needs_review"]}
+        st.session_state[f"pl_narr_{fid0}"] = beat["narration_text"]   # ★ナレは画面の文字を読む
+        for mid in b["ids"][1:]:
+            st.session_state[f"pl_narr_{mid}"] = ""                    # 継続シーン＝空（1枚目にまとまる）
+            st.session_state.pop(f"pl_mag_{mid}", None)
+        if beat.get("needs_review"):
+            _flags.append(f"{beat['room_label']}『{beat['big_text']}』")
+    st.session_state["pl_mag_cover"] = res["cover"]
+    st.session_state["pl_mag_data"] = res.get("data_rows", [])
+    _cov = res["cover"]
+    if _cov.get("needs_review"):
+        _flags.append(f"表紙hook『{_cov.get('hook_alt') or _cov.get('hook')}』")
+    _msg = "📖 文字面を生成しました（各ビート先頭に big_text/comment/タグをまとめました）。"
+    if _flags:
+        _msg += "　⚠️要確認(型承認・人力採用)：" + " / ".join(_flags)
+    if res.get("warnings"):
+        _msg += "　／　" + "／".join(res["warnings"])
+    st.session_state["_pl_mag_msg"] = _msg
+    st.session_state["_pl_mag_prompt"] = res.get("prompt", "")
+    st.session_state["_pl_mag_raw"] = res.get("raw", "")
 
 
 # テロップのスタイル自動既定：水回りは座布団(pop)で可読性、居室・その他は clean
@@ -2470,6 +2527,14 @@ def _pl_assign_story_beats(scenes, v_dur):
             #   物理的に描画尺<ナレ秒）でも 📐予定==実尺 とナレ配置の累積が実タイムラインと一致（ドリフトしない）。
             #   ナレ音声が描画尺を超える分は run_tour_job の over>0.3 警告で原稿短縮を促す。
             cuts, trims, nsec = a["cuts"], a["trims"], a["rendered_sec"]
+            # ★v79-5b：allocateは短ナレ×多枚で len(cuts)<stock を返す（余剰画像はカット不要）。
+            #   だが全画像は背景B-rollとして活かす＝nsec内に均等配置し直す（描画尺==nsec維持・画像を捨てない・crash防止）。
+            #   v79のbig_textは簡潔なので同室2枚以上で頻発。v78は長ナレで len(cuts)==stock ＝このガードは不発（不変）。
+            if len(cuts) < stock:
+                _padded = nsec + 0.6 * max(0, stock - 1)
+                _per = _padded / stock
+                cuts = [10 if _per > 5 else 5] * stock
+                trims = [round(_per, 2)] * stock
         else:                                    # ナレ無/still：固定 v_dur・実 _assemble_beats 描画尺に一致
             cuts = [int(v_dur)] * stock
             trims = [float(v_dur)] * stock
@@ -2651,6 +2716,34 @@ def _pl_stage_video():
                                  height=200, key="_pl_story_prompt_view")
                     st.text_area("生レスポンス", st.session_state.get("_pl_story_raw", ""),
                                  height=150, key="_pl_story_raw_view")
+
+            # ── ★v79-5b「動く雑誌」：特集ベースで文字面（big_text/comment/タグ）を1コール生成 ──
+            #   物語(situation)の代わりに特集(feature)から生成。ナレは画面のbig_text/commentを読み上げる。
+            #   ★ストーリー割り当てON＋この生成で、映像に文字面がoverlay合成される（v78字幕の代替）。
+            st.divider()
+            _mag_fid = st.session_state.get("pl_feature", "mote_heya")
+            _mag_feat = core.feature_of(_mag_fid) or {}
+            st.caption(f"📖 **動く雑誌**：特集『{_mag_feat.get('label', _mag_fid)}』の文字面を生成"
+                       "（big_text＝映るカットの数字/角部屋・comment・タグ最大3）。"
+                       "★『🎬 ストーリー割り当て』ONで映像に焼かれます。表紙hookは特集の定型から選ばれ、"
+                       "独自案は⚠️要確認（型承認・人力採用）。")
+            st.button("📖 動く雑誌の文字を生成（1コール・特集ベース）", key="pl_mag_gen",
+                      on_click=_pl_mag_generate_cb, args=(_mag_fid,),
+                      disabled=not _narr_ok, use_container_width=True)
+            _mmsg = st.session_state.get("_pl_mag_msg")
+            if _mmsg:
+                st.warning(_mmsg)
+            _mcov = st.session_state.get("pl_mag_cover")
+            if _mcov:
+                st.caption(f"表紙：{_mcov.get('area_line', '')}／{_mcov.get('price', '')}"
+                           f"（{_mcov.get('price_sub', '')}）／hook『{_mcov.get('hook', '')}』")
+            _mdata = st.session_state.get("pl_mag_data")
+            if _mdata:
+                st.caption("DATA面(残余・v79-6で描画)：" + "・".join(_mdata))
+            if st.session_state.get("_pl_mag_raw"):   # 実機検証：st.code（key無し＝stale回避）
+                with st.expander("🧪 magtextプロンプト＋生レスポンス（実機検証用・後で外す）", expanded=False):
+                    st.code(st.session_state.get("_pl_mag_prompt", ""))
+                    st.code(st.session_state.get("_pl_mag_raw", ""))
 
     # ── 🎬 ストーリー割り当て（story-v78 A0・検証中）──────────────────────────
     #   ONで「部屋=ビート／画像=カット」割り当て：連続する同室を1ビートにまとめ、ナレ字数から尺を配分。
@@ -2960,6 +3053,15 @@ def _pl_stage_video():
             "motion": core.room_facts_map(it["room"]).get("motion", "normal"),
             # ★シーン単位（ID基準）でナレを持たせる＝index基準の噛み合わせズレ(v68真因)を断つ
             "narration": (st.session_state.get(f"pl_narr_{it['id']}", "") if v_narr_on else "")})
+        # ★v79-5b：ビート先頭画像に magtext の文字面（big_text/accent/comment/タグ）を注入。
+        #   pl_mag_{id} は生成CBがビート先頭idにのみ格納＝この画像が_pl_assign_story_beatsのgrp[0]に一致。
+        _mg = st.session_state.get(f"pl_mag_{it['id']}")
+        if isinstance(_mg, dict) and _mg.get("big_text"):
+            _scenes[-1]["room_label"] = _mg.get("room_label", "")   # 表示名（LDK→リビング等・magtext由来）
+            _scenes[-1]["big_text"] = _mg.get("big_text", "")
+            _scenes[-1]["accent_word"] = _mg.get("accent_word", "")
+            _scenes[-1]["comment"] = _mg.get("comment", "")
+            _scenes[-1]["beat_tags"] = _mg.get("tags", [])
         _images.append((_nm, it["gen_bytes"]))
     # 表紙挿入ON時は冒頭極短フラッシュを自動OFF（冒頭の重複回避）
     if _scenes and st.session_state.get("pl_open_title") == "flash" and not v_cover_on:
@@ -3025,12 +3127,15 @@ def _pl_stage_video():
     _cov_bytes = None
     if v_cover_on and st.session_state.get("pl_cover_png"):
         _cov_bytes = st.session_state["pl_cover_png"].get("bytes")
+    # ★v79-5b：文字面overlayのaccent色（選択中の特集）。run_tour_jobがbig_text保持時に build_beat_overlay へ渡す。
+    _v79_accent = (core.feature_of(st.session_state.get("pl_feature", "mote_heya")) or {}).get("accent")
     _glob = {"out_w": _ow, "out_h": _oh, "duration": v_dur, "model_key": v_model,
              "with_bgm": v_bgm, "also_silent": True, "flash_cut": bool(v_flashcut),
-             "narration_on": bool(v_narr_on),
+             "narration_on": bool(v_narr_on), "aspect": v_aspect, "v79_accent": _v79_accent,
              "cover_on": bool(v_cover_on and _cov_bytes), "cover_sec": float(v_cover_sec),
              "negative_prompt": rtv._V79_NEGATIVE, "cfg_scale": None,   # ★v79-4：動く雑誌のnegative
              # ★story-v78 B：ナレ字幕の一本化。subtitle_beats=③焼込用[{lines,dur}]／unified=メイン/情感を焼かない。
+             #   ★v79文字面(big_text)がある場合はrun_tour_jobが字幕焼きをスキップ（画面の主役はbig_text）。
              "subtitle_beats": _sub_beats, "unified_subtitle": bool(_sub_beats)}
     import tempfile as _tf
     _job_id = rtv.job_id_for(_images, {"glob": _glob, "scenes": _scenes})
@@ -3239,4 +3344,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-5a-magtext (magtext=A-unit刷新の文字面生成・未配線。core.magtext(client,beats,facts,feature_id)=1コールで beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}]+cover:{area_line,price,price_sub,hook,hook_alt,needs_review}+data_rows(残余facts差分)。big_text/comment=facts由来(数字は映るカット=面積/角部屋はLDK)・room_facts_mapのfocal_ja/facts_keys使用・mote commentはfew_shot2本移植。★cover.hookはfeature.cover_hooks[]から選択(AI自由生成しない=型承認面積固定)・候補外はhook_alt+needs_review。後処理=fact_scrub/ban/needs_review/タグ最大3+over_tags差分。malformed JSON 1回リトライ。モック16/16。実Gemini品質はv79-5b実機。前=v79-4c-urlfix)")
+    st.caption("build: v79-5b-magwire (magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
