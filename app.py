@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4c-probe (あり/なし実測デバッグ欄=一時・Fで撤去。同一画像でKlingプロンプト あり(新focal主語指向)/なし(旧無目的push-in)の2本を生成し focal着地/パララックス/破綻を見比べる。想定fal課金2本×$0.35=$0.70・生成前後の課金メモ記録・DL。FAL_KEY無し環境はボタンdisabled。前=v79-4c-promptfix)")
+    st.caption("build: v79-4c-probefix (あり/なし実測デバッグ欄のプロンプト表示staleバグ修正。素材セレクタを外観→リビングに変えても表示が外観のまま=text_areaの固定key地雷。★st.code(key無し・毎rerun再描画)に変更=表示が素材に追従・表示=生成が構造的に一致。★生成は元々選択素材のprompt使用で正しく、表示だけがstaleだった。前=v79-4c-probe)")
 
 
 def _render_video_env_diagnostics():
@@ -2292,8 +2292,13 @@ def _pl_v79_focal_probe(rtv):
         _m = core.room_facts_map(_it["room"])
         _yes = rtv.build_kling_prompt(_rt, _m.get("focal"), _m.get("motion", "normal"))  # あり（新）
         _no = rtv.ROOM_PROMPTS.get(_rt, rtv.ROOM_PROMPTS["generic"])                     # なし（旧・無目的）
-        st.text_area("あり（新・focal主語指向）", _yes, height=100, key="_v79_yes_view")
-        st.text_area("なし（旧・無目的push-in）", _no, height=90, key="_v79_no_view")
+        # ★表示は st.code（key無し・毎rerun再描画）＝素材を変えると表示も更新（text_areaの固定key stale地雷を回避）。
+        #   表示＝生成が構造的に一致（生成ボタンも同じ _yes/_no を使う）。
+        st.markdown(f"**あり（新・focal主語指向）** ｜ 素材={_PL_ROOM_JP.get(_it['room'], _it['room'])}"
+                    f"（video_type={_rt} / focal={_m.get('focal')} / motion={_m.get('motion')}）")
+        st.code(_yes, language=None)
+        st.markdown("**なし（旧・無目的push-in）**")
+        st.code(_no, language=None)
         _unit = 0.35   # kling2.6_pro 5s の実績単価/本
         st.caption(f"想定fal課金：2本 × ${_unit:.2f}（5秒）＝ **${_unit * 2:.2f}**。★生成前に fal 残高を控えてください。")
         if st.button("🧪 あり/なし 各1本 生成（fal課金 発生）", key="_v79_probe_gen",
@@ -3196,4 +3201,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4c-probe (あり/なし実測デバッグ欄=一時・Fで撤去。同一画像でKlingプロンプト あり(新focal主語指向)/なし(旧無目的push-in)の2本を生成し focal着地/パララックス/破綻を見比べる。想定fal課金2本×$0.35=$0.70・生成前後の課金メモ記録・DL。FAL_KEY無し環境はボタンdisabled。前=v79-4c-promptfix)")
+    st.caption("build: v79-4c-probefix (あり/なし実測デバッグ欄のプロンプト表示staleバグ修正。素材セレクタを外観→リビングに変えても表示が外観のまま=text_areaの固定key地雷。★st.code(key無し・毎rerun再描画)に変更=表示が素材に追従・表示=生成が構造的に一致。★生成は元々選択素材のprompt使用で正しく、表示だけがstaleだった。前=v79-4c-probe)")
