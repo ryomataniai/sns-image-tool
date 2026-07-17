@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4c-promptfix (v79-4cの実測前に旧プロンプトの安全資産を復元: ①_V79_NEGATIVEに no extra or missing windows/no changing architecture/no bending structure 追加(窓増減・階数変化のKling定番破綻を抑止) ②build_kling_prompt共通に Lighting stays constant 追加(staging照明=モテ夜間接照明等が動画化で変わり世界観が壊れるのを防ぐ) ③外観本文に構造保持(keep architecture/windows/floors as-is・do not change/add/remove structural detail)を残置。差分一覧Cowork更新。前=v79-4b-klingwire)")
+    st.caption("build: v79-4c-probe (あり/なし実測デバッグ欄=一時・Fで撤去。同一画像でKlingプロンプト あり(新focal主語指向)/なし(旧無目的push-in)の2本を生成し focal着地/パララックス/破綻を見比べる。想定fal課金2本×$0.35=$0.70・生成前後の課金メモ記録・DL。FAL_KEY無し環境はボタンdisabled。前=v79-4c-promptfix)")
 
 
 def _render_video_env_diagnostics():
@@ -2273,6 +2273,62 @@ def _pl_auto_cover_bytes(adopted):
     return _pl_build_cover_v79(_src["gen_bytes"], _f, _fid, _pl_cover_layout(), aspect="9:16")
 
 
+def _pl_v79_focal_probe(rtv):
+    """★一時デバッグ（v79-4c あり/なし実測・後で外す=F）: 同一画像で Klingプロンプト
+    『あり（新・focal主語指向）』『なし（旧・無目的push-in）』の2本を生成し、focal着地/パララックス/破綻を見比べる。
+    ★fal実課金（2本）。生成前後の課金メモ（推定＋時刻）を記録。実残高は fal ダッシュボードで確認。"""
+    with st.expander("🧪 一時デバッグ: Klingプロンプト あり/なし実測（v79-4c・後で外す）", expanded=False):
+        _items = [it for it in st.session_state.get("pl_items", []) if it.get("gen_bytes")]
+        if not _items:
+            st.caption("採用画像がありません（確認ステージで用意）。")
+            return
+        _opts = {it["id"]: f"{_PL_ROOM_JP.get(it['room'], it['room'])}" for it in _items}
+        _sid = st.selectbox("素材（LDK推奨）", list(_opts), format_func=lambda i: _opts[i],
+                            key="_v79_probe_src")
+        _it = next((it for it in _items if it["id"] == _sid), None)
+        if not _it:
+            return
+        _rt = _pl_video_room_type(_it["room"])
+        _m = core.room_facts_map(_it["room"])
+        _yes = rtv.build_kling_prompt(_rt, _m.get("focal"), _m.get("motion", "normal"))  # あり（新）
+        _no = rtv.ROOM_PROMPTS.get(_rt, rtv.ROOM_PROMPTS["generic"])                     # なし（旧・無目的）
+        st.text_area("あり（新・focal主語指向）", _yes, height=100, key="_v79_yes_view")
+        st.text_area("なし（旧・無目的push-in）", _no, height=90, key="_v79_no_view")
+        _unit = 0.35   # kling2.6_pro 5s の実績単価/本
+        st.caption(f"想定fal課金：2本 × ${_unit:.2f}（5秒）＝ **${_unit * 2:.2f}**。★生成前に fal 残高を控えてください。")
+        if st.button("🧪 あり/なし 各1本 生成（fal課金 発生）", key="_v79_probe_gen",
+                     disabled=not get_secret("FAL_KEY", "")):
+            import os as _os2, tempfile as _tf2, datetime as _dt
+            _os2.environ["FAL_KEY"] = get_secret("FAL_KEY", _os2.environ.get("FAL_KEY", ""))
+            _rec = {"started": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S"),
+                    "unit_usd": _unit, "clips": 2, "est_usd": round(_unit * 2, 2), "room": _it["room"]}
+            _dir = _tf2.mkdtemp(prefix="v79probe_")
+            try:
+                with st.spinner("あり／なし 2本を生成中…（fal・約1〜2分）"):
+                    _p_yes = _os2.path.join(_dir, "focal_yes.mp4")
+                    _p_no = _os2.path.join(_dir, "focal_no.mp4")
+                    rtv.generate_clip_fal(_it["gen_bytes"], _yes, duration=5, model_key="kling2.6_pro",
+                                          negative_prompt=rtv._V79_NEGATIVE, out_path=_p_yes)
+                    rtv.generate_clip_fal(_it["gen_bytes"], _no, duration=5, model_key="kling2.6_pro",
+                                          negative_prompt=rtv._V79_NEGATIVE, out_path=_p_no)
+                _rec["ended"] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S")
+                st.session_state["_v79_probe_out"] = {"yes": _p_yes, "no": _p_no, "rec": _rec, "dir": _dir}
+            except Exception as e:  # noqa: BLE001  ★鍵を含みうる詳細は型のみ
+                st.error(f"生成に失敗しました（{type(e).__name__}）。fal残高・鍵を確認してください。")
+        _out = st.session_state.get("_v79_probe_out")
+        if _out and _os.path.exists(_out["yes"]):
+            st.success(f"生成完了。fal課金メモ：{_out['rec']}")
+            oc1, oc2 = st.columns(2)
+            oc1.caption("あり（新・focal）"); oc1.video(_out["yes"])
+            oc2.caption("なし（旧・無目的）"); oc2.video(_out["no"])
+            with open(_out["yes"], "rb") as _f:
+                oc1.download_button("⬇️ あり.mp4", _f.read(), file_name="v79-4c_focal_yes.mp4",
+                                    mime="video/mp4", key="_v79_dl_yes")
+            with open(_out["no"], "rb") as _f:
+                oc2.download_button("⬇️ なし.mp4", _f.read(), file_name="v79-4c_focal_no.mp4",
+                                    mime="video/mp4", key="_v79_dl_no")
+
+
 def _pl_v78_timestamp_probe(rtv):
     """★一時デバッグ（v78字幕同期の疎通・後で外す）: ElevenLabs with-timestamps の生JSONを画面に出す。
     本番の鍵/ボイス(HIRO)/合成設定を使用。谷合さんは Reboot→ボタン1回→スクショ で完結。
@@ -2398,6 +2454,7 @@ def _pl_stage_video():
     _os.environ["ELEVENLABS_VOICE_ID"] = core.concept_voice_id(
         st.session_state.get("pl_concept", "normal"), default_voice=_default_voice) or ""
     _pl_v78_timestamp_probe(rtv)   # ★一時デバッグ: with-timestamps 疎通（v78字幕同期・後で外す）
+    _pl_v79_focal_probe(rtv)       # ★一時デバッグ: Klingプロンプト あり/なし実測（v79-4c・後で外す）
     st.markdown("#### ④ 動画化（ルームツアー）")
     items = st.session_state.get("pl_items", [])
     adopted = [it for it in items if it.get("gen_bytes") and it.get("_adopt", True)]
@@ -3139,4 +3196,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4c-promptfix (v79-4cの実測前に旧プロンプトの安全資産を復元: ①_V79_NEGATIVEに no extra or missing windows/no changing architecture/no bending structure 追加(窓増減・階数変化のKling定番破綻を抑止) ②build_kling_prompt共通に Lighting stays constant 追加(staging照明=モテ夜間接照明等が動画化で変わり世界観が壊れるのを防ぐ) ③外観本文に構造保持(keep architecture/windows/floors as-is・do not change/add/remove structural detail)を残置。差分一覧Cowork更新。前=v79-4b-klingwire)")
+    st.caption("build: v79-4c-probe (あり/なし実測デバッグ欄=一時・Fで撤去。同一画像でKlingプロンプト あり(新focal主語指向)/なし(旧無目的push-in)の2本を生成し focal着地/パララックス/破綻を見比べる。想定fal課金2本×$0.35=$0.70・生成前後の課金メモ記録・DL。FAL_KEY無し環境はボタンdisabled。前=v79-4c-promptfix)")
