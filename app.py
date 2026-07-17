@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-4c-probefix (あり/なし実測デバッグ欄のプロンプト表示staleバグ修正。素材セレクタを外観→リビングに変えても表示が外観のまま=text_areaの固定key地雷。★st.code(key無し・毎rerun再描画)に変更=表示が素材に追従・表示=生成が構造的に一致。★生成は元々選択素材のprompt使用で正しく、表示だけがstaleだった。前=v79-4c-probe)")
+    st.caption("build: v79-4c-crashfix (実測デバッグ欄の生成後クラッシュ修正=NameError。表示部で_os.path.existsの_osが関数未import(別関数_pl_stage_videoのローカル・スコープ外)→生成完了後にNameError。★_os/_tf/_dtを関数先頭でimport。★二重課金回避: generate_clip_fal(subscribe・request_id無)→fal_submit_clip+fal_poll_clip+request_idをファイル保存に変更=クラッシュ/中断後にボタン再押下で再fetch(再課金なし)。安定パス(素材ごと)で既存mp4は再利用。billed_clics=今回実課金本数。前=v79-4c-probefix)")
 
 
 def _render_video_env_diagnostics():
@@ -2277,6 +2277,7 @@ def _pl_v79_focal_probe(rtv):
     """★一時デバッグ（v79-4c あり/なし実測・後で外す=F）: 同一画像で Klingプロンプト
     『あり（新・focal主語指向）』『なし（旧・無目的push-in）』の2本を生成し、focal着地/パララックス/破綻を見比べる。
     ★fal実課金（2本）。生成前後の課金メモ（推定＋時刻）を記録。実残高は fal ダッシュボードで確認。"""
+    import os as _os, tempfile as _tf, datetime as _dt   # ★関数スコープでimport（表示部の_os NameError修正）
     with st.expander("🧪 一時デバッグ: Klingプロンプト あり/なし実測（v79-4c・後で外す）", expanded=False):
         _items = [it for it in st.session_state.get("pl_items", []) if it.get("gen_bytes")]
         if not _items:
@@ -2293,44 +2294,69 @@ def _pl_v79_focal_probe(rtv):
         _yes = rtv.build_kling_prompt(_rt, _m.get("focal"), _m.get("motion", "normal"))  # あり（新）
         _no = rtv.ROOM_PROMPTS.get(_rt, rtv.ROOM_PROMPTS["generic"])                     # なし（旧・無目的）
         # ★表示は st.code（key無し・毎rerun再描画）＝素材を変えると表示も更新（text_areaの固定key stale地雷を回避）。
-        #   表示＝生成が構造的に一致（生成ボタンも同じ _yes/_no を使う）。
         st.markdown(f"**あり（新・focal主語指向）** ｜ 素材={_PL_ROOM_JP.get(_it['room'], _it['room'])}"
                     f"（video_type={_rt} / focal={_m.get('focal')} / motion={_m.get('motion')}）")
         st.code(_yes, language=None)
         st.markdown("**なし（旧・無目的push-in）**")
         st.code(_no, language=None)
         _unit = 0.35   # kling2.6_pro 5s の実績単価/本
-        st.caption(f"想定fal課金：2本 × ${_unit:.2f}（5秒）＝ **${_unit * 2:.2f}**。★生成前に fal 残高を控えてください。")
-        if st.button("🧪 あり/なし 各1本 生成（fal課金 発生）", key="_v79_probe_gen",
+        # ★安定パス（素材ごと・毎回同じ）＝再run/クラッシュ後に既存mp4を再利用＝二重課金回避。
+        _dir = _os.path.join(_tf.gettempdir(), "v79probe")
+        _os.makedirs(_dir, exist_ok=True)
+        _p_yes = _os.path.join(_dir, f"focal_yes_{_sid}.mp4")
+        _p_no = _os.path.join(_dir, f"focal_no_{_sid}.mp4")
+        _have = _os.path.exists(_p_yes) and _os.path.exists(_p_no)
+        st.caption(f"想定fal課金：未生成分のみ × ${_unit:.2f}（5秒）。"
+                   + ("★この素材は生成済み＝再課金なしで表示。" if _have
+                      else f"★2本で最大 ${_unit * 2:.2f}。生成前に fal 残高を控えてください。"))
+        _req_yes = _os.path.join(_dir, f"req_{_sid}_yes.txt")   # ★request_idをファイル保存＝クラッシュ後も再fetch
+        _req_no = _os.path.join(_dir, f"req_{_sid}_no.txt")
+        if st.button("🧪 あり/なし 生成（★未生成分のみ・request_id保存で二重課金回避）", key="_v79_probe_gen",
                      disabled=not get_secret("FAL_KEY", "")):
-            import os as _os2, tempfile as _tf2, datetime as _dt
-            _os2.environ["FAL_KEY"] = get_secret("FAL_KEY", _os2.environ.get("FAL_KEY", ""))
+            import time as _time
+            _os.environ["FAL_KEY"] = get_secret("FAL_KEY", _os.environ.get("FAL_KEY", ""))
             _rec = {"started": _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S"),
-                    "unit_usd": _unit, "clips": 2, "est_usd": round(_unit * 2, 2), "room": _it["room"]}
-            _dir = _tf2.mkdtemp(prefix="v79probe_")
+                    "unit_usd": _unit, "room": _it["room"], "src_id": _sid, "billed_clips": 0}
+
+            def _one(_prompt, _out, _req):
+                """1本: mp4あれば再利用／request_id保存済みなら再fetch（再課金なし）／無ければsubmit(課金)→保存→poll。"""
+                if _os.path.exists(_out):
+                    return
+                _rid = ""
+                if _os.path.exists(_req):
+                    _rid = (open(_req).read().strip() or "")   # ★保存済み＝再fetch（再課金なし）
+                if not _rid:
+                    _rid = rtv.fal_submit_clip(_it["gen_bytes"], _prompt, 5, "kling2.6_pro", rtv._V79_NEGATIVE)
+                    open(_req, "w").write(_rid)                # ★submit直後にrequest_id永続化（死んでも回収可）
+                    _rec["billed_clips"] += 1
+                _w = 0
+                while _w < 720:
+                    if rtv.fal_poll_clip("kling2.6_pro", _rid, _out) == "done":
+                        return
+                    _time.sleep(6); _w += 6
+                raise TimeoutError("生成タイムアウト（request_id保存済＝次回このボタンで再fetch＝再課金なし）")
             try:
-                with st.spinner("あり／なし 2本を生成中…（fal・約1〜2分）"):
-                    _p_yes = _os2.path.join(_dir, "focal_yes.mp4")
-                    _p_no = _os2.path.join(_dir, "focal_no.mp4")
-                    rtv.generate_clip_fal(_it["gen_bytes"], _yes, duration=5, model_key="kling2.6_pro",
-                                          negative_prompt=rtv._V79_NEGATIVE, out_path=_p_yes)
-                    rtv.generate_clip_fal(_it["gen_bytes"], _no, duration=5, model_key="kling2.6_pro",
-                                          negative_prompt=rtv._V79_NEGATIVE, out_path=_p_no)
+                with st.spinner("生成中…（fal queue・request_id保存＝クラッシュしても再fetchで拾える）"):
+                    _one(_yes, _p_yes, _req_yes)
+                    _one(_no, _p_no, _req_no)
                 _rec["ended"] = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=9))).strftime("%H:%M:%S")
-                st.session_state["_v79_probe_out"] = {"yes": _p_yes, "no": _p_no, "rec": _rec, "dir": _dir}
+                _rec["est_usd"] = round(_unit * _rec["billed_clips"], 2)
+                st.session_state["_v79_probe_rec"] = _rec
             except Exception as e:  # noqa: BLE001  ★鍵を含みうる詳細は型のみ
-                st.error(f"生成に失敗しました（{type(e).__name__}）。fal残高・鍵を確認してください。")
-        _out = st.session_state.get("_v79_probe_out")
-        if _out and _os.path.exists(_out["yes"]):
-            st.success(f"生成完了。fal課金メモ：{_out['rec']}")
+                st.error(f"生成に失敗/中断（{type(e).__name__}）。"
+                         "★request_idは保存済み＝もう一度このボタンを押すと再fetchで拾い、再課金しません。")
+        if _os.path.exists(_p_yes) and _os.path.exists(_p_no):
+            _rec = st.session_state.get("_v79_probe_rec")
+            if _rec:
+                st.success(f"fal課金メモ：{_rec}（billed_clips=今回実課金した本数・0なら再利用のみ）")
             oc1, oc2 = st.columns(2)
-            oc1.caption("あり（新・focal）"); oc1.video(_out["yes"])
-            oc2.caption("なし（旧・無目的）"); oc2.video(_out["no"])
-            with open(_out["yes"], "rb") as _f:
-                oc1.download_button("⬇️ あり.mp4", _f.read(), file_name="v79-4c_focal_yes.mp4",
+            oc1.caption("あり（新・focal）"); oc1.video(_p_yes)
+            oc2.caption("なし（旧・無目的）"); oc2.video(_p_no)
+            with open(_p_yes, "rb") as _f:
+                oc1.download_button("⬇️ あり.mp4", _f.read(), file_name=f"v79-4c_focal_yes_{_sid}.mp4",
                                     mime="video/mp4", key="_v79_dl_yes")
-            with open(_out["no"], "rb") as _f:
-                oc2.download_button("⬇️ なし.mp4", _f.read(), file_name="v79-4c_focal_no.mp4",
+            with open(_p_no, "rb") as _f:
+                oc2.download_button("⬇️ なし.mp4", _f.read(), file_name=f"v79-4c_focal_no_{_sid}.mp4",
                                     mime="video/mp4", key="_v79_dl_no")
 
 
@@ -3201,4 +3227,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-4c-probefix (あり/なし実測デバッグ欄のプロンプト表示staleバグ修正。素材セレクタを外観→リビングに変えても表示が外観のまま=text_areaの固定key地雷。★st.code(key無し・毎rerun再描画)に変更=表示が素材に追従・表示=生成が構造的に一致。★生成は元々選択素材のprompt使用で正しく、表示だけがstaleだった。前=v79-4c-probe)")
+    st.caption("build: v79-4c-crashfix (実測デバッグ欄の生成後クラッシュ修正=NameError。表示部で_os.path.existsの_osが関数未import(別関数_pl_stage_videoのローカル・スコープ外)→生成完了後にNameError。★_os/_tf/_dtを関数先頭でimport。★二重課金回避: generate_clip_fal(subscribe・request_id無)→fal_submit_clip+fal_poll_clip+request_idをファイル保存に変更=クラッシュ/中断後にボタン再押下で再fetch(再課金なし)。安定パス(素材ごと)で既存mp4は再利用。billed_clics=今回実課金本数。前=v79-4c-probefix)")
