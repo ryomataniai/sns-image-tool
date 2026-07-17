@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-5b-magwire (magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: v79-5b-narroff (★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
 
 
 def _render_video_env_diagnostics():
@@ -2717,33 +2717,34 @@ def _pl_stage_video():
                     st.text_area("生レスポンス", st.session_state.get("_pl_story_raw", ""),
                                  height=150, key="_pl_story_raw_view")
 
-            # ── ★v79-5b「動く雑誌」：特集ベースで文字面（big_text/comment/タグ）を1コール生成 ──
-            #   物語(situation)の代わりに特集(feature)から生成。ナレは画面のbig_text/commentを読み上げる。
-            #   ★ストーリー割り当てON＋この生成で、映像に文字面がoverlay合成される（v78字幕の代替）。
-            st.divider()
-            _mag_fid = st.session_state.get("pl_feature", "mote_heya")
-            _mag_feat = core.feature_of(_mag_fid) or {}
-            st.caption(f"📖 **動く雑誌**：特集『{_mag_feat.get('label', _mag_fid)}』の文字面を生成"
-                       "（big_text＝映るカットの数字/角部屋・comment・タグ最大3）。"
-                       "★『🎬 ストーリー割り当て』ONで映像に焼かれます。表紙hookは特集の定型から選ばれ、"
-                       "独自案は⚠️要確認（型承認・人力採用）。")
-            st.button("📖 動く雑誌の文字を生成（1コール・特集ベース）", key="pl_mag_gen",
-                      on_click=_pl_mag_generate_cb, args=(_mag_fid,),
-                      disabled=not _narr_ok, use_container_width=True)
-            _mmsg = st.session_state.get("_pl_mag_msg")
-            if _mmsg:
-                st.warning(_mmsg)
-            _mcov = st.session_state.get("pl_mag_cover")
-            if _mcov:
-                st.caption(f"表紙：{_mcov.get('area_line', '')}／{_mcov.get('price', '')}"
-                           f"（{_mcov.get('price_sub', '')}）／hook『{_mcov.get('hook', '')}』")
-            _mdata = st.session_state.get("pl_mag_data")
-            if _mdata:
-                st.caption("DATA面(残余・v79-6で描画)：" + "・".join(_mdata))
-            if st.session_state.get("_pl_mag_raw"):   # 実機検証：st.code（key無し＝stale回避）
-                with st.expander("🧪 magtextプロンプト＋生レスポンス（実機検証用・後で外す）", expanded=False):
-                    st.code(st.session_state.get("_pl_mag_prompt", ""))
-                    st.code(st.session_state.get("_pl_mag_raw", ""))
+    # ── 📖 動く雑誌の文字面（v79-5b・特集ベース・★ナレ非依存）────────────────────
+    #   big_text/comment/タグを1コール生成（Gemini）。『🎬 ストーリー割り当て』ONで映像にoverlay合成される。
+    #   ★ナレOFFでも生成・表示できる（文字面が主役・ナレは画面の文字を読むだけ）＝ElevenLabs鍵は不要。
+    #   ★以前は if v_narr_on 内＋ElevenLabsで無効化していた＝ナレOFF回で文字面が作れない配線ミスを修正。
+    with st.expander("📖 動く雑誌の文字面（big_text・comment・タグ／特集ベース）", expanded=False):
+        _mag_fid = st.session_state.get("pl_feature", "mote_heya")
+        _mag_feat = core.feature_of(_mag_fid) or {}
+        st.caption(f"特集『{_mag_feat.get('label', _mag_fid)}』の文字面を生成"
+                   "（big_text＝映るカットの数字/角部屋・comment・タグ最大3）。"
+                   "★『🎬 ストーリー割り当て』ONで映像に焼かれます（ナレOFFでも可）。"
+                   "表紙hookは特集の定型から選ばれ、独自案は⚠️要確認（型承認・人力採用）。")
+        st.button("📖 動く雑誌の文字を生成（1コール・特集ベース）", key="pl_mag_gen",
+                  on_click=_pl_mag_generate_cb, args=(_mag_fid,),
+                  use_container_width=True)   # ★Gemini生成＝ElevenLabsで無効化しない
+        _mmsg = st.session_state.get("_pl_mag_msg")
+        if _mmsg:
+            st.warning(_mmsg)
+        _mcov = st.session_state.get("pl_mag_cover")
+        if _mcov:
+            st.caption(f"表紙：{_mcov.get('area_line', '')}／{_mcov.get('price', '')}"
+                       f"（{_mcov.get('price_sub', '')}）／hook『{_mcov.get('hook', '')}』")
+        _mdata = st.session_state.get("pl_mag_data")
+        if _mdata:
+            st.caption("DATA面(残余・v79-6で描画)：" + "・".join(_mdata))
+        if st.session_state.get("_pl_mag_raw"):   # 実機検証：st.code（key無し＝stale回避）
+            with st.expander("🧪 magtextプロンプト＋生レスポンス（実機検証用・後で外す）", expanded=False):
+                st.code(st.session_state.get("_pl_mag_prompt", ""))
+                st.code(st.session_state.get("_pl_mag_raw", ""))
 
     # ── 🎬 ストーリー割り当て（story-v78 A0・検証中）──────────────────────────
     #   ONで「部屋=ビート／画像=カット」割り当て：連続する同室を1ビートにまとめ、ナレ字数から尺を配分。
@@ -3344,4 +3345,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-5b-magwire (magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: v79-5b-narroff (★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
