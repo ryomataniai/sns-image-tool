@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: v79-3-cover (表紙1源2消費修正: autoカバー(_pl_auto_cover_bytes)と手動表紙特大を同一ビルダー_pl_build_cover_v79→build_cover_v79に統一。simple/magazine分岐撤去。特集セレクタpl_feature(既定mote_heya)＋表紙レイアウトpl_cover_layout(copy_hero/price_hero・★新キーで旧pl_cover_styleのoptions差替え地雷を回避)。fields1源=_pl_cover_v79_fields(家賃管理費併記rentguard・角部屋タグ・時点注記・copyは特集cover_hooks[0]を読点分割の暫定)。タイムラインはA0 part2で算入済=不変(二重算入回避)。ピクセル同一(同一引数→同一bytes)・特集切替でaccent追従(GOLD/ROSE/SAGE)検証済。前=v79-2-layout)")
+    st.caption("build: v79-3.1-coverfit (表紙情報バーの幅あふれ修正=全物件系統バグ。設備行は主要最大4件をpriority順(セキュリティ→水回り→通信→その他)で選び、描画幅1000px超は件数を減らす(★文字サイズ固定=雑誌質感維持)_pl_cover_equip_line。間取タイプ生値(10x6等・LDK/R等を含まない)はspecに出さず非表示(整形はv79-5)。表紙特大の説明文を1源2消費の実態(動画冒頭1.5sにも使う)に更新。前=v79-3-cover:表紙1源2消費)")
 
 
 def _render_video_env_diagnostics():
@@ -2162,6 +2162,43 @@ def _pl_v79_area_line(facts):
     return _pl_cover_madori_area(facts) or "OSAKA ROOMS"
 
 
+# ★v79-3.1：情報バー設備行の主要設備 priority（セキュリティ→水回り→通信→その他）。表紙の幅あふれ対策。
+_PL_EQUIP_PRIORITY = [
+    "オートロック", "モニター付インターホン", "カメラ付きインターホン", "TVモニターホン", "宅配ボックス",
+    "バス・トイレ別", "バストイレ別", "独立洗面台", "追焚", "追い焚き", "浴室乾燥", "室内洗濯機置場",
+    "温水洗浄便座", "ウォシュレット",
+    "インターネット無料", "ネット無料", "光ファイバー", "光配線",
+    "エアコン", "システムキッチン", "都市ガス", "宅配ボックス", "フローリング", "収納",
+]
+
+
+def _pl_cover_equip_line(facts, max_items=4, max_w=1000, font_size=30):
+    """★v79-3.1：情報バーの設備行を『主要設備 最大max_items（priority順）→描画幅(max_w)超なら件数を減らす』で組む。
+    ★文字サイズは固定（雑誌の質感維持）＝縮小せず件数で収める。マイソク設備の全文垂れ流し（幅あふれ）を防ぐ。"""
+    raw = facts.get("equipment")
+    text = "／".join(raw) if isinstance(raw, list) else str(raw or "")
+    picked = []
+    for term in _PL_EQUIP_PRIORITY:                 # priority順に facts に含まれる語を拾う（重複除去）
+        if term in text and not any((term in p or p in term) for p in picked):
+            picked.append(term)
+        if len(picked) >= max_items:
+            break
+    if not picked and isinstance(raw, list):        # priority外でもリストなら先頭から
+        picked = [p for p in raw if p][:max_items]
+    if not picked:
+        return ""
+    import room_tour_video as rtv
+    from PIL import ImageDraw, Image
+    f = rtv._v79_sans_r(font_size)
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    while picked:                                   # 幅フィット：超えたら末尾から1件ずつ減らす（サイズ固定）
+        line = "／".join(picked)
+        if d.textlength(line, font=f) <= max_w:
+            return line
+        picked.pop()
+    return ""
+
+
 def _pl_cover_v79_fields(facts, feature_id, layout):
     """★v79-3：build_cover_v79 に渡す fields を facts＋特集から組む1源（auto/手動が共有＝ピクセル同一の担保）。
     ★暫定：copy は feature.cover_hooks[0]（読点『、』優先で2行分割）・area_lineは駅アクセス由来（正式はv79-5 magtext）。
@@ -2172,11 +2209,13 @@ def _pl_cover_v79_fields(facts, feature_id, layout):
     fee = (facts.get("fee", "") or "").strip()
     _madori_raw = facts.get("madori", "") or ""
     madori = _madori_raw.split("[")[0].strip()
+    # ★v79-3.1：間取タイプでない生値（例『10x6』＝居室帖数のraw）は非表示（生値を出さない・整形はv79-5）
+    if madori and not re.search(r"[LDKRＬＤＫＲ]|ワンルーム|ルーム", madori):
+        madori = ""
     _tag = re.search(r"\[(.+?)\]", _madori_raw)   # madoriの[角部屋]等のタグを情報バーの1節へ
     tag = _tag.group(1).strip() if _tag else ""
     area = (facts.get("area", "") or "").strip()
-    _equip = facts.get("equipment")
-    equip_line = "／".join(_equip[:6]) if isinstance(_equip, list) else (str(_equip or "").strip())
+    equip_line = _pl_cover_equip_line(facts)      # ★主要最大4件＋幅フィット（垂れ流し防止）
     _jst = datetime.now(timezone(timedelta(hours=9)))
     note_line = f"※家具・小物はAI生成のイメージ　※{_jst.year}年{_jst.month}月時点の情報"
     # 家賃管理費併記（数字形式の生値をそのまま・混入検知は呼出側 warning）
@@ -2632,10 +2671,10 @@ def _pl_stage_video():
             st.caption("各ブロック右上のコピーボタンでそのまま貼れます。"
                        "※投稿は型承認（宅建・広告専門家の事前確認）後に。")
 
-    # ── 表紙特大（P1b-2）：リールカバー/カルーセル1枚目のPNG（動画本編には挿入しない）──
+    # ── 表紙特大（P1b-2）：リールカバー/カルーセル1枚目のPNG。★v79-3以降は動画冒頭1.5sにも同一ソースで使う（1源2消費）──
     with st.expander("🖼️ 表紙特大（リールカバー / カルーセル1枚目）を生成", expanded=False):
         st.caption("素材＋事実から表紙1枚を生成。数値（徒歩分・㎡・間取り）はマイソクの事実のみ使用。"
-                   "ffmpegのみ・fal課金なし。動画本編には挿入しません（冒頭離脱を防ぐ設計）。")
+                   "ffmpegのみ・fal課金なし。★このカバーは**動画の冒頭1.5秒にも同じデザインで使われます**（1源2消費）。")
         _cfacts = st.session_state.get("pl_facts", {})
         # ★v79-3 特集セレクタ（1源＝auto/手動/staging が参照。既定 mote_heya＝「迷ったらモテ部屋」）
         st.session_state.setdefault("pl_feature", "mote_heya")
@@ -3089,4 +3128,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: v79-3-cover (表紙1源2消費修正: autoカバー(_pl_auto_cover_bytes)と手動表紙特大を同一ビルダー_pl_build_cover_v79→build_cover_v79に統一。simple/magazine分岐撤去。特集セレクタpl_feature(既定mote_heya)＋表紙レイアウトpl_cover_layout(copy_hero/price_hero・★新キーで旧pl_cover_styleのoptions差替え地雷を回避)。fields1源=_pl_cover_v79_fields(家賃管理費併記rentguard・角部屋タグ・時点注記・copyは特集cover_hooks[0]を読点分割の暫定)。タイムラインはA0 part2で算入済=不変(二重算入回避)。ピクセル同一(同一引数→同一bytes)・特集切替でaccent追従(GOLD/ROSE/SAGE)検証済。前=v79-2-layout)")
+    st.caption("build: v79-3.1-coverfit (表紙情報バーの幅あふれ修正=全物件系統バグ。設備行は主要最大4件をpriority順(セキュリティ→水回り→通信→その他)で選び、描画幅1000px超は件数を減らす(★文字サイズ固定=雑誌質感維持)_pl_cover_equip_line。間取タイプ生値(10x6等・LDK/R等を含まない)はspecに出さず非表示(整形はv79-5)。表紙特大の説明文を1源2消費の実態(動画冒頭1.5sにも使う)に更新。前=v79-3-cover:表紙1源2消費)")
