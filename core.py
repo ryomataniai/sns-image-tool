@@ -2464,6 +2464,23 @@ def _kana_ok(kana: str, comment: str) -> bool:
     return True
 
 
+def _kana_reject_reason(kana: str, comment: str, cmt_clean: bool) -> str:
+    """★narr-fix診断：narration_kana を不採用にすべき理由（採用可なら空文字）。どの条件で弾かれたかを可視化＝
+    『kanaが弾かれる条件』の切り分け用。空kana（Gemini未出力）は呼び側で別途『未出力』警告する（ここでは空扱い）。"""
+    k = str(kana or "").strip()
+    c = str(comment or "").strip()
+    if not k or not c:
+        return ""
+    if not cmt_clean:
+        return "comment改変(事実外/ban/否定/1文化)でstale"
+    kanji = len(re.findall(r"[一-鿿]", k))
+    if kanji > max(1, len(k) // 10):
+        return f"漢字残存{kanji}字(Geminiが読みに変換していない)"
+    if not (0.6 * len(c) <= len(k) <= 4.0 * len(c)):
+        return f"長さ乖離(comment{len(c)}字/kana{len(k)}字)"
+    return ""
+
+
 def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash") -> dict:
     """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
     beats=[{room, stock}]（部屋順・🔀後）。返り値:
@@ -2591,9 +2608,13 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         #   不採用時は空にして run側が normalize_reading(comment)＝辞書経路へフォールバック（黙らず警告）。
         _kana = str(o.get("narration_kana", "")).strip()
         _cmt_clean = not (_rm2 or _bn2 or _ng2 or _trunc)   # commentが後処理で削られ/短縮されていない
-        if _kana and not (_cmt_clean and _kana_ok(_kana, cmt)):
-            warnings.append(f"{room}: 読み仮名(narration_kana)が不採用条件→辞書読みにフォールバック。")
-            _kana = ""
+        if cmt and not _kana:                               # ★診断：Geminiがkanaを出力しなかった（②の候補）
+            warnings.append(f"{room}: 🈚 Geminiがnarration_kana未出力→辞書読み。")
+        elif _kana:
+            _kreason = _kana_reject_reason(_kana, cmt, _cmt_clean)
+            if _kreason:                                    # ★診断：どの条件で弾かれたかを明示（③の候補）
+                warnings.append(f"{room}: 🈚 読み仮名不採用（{_kreason}）→辞書読み。")
+                _kana = ""
         # ★タグ：room_facts_map の facts_keys で facts に実在し否定でないもの・最大3・超過は over_tags（DATAへ）
         m = room_facts_map(room)
         _present = [k for k in m["facts_keys"]
