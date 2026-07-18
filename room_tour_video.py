@@ -1435,6 +1435,36 @@ def _v79_split_accent(big_text, accent_word):
     return big[:cut], big[cut:]
 
 
+def _v79_wrap_width(text, font, max_w, max_lines=2):
+    """★comment等を描画幅max_wで折返す（最大max_lines行・フォント縮小しない＝雑誌質感維持）。CJKは文字単位。
+    各行は幅に収まる最長prefixを取り、句読点(、/。)があればそこで優先的に割る。最終行に残りを詰める（…省略しない）。"""
+    from PIL import ImageDraw, Image
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    rest = str(text or "").strip()
+    if not rest:
+        return []
+    lines = []
+    for li in range(max_lines):
+        if li == max_lines - 1:                       # 最終行＝残り全部（改行で対応・省略しない）
+            lines.append(rest)
+            rest = ""
+            break
+        n = 0                                          # 幅に収まる最大文字数
+        while n < len(rest) and d.textlength(rest[:n + 1], font=font) <= max_w:
+            n += 1
+        if n >= len(rest):
+            lines.append(rest)
+            rest = ""
+            break
+        cut = max(rest.rfind("、", 0, n), rest.rfind("。", 0, n))  # n以内の最後の句読点で優先分割
+        cut = cut + 1 if cut > 0 else n
+        lines.append(rest[:cut])
+        rest = rest[cut:]
+        if not rest:
+            break
+    return [ln for ln in lines if ln]
+
+
 def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
                        accent=_V79_GOLD, spec_line="", equip_line="", note_line="",
                        aspect="9:16") -> bytes:
@@ -1460,7 +1490,11 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
         _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
         _cy = 1470
     if comment and comment.strip():
-        _v79_shadow_text(canvas, (W // 2, _cy), comment, _v79_sans_r(42), _V79_GREY)
+        # ★comment 折返し（描画幅 W-180＝左右90マージン・最大2行・フォント42固定）。垂れ流し見切れを防止。
+        _cf = _v79_sans_r(42)
+        _clines = _v79_wrap_width(comment, _cf, W - 180, max_lines=2)
+        for _i, _ln in enumerate(_clines):
+            _v79_shadow_text(canvas, (W // 2, _cy + _i * 54), _ln, _cf, _V79_GREY)
     if spec_line or equip_line or note_line:
         _v79_infobar(canvas, spec_line, equip_line, note_line)
     buf = BytesIO()

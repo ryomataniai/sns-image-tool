@@ -2437,6 +2437,17 @@ def _drop_neg_clauses(text: str, neg_words) -> tuple:
     return "".join(kept).strip("、。／　\n "), removed
 
 
+def _first_sentence(text: str) -> tuple:
+    """★narr-fix系：comment を1文に（最初の句点『。』まで）。句点の後にまだ文があれば第1文のみ採用。
+    返り値 (clean, truncated)。LDKの2文comment（『〜深呼吸。〜しようかな。』）の長文化・見切れを止める。
+    ★句点が無い/末尾のみ＝1文＝そのまま（truncated=False）。"""
+    s = str(text or "").strip()
+    i = s.find("。")
+    if 0 <= i < len(s) - 1:                 # 句点の後にまだ文字がある＝2文以上
+        return s[:i + 1], True
+    return s, False
+
+
 def _kana_ok(kana: str, comment: str) -> bool:
     """★narr-fix-d：narration_kana（commentの全ひらがな読み）を採用してよいか。
     ①非空 ②ほぼ仮名（漢字が全体の1割以下＝読みになっている）③commentと長さが乖離しない（幻覚/欠落でない）。
@@ -2501,7 +2512,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         "・big_text＝そのビートに映る事実のみ（例『リビング10帖、角部屋。』）。★数字は映っているカットでだけ言う"
         "（面積㎡・角部屋はLDK／帖数は各部屋）。キッチンで面積を言わない。\n"
         "・accent_word＝big_text 中のキーワード1語だけ（色を変える対象。例『角部屋』）。big_textに必ず含まれる語。\n"
-        "・comment＝facts由来の編集コメント1行・現在形（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
+        "・comment＝facts由来の編集コメント。★全角24字以内・1文（句点『。』は1つまで・2文にしない）・現在形"
+        "（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
         "・narration_kana＝comment を耳で聞いて正しい『全ひらがなの読み』（漢字は文脈に沿った読み・数字/英字/単位も"
         "日本語読みのひらがなに展開・句読点は残す・commentに無い言葉を足さない）。"
         "例 comment『湯船に浸かって、一日の疲れを流す。』→ narration_kana『ゆぶねにつかって、いちにちのつかれをながす。』\n"
@@ -2558,6 +2570,10 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         # ★否定文脈ガード：AIが否定設備を『ある』かのように書いた節を落とす（景表法・タグと同じ_negated基準）。
         big, _ng1 = _drop_neg_clauses(big, _negated)
         cmt, _ng2 = _drop_neg_clauses(cmt, _negated)
+        # ★comment は1文に（2文comment暴走→見切れ防止・描画側は2行折返し）。narration_kanaはstale化するので後で不採用。
+        cmt, _trunc = _first_sentence(cmt)
+        if _trunc:
+            warnings.append(f"{room}: commentが2文以上→第1文のみ採用（見切れ防止）。")
         acc = str(o.get("accent_word", "")).strip()
         if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
             acc = ""
@@ -2572,7 +2588,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         #   採用条件＝ガード3件＋『commentが後処理で改変されていない』（改変時はkanaがstale＝画面と別内容を読む→不採用）。
         #   不採用時は空にして run側が normalize_reading(comment)＝辞書経路へフォールバック（黙らず警告）。
         _kana = str(o.get("narration_kana", "")).strip()
-        _cmt_clean = not (_rm2 or _bn2 or _ng2)      # commentが後処理で削られていない
+        _cmt_clean = not (_rm2 or _bn2 or _ng2 or _trunc)   # commentが後処理で削られ/短縮されていない
         if _kana and not (_cmt_clean and _kana_ok(_kana, cmt)):
             warnings.append(f"{room}: 読み仮名(narration_kana)が不採用条件→辞書読みにフォールバック。")
             _kana = ""
