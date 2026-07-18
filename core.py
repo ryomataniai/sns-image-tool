@@ -2437,10 +2437,26 @@ def _drop_neg_clauses(text: str, neg_words) -> tuple:
     return "".join(kept).strip("、。／　\n "), removed
 
 
+def _kana_ok(kana: str, comment: str) -> bool:
+    """★narr-fix-d：narration_kana（commentの全ひらがな読み）を採用してよいか。
+    ①非空 ②ほぼ仮名（漢字が全体の1割以下＝読みになっている）③commentと長さが乖離しない（幻覚/欠落でない）。
+    ★呼び側でさらに『commentが後処理で改変されていない』ことも条件にする（stale kana=画面と別内容を読む事故を防ぐ）。"""
+    k = str(kana or "").strip()
+    c = str(comment or "").strip()
+    if not k or not c:
+        return False
+    kanji = len(re.findall(r"[一-鿿]", k))
+    if kanji > max(1, len(k) // 10):                 # 漢字が1割超＝読みに変換できていない
+        return False
+    if not (0.6 * len(c) <= len(k) <= 4.0 * len(c)):  # 長さ乖離＝幻覚（増やした）/欠落（縮めた）
+        return False
+    return True
+
+
 def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash") -> dict:
     """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
     beats=[{room, stock}]（部屋順・🔀後）。返り値:
-      {beats:[{room_label,big_text,accent_word,comment,narration_text,tags,over_tags,needs_review}],
+      {beats:[{room_label,big_text,accent_word,comment,narration_text,narration_kana,tags,over_tags,needs_review}],
        cover:{area_line,price,price_sub,hook,hook_alt,needs_review}, data_rows:[str], warnings:[str], prompt, raw}
     ★big_text/comment=facts由来（数字は映るカットで＝面積/角部屋はLDK・帖数は各室）。room_facts_map の focal_ja/facts_keys を使う。
     ★cover.hook は feature.cover_hooks[] から選択（AI自由生成しない＝型承認面積固定）・独自案は hook_alt＋needs_review。
@@ -2486,6 +2502,9 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         "（面積㎡・角部屋はLDK／帖数は各部屋）。キッチンで面積を言わない。\n"
         "・accent_word＝big_text 中のキーワード1語だけ（色を変える対象。例『角部屋』）。big_textに必ず含まれる語。\n"
         "・comment＝facts由来の編集コメント1行・現在形（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
+        "・narration_kana＝comment を耳で聞いて正しい『全ひらがなの読み』（漢字は文脈に沿った読み・数字/英字/単位も"
+        "日本語読みのひらがなに展開・句読点は残す・commentに無い言葉を足さない）。"
+        "例 comment『湯船に浸かって、一日の疲れを流す。』→ narration_kana『ゆぶねにつかって、いちにちのつかれをながす。』\n"
         "・行末の形を揃えない。眺望/方角/日当たり/静けさ/周辺環境は書かない（facts明示が無ければ）。\n"
         "・★角部屋・最上階などの位置は、物件事実に明記があるときだけ言う。物件名・誇大語・最上級は使わない。\n"
         + (f"・★次の設備・条件は『満車/不可/なし/厳禁』等の否定記載があるため、"
@@ -2501,7 +2520,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         f"■ 物件事実（この数字・属性だけ使う）：{facts_json}\n\n"
         "出力はJSONのみ（説明なし）。形式：\n"
         '{"cover":{"hook":"…","hook_alt":""},'
-        '"beats":[{"room":"…","big_text":"…","accent_word":"…","comment":"…"}]}'
+        '"beats":[{"room":"…","big_text":"…","accent_word":"…","comment":"…","narration_kana":"…"}]}'
     )
     cover_out, beats_out, raw = {}, [], ""   # ★warnings は上で初期化済み（否定ガード警告を保持）
     parsed = None
@@ -2549,6 +2568,14 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
             warnings.append(f"{room}: 禁止語『{w}』を除去。")
         for w in set(_ng1 + _ng2):
             warnings.append(f"{room}: 否定記載の設備『{w}』を文面から除去（景表法）。")
+        # ★narr-fix-d：narration_kana（commentの全ひらがな読み・Geminiの文脈読み）。TTSはこれを読む＝誤読クラス根絶。
+        #   採用条件＝ガード3件＋『commentが後処理で改変されていない』（改変時はkanaがstale＝画面と別内容を読む→不採用）。
+        #   不採用時は空にして run側が normalize_reading(comment)＝辞書経路へフォールバック（黙らず警告）。
+        _kana = str(o.get("narration_kana", "")).strip()
+        _cmt_clean = not (_rm2 or _bn2 or _ng2)      # commentが後処理で削られていない
+        if _kana and not (_cmt_clean and _kana_ok(_kana, cmt)):
+            warnings.append(f"{room}: 読み仮名(narration_kana)が不採用条件→辞書読みにフォールバック。")
+            _kana = ""
         # ★タグ：room_facts_map の facts_keys で facts に実在し否定でないもの・最大3・超過は over_tags（DATAへ）
         m = room_facts_map(room)
         _present = [k for k in m["facts_keys"]
@@ -2562,6 +2589,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
             # ★narr-fix-a：ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）。
             #   発話量が半減し音声被りの主因が消える。comment空＝narration_text空＝そのビートはナレ無（無音＋BGM）。
             "narration_text": cmt,
+            # ★narr-fix-d：narration_kana＝TTSが読む全ひらがな読み（空＝辞書フォールバック）。narration_textは表示/参照用。
+            "narration_kana": _kana,
             "tags": _tags[:3], "over_tags": _tags[3:], "needs_review": nr})
     # cover：hook は候補から選択（外れたら hook_alt へ回し needs_review）／price系は facts由来
     _c = parsed.get("cover") or {}

@@ -1977,12 +1977,17 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
             _beat_durations, _mf_rows = {}, []
             for bid, scs in _grp:
                 _txt = (scs[0].get("beat_narration") or "").strip()   # narration_text=comment（narr-fix-a）
+                # ★narr-fix-d：TTSは narration_kana（全ひらがな読み）優先＝Geminiの文脈読みで誤読根絶。
+                #   無ければ comment を normalize_reading（辞書経路）＝フォールバック。kanaも normalize_reading を通す
+                #   （残存漢字は辞書で補正・仮名は素通し）。ゲートは comment 有無で（kana空でも comment があれば読む）。
+                _kana = (scs[0].get("beat_narration_kana") or "").strip()
+                _read = _core.normalize_reading(_kana or _txt)
                 _na = 0.0
                 if _txt:
                     _ap = _jp(f"narrbeat_{bid}.mp3")
                     try:
                         if not os.path.exists(_ap):
-                            tts_elevenlabs(_core.normalize_reading(_txt), _ap)   # ★キーはenvのみ・例外に載せない
+                            tts_elevenlabs(_read, _ap)   # ★キーはenvのみ・例外に載せない
                         _na = _adur(_ap)                          # ★音声尺は_adur（_durは動画v:0で音声を測れない）
                         _beat_audio[bid] = _ap
                     except Exception as e:  # noqa: BLE001  1本失敗＝そのビート無音で継続（全体は止めない）
@@ -2160,7 +2165,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                     try:
                         if not os.path.exists(apath):
                             import core as _core
-                            tts_elevenlabs(_core.normalize_reading(txt), apath)  # ★キーは env のみ・例外に載せない
+                            _kana = (sc.get("beat_narration_kana") or "").strip()   # ★narr-fix-d：読み仮名優先
+                            tts_elevenlabs(_core.normalize_reading(_kana or txt), apath)  # ★キーは env のみ・例外に載せない
                     except Exception as e:  # noqa: BLE001  1本失敗は隔離＝logger/stateへ
                         narr_warn.append(_log_failure(f"tts(beat {bid})", e))
                         apath = None
