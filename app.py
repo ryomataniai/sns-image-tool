@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: kana-reason (★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: pregen-guard (★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
 
 
 def _render_video_env_diagnostics():
@@ -824,6 +824,50 @@ def _pl_reset():
     for k in [k for k in list(st.session_state) if k.startswith("pl_")]:
         del st.session_state[k]
     st.session_state["pl_upload_nonce"] = n
+
+
+def _pl_pregen_summary(adopted):
+    """★生成前チェック（$3.15投下前に状態を可視化）：特集／整列済否／文字面(🈶採用N/M)／辞書読みK件（部屋名）。
+    kana採用/不採用は kana-reason と同一情報源＝pl_mag_{id} の narration_kana 有無。返り値 (markdown, ng_flags[])。"""
+    _fid = st.session_state.get("pl_feature", "mote_heya")
+    _feat = core.feature_of(_fid) or {}
+    _parts, _ng = [f"特集={_feat.get('label', _fid)}"], []
+    # 整列済否：現在の並びが room_tour_rank 昇順か（🔀部屋順に整列 相当・状態で判定）
+    _ranks = [core.room_tour_rank(it.get("room")) for it in adopted]
+    if _ranks == sorted(_ranks):
+        _parts.append("整列=済")
+    else:
+        _parts.append("整列=⚠️未（🔀部屋順に整列を推奨）")
+        _ng.append("整列未")
+    # 文字面 kana（ビート先頭id の pl_mag）
+    _mags = [st.session_state.get(f"pl_mag_{it['id']}") for it in adopted]
+    _mags = [m for m in _mags if isinstance(m, dict) and m.get("big_text")]
+    _withc = [m for m in _mags if (m.get("comment") or "").strip()]
+    _fb = [m for m in _withc if not (m.get("narration_kana") or "").strip()]
+    if not _mags:
+        _parts.append("文字面=⚠️未生成（📖動く雑誌の文字を生成）")
+        _ng.append("文字面未")
+    else:
+        _parts.append(f"文字面=生成済（🈶kana採用{len(_withc) - len(_fb)}/{len(_withc)}）")
+        if _fb:
+            _names = "・".join(m.get("room_label", "") for m in _fb)
+            _parts.append(f"⚠️辞書読み{len(_fb)}件（{_names}）")
+    return "　／　".join(_parts), _ng
+
+
+def _pl_reset_arm_cb():
+    """★誤爆対策：『最初からやり直す』1クリック目＝武装のみ（消さない）。2段確認で巻き戻り＋画像化再課金を防ぐ。"""
+    st.session_state["_pl_reset_armed"] = True
+
+
+def _pl_reset_cancel_cb():
+    st.session_state["_pl_reset_armed"] = False
+
+
+def _pl_reset_confirm_cb():
+    """『はい、最初からやり直す』＝実行。_pl_reset は pl_ キーを消すが _pl_reset_armed(先頭_)は残るので明示解除。"""
+    st.session_state["_pl_reset_armed"] = False
+    _pl_reset()
 
 
 # 用途モード（度合いだけを切り替える。機能＝部屋種別は不変）
@@ -3229,6 +3273,12 @@ def _pl_stage_video():
         if _err.get("scenes"):
             st.error("**失敗理由（シーン別）**：\n" + "\n".join(f"・{x}" for x in _err["scenes"]))
 
+    # ★生成前チェック（$3.15投下前に状態を可視化・誤爆対策の情報クッション）。
+    if not _resumable:
+        _sum_md, _sum_ng = _pl_pregen_summary(adopted)
+        (st.warning if _sum_ng else st.info)(
+            f"🔎 生成前チェック： {_sum_md}　／　カット{n_fal}本 ≈ ${est_usd:.2f}"
+            + ("　←⚠️の項目を整えてから生成を推奨" if _sum_ng else ""))
     bcol, gcol = st.columns([1, 2])
     if bcol.button("← 確認に戻る", key="pl_back_review", use_container_width=True):
         st.session_state["pl_stage"] = "review"; st.rerun()
@@ -3320,8 +3370,18 @@ def render_pipeline():
     cur = {"input": 0, "review": 2, "video": 3}.get(stage, 0)
     st.caption("　→　".join(f"**{s}**" if i == cur else s for i, s in enumerate(steps)))
     _pl_concept_selector()   # 上流1択（単一の情報源）＝画像化より前に置き下流の既定を追従させる
-    # on_click で nonce を進めてから全消し（uploaderを作り直す＝地雷②回避）。rerunは自動
-    st.button("最初からやり直す", key="pl_reset_btn", on_click=_pl_reset)
+    # ★誤爆対策（$3.15巻き戻り）：『最初からやり直す』は2段確認。1クリック目は消さず、はいで初めて全消し。
+    #   on_click で nonce を進めてから全消し（uploaderを作り直す＝地雷②回避）。rerunは自動。
+    if st.session_state.get("_pl_reset_armed"):
+        st.warning("⚠️ 最初からやり直すと、取り込んだ画像・生成した画像・動画がすべて消えます"
+                   "（②画像化は再課金になります）。よろしいですか？")
+        _rc1, _rc2 = st.columns(2)
+        _rc1.button("はい、最初からやり直す", key="pl_reset_yes", type="primary",
+                    on_click=_pl_reset_confirm_cb, use_container_width=True)
+        _rc2.button("キャンセル", key="pl_reset_no",
+                    on_click=_pl_reset_cancel_cb, use_container_width=True)
+    else:
+        st.button("最初からやり直す", key="pl_reset_btn", on_click=_pl_reset_arm_cb)
     st.divider()
     if stage == "review":
         _pl_stage_review()
@@ -3363,4 +3423,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: kana-reason (★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: pregen-guard (★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
