@@ -2448,6 +2448,22 @@ def _first_sentence(text: str) -> tuple:
     return s, False
 
 
+# ★不自然表現ガード（谷合指定）：広さ訴求の『床が余る』系は日本語として不自然→自然な便益表現へ。長い順に置換。
+_MAG_REWRITE = [("床が余っている", "余裕がある"), ("床が余ってる", "余裕がある"),
+                ("床が余って", "余裕があって"), ("床が余る", "余裕がある"), ("床が余り", "余裕があり")]
+
+
+def _rewrite_unnatural(text: str) -> tuple:
+    """『床が余る』系→『余裕がある』系に置換（生成側の後処理ガード）。返り値 (clean, changed)。"""
+    s = str(text or "")
+    changed = False
+    for a, b in _MAG_REWRITE:
+        if a in s:
+            s = s.replace(a, b)
+            changed = True
+    return s, changed
+
+
 def _kana_ok(kana: str, comment: str) -> bool:
     """★narr-fix-d：narration_kana（commentの全ひらがな読み）を採用してよいか。
     ①非空 ②ほぼ仮名（漢字が全体の1割以下＝読みになっている）③commentと長さが乖離しない（幻覚/欠落でない）。
@@ -2529,8 +2545,9 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         "・big_text＝そのビートに映る事実のみ（例『リビング10帖、角部屋。』）。★数字は映っているカットでだけ言う"
         "（面積㎡・角部屋はLDK／帖数は各部屋）。キッチンで面積を言わない。\n"
         "・accent_word＝big_text 中のキーワード1語だけ（色を変える対象。例『角部屋』）。big_textに必ず含まれる語。\n"
-        "・comment＝facts由来の編集コメント。★全角24字以内・1文（句点『。』は1つまで・2文にしない）・現在形"
-        "（例『ソファを置いても、床が余る。』）。factsに無い要素の断定は禁止。\n"
+        "・comment＝facts由来の編集コメント。★全角24字以内・1文（句点『。』は1つまで・2文にしない）・現在形。"
+        "★『床が余る』のような不自然な表現は使わない。広さは『余裕がある』『ゆったり置ける』『空間にゆとり』等の自然な便益で。"
+        "factsに無い要素の断定は禁止。\n"
         "・narration_kana＝comment を耳で聞いて正しい『全ひらがなの読み』（漢字は文脈に沿った読み・"
         "★助詞の『は』は『わ』、『へ』は『え』と発音どおりに書く・"
         "英字/数字/単位もひらがな読みに展開（例 LDK→えるでぃーけー・36㎡→さんじゅうろくへいべい）・"
@@ -2593,6 +2610,11 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         cmt, _trunc = _first_sentence(cmt)
         if _trunc:
             warnings.append(f"{room}: commentが2文以上→第1文のみ採用（見切れ防止）。")
+        # ★不自然表現ガード：『床が余る』系→自然な便益表現（big_text/comment 両方）。
+        big, _rw1 = _rewrite_unnatural(big)
+        cmt, _rw2 = _rewrite_unnatural(cmt)
+        if _rw1 or _rw2:
+            warnings.append(f"{room}: 不自然表現『床が余る』系→自然表現に修正。")
         acc = str(o.get("accent_word", "")).strip()
         if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
             acc = ""
@@ -2607,7 +2629,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         #   採用条件＝ガード3件＋『commentが後処理で改変されていない』（改変時はkanaがstale＝画面と別内容を読む→不採用）。
         #   不採用時は空にして run側が normalize_reading(comment)＝辞書経路へフォールバック（黙らず警告）。
         _kana = str(o.get("narration_kana", "")).strip()
-        _cmt_clean = not (_rm2 or _bn2 or _ng2 or _trunc)   # commentが後処理で削られ/短縮されていない
+        _cmt_clean = not (_rm2 or _bn2 or _ng2 or _trunc or _rw2)   # commentが後処理で削られ/短縮/書換されていない
         if cmt and not _kana:                               # ★診断：Geminiがkanaを出力しなかった（②の候補）
             warnings.append(f"{room}: 🈚 Geminiがnarration_kana未出力→辞書読み。")
         elif _kana:

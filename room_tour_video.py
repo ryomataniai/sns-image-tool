@@ -1379,7 +1379,13 @@ def _v79_infobar(canvas, spec_line, equip_line, note_line):
     設備（SANS_R30px y1815）／AI注記＋時点注記（SANS_R26px y1872・(150,150,150)）。中央 anchor=mm。
     ★家賃には管理費を必ず併記（呼出側で構造保証＝rentguard資産）。"""
     W = canvas.size[0]
-    _v79_shadow_text(canvas, (W // 2, 1755), spec_line, _v79_sans_b(38), _V79_WHITE, blur=6)
+    if spec_line:                                      # ★fit-to-width：38→26縮小・下限で｜折返し2行（左右60px内）
+        _sf, _slines = _v79_fit_font(spec_line, _v79_sans_b, W - 120, 38, 26)
+        if len(_slines) <= 1:
+            _v79_shadow_text(canvas, (W // 2, 1755), spec_line, _sf, _V79_WHITE, blur=6)
+        else:                                          # 下限でも溢れ＝｜で2行（上へ詰めて設備行と干渉回避）
+            for _i, _ln in enumerate(_slines):
+                _v79_shadow_text(canvas, (W // 2, 1735 + _i * 44), _ln, _sf, _V79_WHITE, blur=6)
     _v79_shadow_text(canvas, (W // 2, 1815), equip_line, _v79_sans_r(30), _V79_GREY, blur=6)
     _v79_shadow_text(canvas, (W // 2, 1872), note_line, _v79_sans_r(26), _V79_NOTE, blur=6)
 
@@ -1456,13 +1462,28 @@ def _v79_wrap_width(text, font, max_w, max_lines=2):
             lines.append(rest)
             rest = ""
             break
-        cut = max(rest.rfind("、", 0, n), rest.rfind("。", 0, n))  # n以内の最後の句読点で優先分割
+        cut = max(rest.rfind("、", 0, n), rest.rfind("。", 0, n),   # n以内の最後の区切りで優先分割
+                  rest.rfind("｜", 0, n), rest.rfind("／", 0, n))    # 情報バーは｜/／単位も
         cut = cut + 1 if cut > 0 else n
         lines.append(rest[:cut])
         rest = rest[cut:]
         if not rest:
             break
     return [ln for ln in lines if ln]
+
+
+def _v79_fit_font(text, size_fn, max_w, base, min_size, step=4):
+    """★fit-to-width（見切れ防止の本命）：text が max_w に収まる最大フォントを base→min_size で探す。
+    収まれば (font, [text])＝1行。min_size でも溢れれば (min_font, 幅折返し2行)。size_fn=_v79_serif/_v79_sans_b 等。"""
+    from PIL import ImageDraw, Image
+    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    t = str(text or "")
+    for s in range(base, min_size - 1, -step):
+        f = size_fn(s)
+        if d.textlength(t, font=f) <= max_w:
+            return f, [t]
+    fmin = size_fn(min_size)
+    return fmin, _v79_wrap_width(t, fmin, max_w, max_lines=2)
 
 
 def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
@@ -1481,14 +1502,22 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
     _v79_masthead(canvas, accent)
     _v79_room_pill(canvas, room_label)
     _v79_tag_pills(canvas, tags, accent=accent)   # 追加情報タグ（最大3・左余白・静的）
+    # ★big_text（金色スペック見出し）fit-to-width：l1(白)/l2(accent)を各 fit-or-wrap（96→56縮小・下限で折返し）→
+    #   左右60px内に必ず収める（物件により語数が変わっても見切れゼロ）。縦は font に応じ動的に積む（権威1330/1465相当）。
+    _MAXW = W - 120
     l1, l2 = _v79_split_accent(big_text, accent_word)
+    _bt = []                                          # (line, font, color)
+    if l1:
+        _f1, _ls1 = _v79_fit_font(l1, _v79_serif, _MAXW, 96, 56)
+        _bt += [(ln, _f1, _V79_WHITE) for ln in _ls1]
     if l2:
-        _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
-        _v79_shadow_text(canvas, (W // 2, 1465), l2, _v79_fit_serif(l2), accent)
-        _cy = 1590
-    else:
-        _v79_shadow_text(canvas, (W // 2, 1330), l1, _v79_fit_serif(l1), _V79_WHITE)
-        _cy = 1470
+        _f2, _ls2 = _v79_fit_font(l2, _v79_serif, _MAXW, 96, 56)
+        _bt += [(ln, _f2, accent) for ln in _ls2]
+    _y = 1330
+    for _ln, _f, _col in _bt:
+        _v79_shadow_text(canvas, (W // 2, _y), _ln, _f, _col)
+        _y += int(_f.size * 1.4)
+    _cy = _y + 6
     if comment and comment.strip():
         # ★comment 折返し（描画幅 W-180＝左右90マージン・最大2行・フォント42固定）。垂れ流し見切れを防止。
         _cf = _v79_sans_r(42)
