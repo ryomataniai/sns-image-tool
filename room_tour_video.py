@@ -387,10 +387,17 @@ ROOM_PROMPTS = {
 #   ★v79-4c：旧negativeの構造保持資産を復元（窓の増減・階数/建築変化はKlingの定番破綻）。
 _V79_NEGATIVE = ("no people, no camera shake, no warping walls, no morphing furniture, "
                  "no changing layout, no extra or missing windows, no changing architecture, "
-                 "no bending structure, no text, no flickering")
+                 "no bending structure, no text, no flickering, "
+                 # ★magfit-v79c：開口部(扉/窓/シャッター)の開閉・変形と、人物出現・扉の先の別空間生成を明示禁止
+                 "no opening doors, no opening windows, no doors windows or shutters opening moving or transforming, "
+                 "no glass door appearing, no people appearing, no human figures, no silhouettes, "
+                 "no new room or space appearing behind any door or window")
 
 _V79_KLING_ROOM = {   # 部屋別カメラワーク（依頼文§4.5）。focal は共通の『Ending settled on {focal}』で一本化（重複回避）
-    "entrance": "camera slowly dollies forward through the entrance, as if walking in",
+    # ★magfit-v79c：玄関は『扉を開けない/扉の先を生成しない』を明示（ドア開閉→別室の幻覚を封じる）
+    "entrance": ("static interior shot of the entrance and shoe cabinet with only a very slight slow micro push-in; "
+                 "the door stays closed and perfectly still; do not open, move or animate the door; "
+                 "do not generate or reveal any room or space behind the door; camera movement only"),
     "ldk":      "camera slowly pushes forward into the living room, with subtle parallax between furniture",
     "kitchen":  "camera slowly moves toward the kitchen window",
     "bedroom":  "camera slowly dollies in toward the window light",
@@ -398,10 +405,11 @@ _V79_KLING_ROOM = {   # 部屋別カメラワーク（依頼文§4.5）。focal 
     "washroom": "very slight push-in with minimal movement",
     "toilet":   "very slight push-in with minimal movement",
     "balcony":  "camera slowly pushes toward the balcony opening",
-    # ★v79-4c：外観は構造保持を本文にも明記（旧・外観プロンプトの資産を残す）
-    "exterior": ("camera slowly dollies forward toward the building facade, revealing depth and parallax; "
-                 "keep the architecture, walls, windows and number of floors exactly as-is, "
-                 "do not change, add or remove any structural detail"),
+    # ★magfit-v79c：外観は静止〜微パン/微ズームのみ。窓/シャッター/扉の変形・ガラス扉化・人物出現を封じる
+    "exterior": ("static shot of the building facade with only a very slight slow camera pan or micro zoom; "
+                 "keep the architecture, walls, windows, doors, shutters and number of floors exactly as-is; "
+                 "do not open move morph or transform any door window or shutter; do not add a glass door; "
+                 "do not add any person or figure; the building itself stays perfectly still, camera movement only"),
     "generic":  "slow smooth push-in across the room",
 }
 _V79_MOTION_AMT = {"minimal": "very slight, barely-there", "normal": "slow, smooth",
@@ -1517,17 +1525,13 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
     if l2:
         _f2, _ls2 = _v79_fit_font(l2, _v79_serif, _MAXW, 96, 56)
         _bt += [(ln, _f2, accent) for ln in _ls2]
-    _y = 1330
-    for _ln, _f, _col in _bt:
+    # ★magfit-v79c③：白サブ文言(comment/ナレ)は描画しない（音声TTSは別・run_tour_jobでmux）。
+    #   commentが消えた分、big_text ブロックを中心≈1470へ縦センタリング（縦位置が上に浮かない）。
+    _lh = [int(getattr(_f, "size", 96) * 1.4) for _, _f, _ in _bt]
+    _y = max(1300, 1470 - sum(_lh) // 2)
+    for (_ln, _f, _col), _h in zip(_bt, _lh):
         _v79_shadow_text(canvas, (W // 2, _y), _ln, _f, _col)
-        _y += int(getattr(_f, "size", 96) * 1.4)      # ★.size欠落フォントでも落ちない（テキスト保全）
-    _cy = _y + 6
-    if comment and comment.strip():
-        # ★comment 折返し（描画幅 W-180＝左右90マージン・最大2行・フォント42固定）。垂れ流し見切れを防止。
-        _cf = _v79_sans_r(42)
-        _clines = _v79_wrap_width(comment, _cf, W - 180, max_lines=2)
-        for _i, _ln in enumerate(_clines):
-            _v79_shadow_text(canvas, (W // 2, _cy + _i * 54), _ln, _cf, _V79_GREY)
+        _y += _h                                      # ★.size欠落フォントでも落ちない（テキスト保全）
     if spec_line or equip_line or note_line:
         _v79_infobar(canvas, spec_line, equip_line, note_line)
     buf = BytesIO()

@@ -1865,7 +1865,7 @@ def feature_of(fid):
 #   video_type=ROOM_PROMPTS/build_kling_prompt のキー。motion=動き量既定（狭室=minimal）。
 ROOM_FACTS_MAP = {
     "外観":   {"video_type": "exterior", "focal": "the building facade and entrance", "focal_ja": "外観",
-               "motion": "normal", "facts_keys": ["オートロック", "宅配ボックス", "駐輪場", "エレベーター"]},
+               "motion": "minimal", "facts_keys": ["オートロック", "宅配ボックス", "駐輪場", "エレベーター"]},
     "玄関":   {"video_type": "entrance", "focal": "the entrance and shoe cabinet", "focal_ja": "玄関",
                "motion": "minimal", "facts_keys": ["オートロック", "モニター付インターホン",
                                                     "カメラ付きインターホン", "宅配ボックス", "シューズボックス"]},
@@ -2464,6 +2464,42 @@ def _rewrite_unnatural(text: str) -> tuple:
     return s, changed
 
 
+_BLD_TYPES = ("マンション", "アパート", "ハイツ", "コーポ", "レジデンス", "テラス", "ハウス", "ヴィラ")
+
+
+def _safe_big_fallback(room: str, facts: dict) -> tuple:
+    """★magfit-v79c④：big_textがfact_scrub等で空化した時の、方角非依存の安全な金色見出しフォールバック。
+    構造/設備の事実だけで作る（方角/眺望を含まない＝再度fact_scrubを通しても消えない）。返り値 (big, accent)。空は返さない。
+    外観=建物種別＋階数／トイレ=バストイレ別／玄関=シューズ／洗面=独立洗面台／その他=部屋名。"""
+    r = str(room or "")
+    _ft = str(facts.get("full_text", "")) + " " + str(facts.get("name", ""))
+    _eq = facts.get("equipment")
+    _eqt = ("／".join(_eq) if isinstance(_eq, list) else str(_eq or "")) + " " + _ft
+    if "外観" in r:
+        _bt = next((t for t in _BLD_TYPES if t in _ft), "")
+        _m = re.search(r"(?:地上)?\s*(\d+)\s*階建", _ft)
+        _fl = f"地上{_m.group(1)}階建て" if _m else ""
+        if _bt and _fl:
+            return f"{_bt}、{_fl}。", _fl
+        if _bt:
+            return f"{_bt}。", _bt
+        if _fl:
+            return f"{_fl}。", _fl
+    if "トイレ" in r:
+        if any(k in _eqt for k in ("バス・トイレ別", "バストイレ別", "独立")):
+            return "独立したトイレ。", "独立したトイレ"
+        return "トイレ。", "トイレ"
+    if "玄関" in r:
+        if "シューズ" in _eqt:
+            return "シューズボックス完備。", "シューズボックス"
+        return "玄関まわり。", "玄関まわり"
+    if "洗面" in r:
+        if "独立洗面台" in _eqt:
+            return "独立洗面台。", "独立洗面台"
+        return "洗面まわり。", "洗面まわり"
+    return f"{r}。", r                          # 汎用：部屋名（絶対に空にしない）
+
+
 def _kana_ok(kana: str, comment: str) -> bool:
     """★narr-fix-d：narration_kana（commentの全ひらがな読み）を採用してよいか。
     ①非空 ②ほぼ仮名（漢字が全体の1割以下＝読みになっている）③commentと長さが乖離しない（幻覚/欠落でない）。
@@ -2618,11 +2654,18 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         cmt = _cc if (_cc.strip() or not cmt.strip()) else cmt
         if _rw1 or _rw2:
             warnings.append(f"{room}: 不自然表現『床が余る』系→自然表現に修正。")
-        # ★big_text が後処理でまるごと空化＝金色見出し欠落。原因を隠さず警告（fact_scrub/ban/否定で全節除去の可能性）。
-        if _big_raw and not big.strip():
-            warnings.append(f"⚠️ {room}: big_text（見出し）が後処理で空になりました（元『{_big_raw}』"
-                            "＝事実外属性/否定/禁止語で全節除去の可能性・要確認）。")
-        acc = str(o.get("accent_word", "")).strip()
+        # ★magfit-v79c④：big_text が後処理でまるごと空化＝金色見出し欠落→方角非依存の安全フォールバックで復活（空のまま出さない）。
+        #   原因は⚠️警告で可視化継続。accentはフォールバックの語を使う（色分けの前提＝big内に含む）。
+        _acc_override = None
+        if not big.strip():
+            _fb, _fbacc = _safe_big_fallback(room, facts)
+            big, _acc_override = _fb, _fbacc
+            if _big_raw:
+                warnings.append(f"⚠️ {room}: big_text（見出し）が後処理で空化→安全フォールバック『{big}』"
+                                f"（方角非依存・元『{_big_raw}』＝事実外/否定/禁止で全節除去の可能性）。")
+            else:
+                warnings.append(f"{room}: big_text未生成→安全フォールバック『{big}』。")
+        acc = _acc_override if _acc_override else str(o.get("accent_word", "")).strip()
         if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
             acc = ""
         nr = sorted(set(needs_review(big) + needs_review(cmt)))
