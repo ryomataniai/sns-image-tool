@@ -1595,6 +1595,79 @@ def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub=
     return buf.getvalue()
 
 
+def build_data_page(floorplan_bytes, *, feature_id="mote_heya", area="OSAKA",
+                    rows=None, notes=None, bg_bytes=None, aspect="9:16") -> tuple:
+    """★v79-6 DATA面（動く雑誌の最終ページ／通称・背表紙）。masthead＋DATA見出し＋間取り図(任意)＋
+    スペック表(金ラベル/白値・行間の細い罫線・★fit-to-widthで左右60px内)＋注記。背景=物件写真を暗くぼかして敷く。
+    ★間取り図が無ければ表を上に詰める（silent dropしない）。返り値 (png_bytes, floorplan_used_bool)。"""
+    from PIL import Image, ImageDraw, ImageOps, ImageFilter
+    from io import BytesIO
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+    feat = None
+    try:
+        import core as _core
+        feat = _core.feature_of(feature_id)
+    except Exception:  # noqa: BLE001
+        pass
+    accent = tuple(feat["accent"]) if feat else _V79_GOLD
+    if bg_bytes:                                    # 背景：物件写真を暗くぼかす
+        try:
+            base = ImageOps.fit(Image.open(BytesIO(bg_bytes)).convert("RGB"), (W, H), method=Image.LANCZOS)
+            base = base.filter(ImageFilter.GaussianBlur(18))
+            base = Image.blend(base, Image.new("RGB", (W, H), (10, 10, 12)), 0.72)
+        except Exception:  # noqa: BLE001
+            base = Image.new("RGB", (W, H), (14, 14, 17))
+    else:
+        base = Image.new("RGB", (W, H), (14, 14, 17))
+    canvas = base.convert("RGBA")
+    _v79_gradient(canvas, 0, 460, 170, 0)
+    _v79_gradient(canvas, 1200, H, 0, 205)
+    _v79_masthead(canvas, accent)
+    _v79_shadow_text(canvas, (W // 2, 445), "DATA", _v79_serif(96), accent)
+    d = ImageDraw.Draw(canvas)
+    # ── 間取り図（白ボックスに contain 配置）。無ければ表を上に詰める ──
+    _fp_used = False
+    _table_top = 580
+    if floorplan_bytes:
+        try:
+            fp = Image.open(BytesIO(floorplan_bytes)).convert("RGB")
+            _bw, _bh, _by = W - 180, 470, 540
+            _bx = (W - _bw) // 2
+            fp2 = ImageOps.contain(fp, (_bw - 28, _bh - 28), method=Image.LANCZOS)
+            d.rounded_rectangle([_bx, _by, _bx + _bw, _by + _bh], radius=14, fill=(248, 246, 242, 255))
+            canvas.paste(fp2, (_bx + (_bw - fp2.width) // 2, _by + (_bh - fp2.height) // 2))
+            _fp_used = True
+            _table_top = _by + _bh + 56
+        except Exception:  # noqa: BLE001  間取り図が壊れていてもDATA面は出す
+            _fp_used = False
+    # ── スペック表（金ラベル左／白値・fit-to-width／行間の細い罫線）──
+    rows = [(str(a), str(b)) for a, b in (rows or []) if a and str(b).strip()]
+    _notes = [str(n) for n in (notes or []) if n and str(n).strip()]
+    _table_bottom = 1770 - 30 * len(_notes)
+    _rh = min(88.0, (_table_bottom - _table_top) / max(1, len(rows)))   # 行数が多いほど詰める
+    _lf = _v79_sans_b(max(24, min(34, int(_rh * 0.42))))
+    _vfb = max(22, min(34, int(_rh * 0.42)))
+    _lbl_x, _val_x = 100, 372
+    _val_w = W - _val_x - 60
+    _y = _table_top
+    for _lbl, _val in rows:
+        _vf, _vlines = _v79_fit_font(_val, _v79_sans_r, _val_w, _vfb, 22)
+        _v79_shadow_text(canvas, (_lbl_x, int(_y + _rh / 2)), _lbl, _lf, accent, anchor="lm", blur=4)
+        _voff = -(len(_vlines) - 1) * (getattr(_vf, "size", 30) + 4) // 2
+        for _i, _ln in enumerate(_vlines):
+            _v79_shadow_text(canvas, (_val_x, int(_y + _rh / 2 + _voff + _i * (getattr(_vf, "size", 30) + 4))),
+                             _ln, _vf, _V79_WHITE, anchor="lm", blur=4)
+        d.line([(90, int(_y + _rh)), (W - 90, int(_y + _rh))], fill=(255, 255, 255, 38), width=1)
+        _y += _rh
+    _ny = _table_bottom + 26
+    for _n in _notes:
+        _v79_shadow_text(canvas, (W // 2, _ny), _n, _v79_sans_r(24), _V79_NOTE, blur=4)
+        _ny += 34
+    buf = BytesIO()
+    canvas.convert("RGB").save(buf, "PNG")
+    return buf.getvalue(), _fp_used
+
+
 def _v79_assert_resolution(img_w, img_h, min_w=1080, min_h=1920, factor=1.06):
     """★v79 画質アサート（フォールバック経路=編集系パン/ドリフト用）：オーバーレイ合成前の実効解像度が
     min×factor 以上か。不足＝パンで画質破綻（サンプルv10で実確認）。返り値 (ok, need_w, need_h)。
@@ -2210,6 +2283,32 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         except Exception as e:  # noqa: BLE001  字幕はフェイルセーフ（失敗しても動画は止めない）
             cover_warn.append("字幕の焼き込みに失敗したため字幕なしで生成しました（"
                               + _log_failure("burn_subtitles", e) + "）。")
+
+    # ── ★v79-6 DATA面（動く雑誌の最終ページ）：本編末尾に静止ページを連結。ナレなし・BGM継続・fit-to-width。──
+    #   間取り図は data_floorplan.png（app が pl_floorplan を保存・無ければ表を上に詰める）。★抽出失敗でもDATA面は必ず出す。
+    _dp = glob.get("data_page")
+    if glob.get("data_on") and _dp:
+        try:
+            _fp_path = _jp("data_floorplan.png")
+            _fp_bytes = open(_fp_path, "rb").read() if os.path.exists(_fp_path) else None
+            _bg_path = _jp("data_bg.png")            # 背景（直前シーン/物件写真・app保存・任意）
+            _bg_bytes = open(_bg_path, "rb").read() if os.path.exists(_bg_path) else None
+            _dpng, _fp_used = build_data_page(
+                _fp_bytes, feature_id=_dp.get("feature_id", "mote_heya"),
+                area=_dp.get("area", "OSAKA"), rows=_dp.get("rows") or [],
+                notes=_dp.get("notes") or [], bg_bytes=_bg_bytes, aspect=glob.get("aspect", "9:16"))
+            # ★観測点1：間取り図取得の結果をログ（A=pl_floorplan使用/なし=表上詰め）
+            cover_warn.append("📄 DATA面: 間取り図" + ("あり（pl_floorplan使用）" if _fp_used
+                              else "なし（表を上に詰めて描画・⚠️取得できず）") + "。")
+            _dclip = _jp("data_clip.mp4")
+            _cover_clip(_dpng, float(_dp.get("sec", 3.5) or 3.5), out_w, out_h, _dclip)
+            _tmp_d = _jp("_tmp_data_append.mp4")
+            _prepend_clip(body, _dclip, _tmp_d)      # ★body→data＝末尾に連結（_prepend_clip(A,B)=A then B）
+            shutil.move(_tmp_d, _jp("room_tour_silent.mp4"))
+            body = _jp("room_tour_silent.mp4")
+        except Exception as e:  # noqa: BLE001  DATA面はフェイルセーフ（失敗しても本編は出す）＝ログに残す
+            cover_warn.append("DATA面の連結に失敗したため本編のみで生成しました（"
+                              + _log_failure("data_page", e) + "）。")
 
     out = {"outdir": job_dir}
     if glob.get("also_silent", True):

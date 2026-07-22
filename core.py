@@ -2500,6 +2500,91 @@ def _safe_big_fallback(room: str, facts: dict) -> tuple:
     return f"{r}。", r                          # 汎用：部屋名（絶対に空にしない）
 
 
+# ★v79-6 DATA面：スペック表のカテゴリ語（否定でない実在設備のみ表示）。方角は明記時のみ「建物」行に含める。
+_DATA_DIR_RE = re.compile(r"(南東|南西|北東|北西|南向き|北向き|東向き|西向き|南面|北面|東面|西面)")
+_DATA_SEC_KW = ("オートロック", "モニター付インターホン", "カメラ付きインターホン", "TVモニター付インターホン",
+                "防犯カメラ", "宅配ボックス", "ディンプルキー")
+_DATA_WATER_KW = ("バス・トイレ別", "バストイレ別", "独立洗面台", "追焚", "浴室乾燥", "温水洗浄便座",
+                  "ウォシュレット", "室内洗濯機置場", "洗面化粧台")
+_DATA_STORE_KW = ("ウォークインクローゼット", "クローゼット", "シューズボックス", "納戸", "床下収納", "収納")
+
+
+def build_data_rows(facts: dict) -> list:
+    """★v79-6 DATA面のスペック表行を facts から組む。返り値 [(label, value)]。
+    ★取れない行は省略（空欄/ダミー/推測なし）・方角はマイソク明記時のみ「建物」行・否定facts(満車等)は除外・生値寸法(10x6)はstrip。"""
+    import re as _re
+    _ft = str(facts.get("full_text", ""))
+    _eq = facts.get("equipment")
+    _eqt = ("／".join(_eq) if isinstance(_eq, list) else str(_eq or "")) + " " + _ft
+
+    def _strip_dim(s):   # 生寸法トークン（10x6 等）を落とす（app._strip_raw_dim と同仕様・core内複製）
+        return _re.sub(r"\s*\d+(?:\.\d+)?\s*[xX×✕]\s*\d+(?:\.\d+)?\s*", " ", str(s or "")).strip()
+
+    def _present(kws):   # 否定でない実在設備だけ（重複語は長い方優先）
+        out = []
+        for k in kws:
+            if k in _eqt and not fact_negated(k, _eqt) and not any(k in o or o in k for o in out):
+                out.append(k)
+        return out
+
+    rows = []
+    _mad = _strip_dim((facts.get("madori", "") or "").split("[")[0].strip())
+    _ar = _strip_dim((facts.get("area", "") or "").strip())
+    _v = " ／ ".join(x for x in (_mad, _ar) if x)
+    if _v:
+        rows.append(("間取り", _v))
+    # 建物：種別／階建／築年／方角（★方角は _ft に明記があるときだけ）
+    _bt = next((t for t in _BLD_TYPES if t in _ft), "")
+    _m = _re.search(r"(?:地上)?\s*(\d+)\s*階建", _ft)
+    _fl = f"地上{_m.group(1)}階建て" if _m else ""
+    _blt = _strip_dim((facts.get("built", "") or "").strip())
+    _dm = _DATA_DIR_RE.search(_ft)
+    _dir = _dm.group(1) if _dm else ""      # ★明記時のみ（fact_scrub方針＝真偽が取れない方角は出さない と整合）
+    _v = " ／ ".join(x for x in (_bt, _fl, _blt, _dir) if x)
+    if _v:
+        rows.append(("建物", _v))
+    _acc = facts.get("access")
+    _av = _strip_dim((_acc[0] if isinstance(_acc, list) and _acc else str(_acc or "")).strip())
+    if _av:
+        rows.append(("交通", _av))
+    _rent = (facts.get("rent", "") or "").strip()
+    _fee = (facts.get("fee", "") or "").strip()
+    if _rent:
+        rows.append(("賃料", _rent + (f"（＋管理費 {_fee}）" if _fee else "")))
+    # 初期費用（敷金・礼金・保証金 が full_text に明記のときだけ）
+    _init = []
+    for _lbl, _key in (("敷金", "敷金"), ("礼金", "礼金"), ("保証金", "保証金")):
+        _mm = _re.search(_key + r"[：:\s]*([0-9０-９]+(?:[.．]\d+)?\s*(?:ヶ月|カ月|か月|万円|円|なし|無))", _ft)
+        if _mm:
+            _init.append(f"{_lbl}{_mm.group(1)}")
+    if _init:
+        rows.append(("初期費用", " ／ ".join(_init)))
+    # 契約（定期借家/普通借家/保証会社 が明記のときだけ・上位語優先で重複排除）
+    _ct = []
+    for k in ("定期借家", "普通借家", "保証会社利用必須", "保証会社"):
+        if k in _ft and not any(k in c or c in k for c in _ct):
+            _ct.append(k)
+    if _ct:
+        rows.append(("契約", " ／ ".join(_ct)))
+    for _lbl, _kw in (("セキュリティ", _DATA_SEC_KW), ("水まわり", _DATA_WATER_KW), ("収納・他", _DATA_STORE_KW)):
+        _p = _present(_kw)
+        if _p:
+            rows.append((_lbl, "・".join(_p)))
+    return rows
+
+
+def data_note_date(facts: dict, gen_date_str: str = "") -> str:
+    """★v79-6 注記の年月：マイソクに情報日付があればそれ、無ければ生成日（呼出側が渡す）。景表法『現況優先』併記前提。
+    full_text から『YYYY年M月』or『YYYY/M』を拾う（情報日付/更新日 近傍優先）。無ければ gen_date_str。"""
+    import re as _re
+    _ft = str(facts.get("full_text", ""))
+    _near = _re.search(r"(?:情報日付|情報登録日|更新日|作成日)[^\d]{0,6}(\d{4})[年/\-.](\d{1,2})", _ft)
+    _any = _near or _re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", _ft)
+    if _any:
+        return f"{_any.group(1)}年{int(_any.group(2))}月"
+    return gen_date_str
+
+
 def _kana_ok(kana: str, comment: str) -> bool:
     """★narr-fix-d：narration_kana（commentの全ひらがな読み）を採用してよいか。
     ①非空 ②ほぼ仮名（漢字が全体の1割以下＝読みになっている）③commentと長さが乖離しない（幻覚/欠落でない）。
