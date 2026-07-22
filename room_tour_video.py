@@ -1474,16 +1474,20 @@ def _v79_wrap_width(text, font, max_w, max_lines=2):
 
 def _v79_fit_font(text, size_fn, max_w, base, min_size, step=4):
     """★fit-to-width（見切れ防止の本命）：text が max_w に収まる最大フォントを base→min_size で探す。
-    収まれば (font, [text])＝1行。min_size でも溢れれば (min_font, 幅折返し2行)。size_fn=_v79_serif/_v79_sans_b 等。"""
+    収まれば (font, [text])＝1行。min_size でも溢れれば (min_font, 幅折返し2行)。size_fn=_v79_serif/_v79_sans_b 等。
+    ★どんな入力（空/分割不能/極端）でも例外を投げず必ず有効な (font, 非空lines) を返す＝テキスト欠落を作らない。"""
     from PIL import ImageDraw, Image
-    d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
     t = str(text or "")
-    for s in range(base, min_size - 1, -step):
-        f = size_fn(s)
-        if d.textlength(t, font=f) <= max_w:
-            return f, [t]
-    fmin = size_fn(min_size)
-    return fmin, _v79_wrap_width(t, fmin, max_w, max_lines=2)
+    try:
+        d = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+        for s in range(base, min_size - 1, -step):
+            f = size_fn(s)
+            if d.textlength(t, font=f) <= max_w:
+                return f, [t]
+        fmin = size_fn(min_size)
+        return fmin, (_v79_wrap_width(t, fmin, max_w, max_lines=2) or [t])
+    except Exception:  # noqa: BLE001  ★fit失敗でもテキストを消さない＝基準サイズで描く（多少はみ出しても描く方を優先）
+        return size_fn(base), [t]
 
 
 def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
@@ -1516,7 +1520,7 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
     _y = 1330
     for _ln, _f, _col in _bt:
         _v79_shadow_text(canvas, (W // 2, _y), _ln, _f, _col)
-        _y += int(_f.size * 1.4)
+        _y += int(getattr(_f, "size", 96) * 1.4)      # ★.size欠落フォントでも落ちない（テキスト保全）
     _cy = _y + 6
     if comment and comment.strip():
         # ★comment 折返し（描画幅 W-180＝左右90マージン・最大2行・フォント42固定）。垂れ流し見切れを防止。
@@ -2144,7 +2148,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     # ── ★v79「動く雑誌」：ビート文字面（big_text/accent/comment/tags）を全画面overlayで焼く ──
     #   背景=Kling動画、前景=build_beat_overlay。ナレは画面の文字を読み上げる。v78字幕焼きの代替（big_text保持時のみ発火）。
     #   ビート開始=cover_off+Σ前ビートbeat_narr_sec（＝ナレ配置と同一式）。表紙区間は文字面なし。文字面フィールドは各ビート先頭sceneに載る。
-    _v79_mag = any(sc.get("big_text") for sc in ordered)
+    _v79_mag = any((sc.get("big_text") or sc.get("comment")) for sc in ordered)   # ★comment のみでも発火（big_text空化耐性）
     if _v79_mag:
         try:
             _accent = tuple(glob.get("v79_accent") or _V79_GOLD)
@@ -2159,21 +2163,31 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 _nsec = _beat_d(sc)                    # ★narr-fix-b：measure-first時は実測d_i（予測beat_narr_secでなく）
                 _s = _cover_off + _acc
                 _acc += _nsec                          # ナレ有無に関わらず尺を積む（stillビートも前進）
-                if not sc.get("big_text"):
-                    continue                           # DATAビート等（big_text無）は素の背景
-                _png = build_beat_overlay(
-                    sc.get("room_label") or sc.get("room") or "",   # 表示名優先（magtext由来・LDK→リビング）
-                    sc.get("big_text") or "", sc.get("accent_word") or "",
-                    sc.get("comment") or "", tags=sc.get("beat_tags") or [],
-                    accent=_accent, spec_line=sc.get("spec_line") or "",
-                    equip_line=sc.get("equip_line") or "", note_line=sc.get("note_line") or "",
-                    aspect=_aspect)
-                _ov.append((_png, _s, _s + _nsec))
+                _room = sc.get("room_label") or sc.get("room") or ""
+                _bigt = (sc.get("big_text") or "").strip()
+                _cmt = (sc.get("comment") or "").strip()
+                # ★magfit-v79b：big_text が空でも overlay を描く（マストヘッド＋タグ＋部屋pill＋commentは出す）
+                #   ＝テキスト層まるごと欠落を防ぐ。真に何も無いビート（room_labelも無い＝存在しない想定）だけスキップ。
+                if not (_bigt or _cmt or _room):
+                    continue
+                if not _bigt:                          # big_text空＝見出し欠落を隠さずログ（fact_scrub等で空化の可能性）
+                    narr_warn.append(f"⚠️ ビート{bid + 1}（{_room}）: big_text（金色見出し）が空。"
+                                     "マストヘッド/タグ/commentのみ描画（factで空化の可能性・要確認）。")
+                try:                                   # ★per-beat隔離：1ビートの描画失敗で全ビートを落とさない
+                    _png = build_beat_overlay(
+                        _room, _bigt, sc.get("accent_word") or "", _cmt,
+                        tags=sc.get("beat_tags") or [], accent=_accent,
+                        spec_line=sc.get("spec_line") or "", equip_line=sc.get("equip_line") or "",
+                        note_line=sc.get("note_line") or "", aspect=_aspect)
+                    _ov.append((_png, _s, _s + _nsec))
+                except Exception as e:  # noqa: BLE001  1ビート失敗は隔離＝ログのみ（他ビートは描く）
+                    narr_warn.append(f"⚠️ ビート{bid + 1}（{_room}）: 文字面の描画に失敗し省略（"
+                                     + _log_failure(f"build_beat_overlay(beat {bid})", e) + "）。")
             _mag = _jp("_tmp_magazine.mp4")
             _burn_beat_overlays(body, _ov, _mag, out_w, out_h)
             shutil.move(_mag, _jp("room_tour_silent.mp4"))
             body = _jp("room_tour_silent.mp4")
-        except Exception as e:  # noqa: BLE001  文字面はフェイルセーフ（失敗しても動画は止めない）
+        except Exception as e:  # noqa: BLE001  文字面焼き込み全体の失敗はフェイルセーフ（動画は止めない）＝ログに残す
             cover_warn.append("文字面の焼き込みに失敗したため文字なしで生成しました（"
                               + _log_failure("burn_beat_overlays", e) + "）。")
 

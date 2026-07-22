@@ -2601,6 +2601,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         room = b["room"]
         o = _by.get(room) or ((parsed.get("beats") or [])[i]
                               if i < len(parsed.get("beats") or []) else {}) or {}
+        _big_raw = str(o.get("big_text", "")).strip()   # ★空化検知用（後処理でbig_textがまるごと消える＝見出し欠落）
         big, _rm1, _bn1 = _clean(str(o.get("big_text", "")))
         cmt, _rm2, _bn2 = _clean(str(o.get("comment", "")))
         # ★否定文脈ガード：AIが否定設備を『ある』かのように書いた節を落とす（景表法・タグと同じ_negated基準）。
@@ -2610,11 +2611,17 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         cmt, _trunc = _first_sentence(cmt)
         if _trunc:
             warnings.append(f"{room}: commentが2文以上→第1文のみ採用（見切れ防止）。")
-        # ★不自然表現ガード：『床が余る』系→自然な便益表現（big_text/comment 両方）。
-        big, _rw1 = _rewrite_unnatural(big)
-        cmt, _rw2 = _rewrite_unnatural(cmt)
+        # ★不自然表現ガード：『床が余る』系→自然な便益表現（big_text/comment 両方）。空返し防御（変換で消さない）。
+        _bb, _rw1 = _rewrite_unnatural(big)
+        big = _bb if _bb.strip() else big              # 万一空になったら元を維持（テキスト欠落を作らない）
+        _cc, _rw2 = _rewrite_unnatural(cmt)
+        cmt = _cc if (_cc.strip() or not cmt.strip()) else cmt
         if _rw1 or _rw2:
             warnings.append(f"{room}: 不自然表現『床が余る』系→自然表現に修正。")
+        # ★big_text が後処理でまるごと空化＝金色見出し欠落。原因を隠さず警告（fact_scrub/ban/否定で全節除去の可能性）。
+        if _big_raw and not big.strip():
+            warnings.append(f"⚠️ {room}: big_text（見出し）が後処理で空になりました（元『{_big_raw}』"
+                            "＝事実外属性/否定/禁止語で全節除去の可能性・要確認）。")
         acc = str(o.get("accent_word", "")).strip()
         if acc and acc not in big:            # accent_word は big_text に含まれる語のみ（色分けの前提）
             acc = ""
