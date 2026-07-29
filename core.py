@@ -1979,6 +1979,56 @@ def _sns_access_pick(access):
     return best_st, best_min
 
 
+# ★issue-v1：マストヘッド2行目のエリア表記用ローマ字（app._PL_AREA_ROMAJI から移設＝1源）。
+#   辞書に無い駅は「日本語のまま」返す（ローマ字を推測生成しない＝誤記事故の防止）。西区/ドーム前導線を追加。
+_AREA_ROMAJI = {
+    "福島": "FUKUSHIMA", "野田": "NODA", "梅田": "UMEDA", "大阪": "OSAKA", "難波": "NAMBA",
+    "なんば": "NAMBA", "天王寺": "TENNOJI", "本町": "HOMMACHI", "心斎橋": "SHINSAIBASHI",
+    "京橋": "KYOBASHI", "淀屋橋": "YODOYABASHI", "中之島": "NAKANOSHIMA", "天満": "TENMA",
+    "桜川": "SAKURAGAWA", "西九条": "NISHIKUJO", "弁天町": "BENTENCHO", "新大阪": "SHIN-OSAKA",
+    "谷町": "TANIMACHI", "北浜": "KITAHAMA", "堀江": "HORIE", "南堀江": "MINAMI-HORIE",
+    # ── 西区/大正/中津まわりの導線（福島固定表記の事故対策で追加）──
+    "九条": "KUJO", "阿波座": "AWAZA", "西長堀": "NISHI-NAGAHORI", "肥後橋": "HIGOBASHI",
+    "ドーム前": "DOME-MAE", "ドーム前千代崎": "DOME-MAE", "大正": "TAISHO", "中津": "NAKATSU",
+}
+
+
+def _area_romaji(station_key: str) -> str:
+    """★issue-v1：駅名（『駅』を除いた文字列）→ エリア表記。辞書に無ければ日本語のまま返す（推測ローマ字化はしない）。
+    ★マイソク頻出の『JR福島駅』『地下鉄本町駅』のように事業者/路線名が前置される表記を後方一致（最長）で拾う
+      ＝これが無いと『JR福島』がそのままマストヘッドに出る（実測で検出した不具合）。
+    ★駅名でないもの（『◯◯線』＝路線名／『最寄』＝_sns_access_pick のプレースホルダ）は空を返し、
+      呼出側で『ISSUE NN』単独へ倒す（＝取得失敗を地名らしき文字列で取り繕わない）。"""
+    key = (station_key or "").replace("駅", "").strip()
+    if not key or key.endswith("線") or key == "最寄":
+        return ""
+    if key in _AREA_ROMAJI:
+        return _AREA_ROMAJI[key]
+    cands = [k for k in _AREA_ROMAJI if len(k) < len(key) and key.endswith(k)]
+    return _AREA_ROMAJI[max(cands, key=len)] if cands else key
+
+
+def magazine_issue_line(facts, issue_no=1, area_override="") -> str:
+    """★issue-v1：動く雑誌マストヘッド2行目『ISSUE 03  /  OSAKA・NISHIKUJO』を組む1源。
+    エリアの決定順＝ area_override（人の手入力）＞ facts の代表駅（_sns_access_pick）のローマ字 ＞ 空。
+    ★エリアが取れないときに FUKUSHIMA 等の既定値を出さない（＝物件と異なるエリアを焼き込む事故の再発防止）。
+      取れなければ 'ISSUE 03' 単独へフォールバックする。
+    ★辞書に無い駅はローマ字を推測せず日本語のまま返す（_v79_sans_r＝ゴシックで描画可）。この場合
+      'OSAKA・' は付けない（旧 _pl_cover_subline の判断を踏襲＝英日混在の不格好を避ける）。
+    号数は数字以外を落として2桁ゼロ詰め。空・0・数字なしは '01'。"""
+    nn = re.sub(r"\D", "", str(issue_no if issue_no is not None else "")).zfill(2)[:2]
+    if not nn or nn == "00":
+        nn = "01"
+    area = str(area_override or "").strip().upper()      # 人の手入力を優先（英小文字はマストヘッドの全大文字に合わせる）
+    if not area:
+        st_name, _ = _sns_access_pick((facts or {}).get("access"))
+        area = _area_romaji(st_name)                     # 未知駅＝日本語のまま／駅名でなければ空
+    if not area:
+        return f"ISSUE {nn}"                             # ★エリア不明＝既定エリアを騙らない
+    head = "OSAKA・" if area.encode("ascii", "ignore").decode() == area else ""
+    return f"ISSUE {nn}  /  {head}{area}"
+
+
 def _concept_caption_line(concept: str) -> str:
     """draft_sns_captions 用コンセプトのトーン1行（hook/area_blurの文体）。normal/wipは空＝回帰。"""
     tone = concept_tone(concept, "caption")
