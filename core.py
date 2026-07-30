@@ -1828,6 +1828,38 @@ def needs_review(text):
     return [w for w in _NEEDS_REVIEW if w in s]
 
 
+# ★covercopy-v1：間取り表記トークン（1LDK/2DK/3SLDK/1R/ワンルーム）。数値主張の検出でここだけ除外する。
+_RE_MADORI_TOKEN = re.compile(r"[0-9０-９]+\s*[SLDKRＳＬＤＫＲ]{1,4}|ワンルーム")
+
+
+def _scrub_cover_copy(text, facts=None, limit=14, concept="normal"):
+    """★covercopy-v1：表紙コピーの機械ガード（1源）。ban語・最上級・物件名・字数超過・装飾記号を落とす。
+    返り値 (clean, warnings)。★空文字を返すことがある（＝全節が落ちた）。既定コピーへ倒すかは**呼出側の判断**で、
+    ここでは勝手に埋めない（どこで既定に落ちたかを呼出側が warning に出せるようにするため）。
+    ★末尾の句点『。』は残す（『帰りたくなる、1LDK。』のような表紙の語り口＝意図的な演出）。
+    ★事実外属性の節除去（fact_scrub）は別レイヤー。呼出側で先に通すこと。"""
+    warnings = []
+    s = re.sub(r"\s+", "", str(text or "")).strip("　「」『』\"'、・")
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + concept_ban_extra(concept):
+        if w and w in s:
+            s = s.replace(w, "")
+            warnings.append(f"ban語『{w}』を除去")
+    name = ((facts or {}).get("name") or "").strip()
+    if name and name in s:
+        s = s.replace(name, "")
+        warnings.append("物件名を除去")
+    # ★数字：**削除しない**。間取り表記（1LDK等）は特集既定コピー『帰りたくなる、1LDK。』にも含まれる正規の表記で、
+    #   機械削除すると『帰りたくなる、LDK。』のように文が壊れる（沈黙破損）。間取り以外の数値主張だけを検出して
+    #   人力確認へ回す（採用可否は3案ゲートで人が決める＝景表法の判断を機械に肩代わりさせない）。
+    if re.search(r"[0-9０-９]", _RE_MADORI_TOKEN.sub("", s)):
+        warnings.append("間取り表記以外の数字を含む（数値主張＝要確認）")
+    s = s.strip("　「」『』\"'、・")
+    if len(s) > limit:
+        s = s[:limit]
+        warnings.append(f"{limit}字超のため打ち切り")
+    return s, warnings
+
+
 # ★v79 特集マスタ（features）：1特集=1行のdata駆動（CONCEPT_PRESETSとは当面併存・v79-2でUI配線）。
 #   変わるのは4点のみ（ラベル・アクセント色・stagingプロンプト・コピートーン）。accentはPIL実値(RGB)。
 FEATURES = {
@@ -2672,9 +2704,12 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
     """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
     beats=[{room, stock}]（部屋順・🔀後）。返り値:
       {beats:[{room_label,big_text,accent_word,comment,narration_text,narration_kana,tags,over_tags,needs_review}],
-       cover:{area_line,price,price_sub,hook,hook_alt,needs_review}, data_rows:[str], warnings:[str], prompt, raw}
+       cover:{area_line,price,price_sub,hook_candidates:[str],hook,hook_source,needs_review},
+       data_rows:[str], warnings:[str], prompt, raw}
     ★big_text/comment=facts由来（数字は映るカットで＝面積/角部屋はLDK・帖数は各室）。room_facts_map の focal_ja/facts_keys を使う。
-    ★cover.hook は feature.cover_hooks[] から選択（AI自由生成しない＝型承認面積固定）・独自案は hook_alt＋needs_review。
+    ★covercopy-v1：cover は『この物件のための表紙コピー3案』を自由生成（hook_candidates）。採用は人（app側3案ラジオ）で、
+      自動採用はしない＝型承認ゲートは維持。全案に fact_scrub/ban/_scrub_cover_copy/needs_review を通す。
+      全案がガードで落ちたら feature.cover_hooks[0] へフォールバックし hook_source='feature_fallback' を立てる。
     ★few_shot 2本＋抽出規則は mote_heya の comment 規則として使う（削除しない）。後処理: fact_scrub/ban/needs_review/タグ最大3差分。
     ★narr-fix-a：narration_text = comment のみ（big_textは読まない＝特大文字は視聴者が読む・声はコメントを添えるだけ）。comment空＝ナレ無。"""
     import json as _json
@@ -2731,14 +2766,19 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
            if _negated else "")
         + ("・comment のトーンは下の承認例2本に合わせる（現在形・照れは話し方に・物と時間で示す・説明しない）。\n"
            f"{_STORY_FEWSHOT}\n" if _mote else "")
-        + "■ 表紙（cover）：\n"
-        f"・hook は必ず次の候補から1つ選ぶ（AIで新しく作らない）：{_json.dumps(hooks, ensure_ascii=False)}\n"
-        "・物件に合う独自案があれば hook_alt に入れる（採用は人が判断＝任意・無ければ空文字）。\n\n"
+        + "■ 表紙（cover）：この物件のための表紙コピーを3案つくる（hook_candidates）。\n"
+        "・全角14字以内・1文。読点『、』を1つ入れて2行に割れる形が望ましい（例『帰りたくなる、1LDK。』）。\n"
+        "・facts に実在する要素だけを根拠にする。眺望/方角/日当たり/静けさ/周辺環境は facts に明記が無ければ書かない。\n"
+        "・物件名・建物名・最上級（最高/絶対/唯一/破格/激安/希少）・『モテ』等の内部語は使わない。"
+        "数値の主張（面積・賃料・徒歩分）も書かない（間取り表記『1LDK』のような型は可）。\n"
+        "・3案は互いに違う切り口にする（例：帰宅の情景／間取りの使い方／時間帯の情景）。\n"
+        f"・特集トーン（{feat.get('comment_tone','')}）に合わせる。参考までに特集の既定コピー："
+        f"{_json.dumps(hooks, ensure_ascii=False)}（そのまま流用せず、この物件のために書く）\n\n"
         "■ ビート構成（この順・部屋名・主語focal・その部屋に映る設備facts）：\n"
         f"{_json.dumps(_binfo, ensure_ascii=False)}\n\n"
         f"■ 物件事実（この数字・属性だけ使う）：{facts_json}\n\n"
         "出力はJSONのみ（説明なし）。形式：\n"
-        '{"cover":{"hook":"…","hook_alt":""},'
+        '{"cover":{"hook_candidates":["…","…","…"]},'
         '"beats":[{"room":"…","big_text":"…","accent_word":"…","comment":"…","narration_kana":"…"}]}'
     )
     cover_out, beats_out, raw = {}, [], ""   # ★warnings は上で初期化済み（否定ガード警告を保持）
@@ -2838,21 +2878,52 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
             # ★narr-fix-d：narration_kana＝TTSが読む全ひらがな読み（空＝辞書フォールバック）。narration_textは表示/参照用。
             "narration_kana": _kana,
             "tags": _tags[:3], "over_tags": _tags[3:], "needs_review": nr})
-    # cover：hook は候補から選択（外れたら hook_alt へ回し needs_review）／price系は facts由来
+    # ★covercopy-v1 cover：この物件のための表紙コピーを3案生成し、全案に機械ガードを通す。
+    #   採用は人（app側の3案ラジオ）＝自動採用しない。ガード＝fact_scrub/ban（_clean）→物件名/字数（_scrub_cover_copy）
+    #   →needs_review。空になった案は落とし、全滅したら特集既定へフォールバック（表紙コピーを空にしない）。
     _c = parsed.get("cover") or {}
-    _hook = str(_c.get("hook", "")).strip()
-    _hook_alt = str(_c.get("hook_alt", "")).strip()
-    _cov_nr = []
-    if _hook and _hook not in hooks:          # ★候補外＝AI自由生成→hook_altへ回し人力確認
-        _hook_alt = _hook_alt or _hook
-        _hook = hooks[0] if hooks else ""
-        _cov_nr.append("hookが候補外→hook_altへ（人力確認）")
-        warnings.append("表紙hookが候補外のため候補既定に置換（独自案はhook_altに保持）。")
-    if not _hook:
-        _hook = hooks[0] if hooks else ""
-    if _hook_alt:
-        _cov_nr.append("hook_alt候補あり（採用は人力）")
-    cover_out = {**_mag_price_fields(facts), "hook": _hook, "hook_alt": _hook_alt, "needs_review": _cov_nr}
+    _raw_cands = _c.get("hook_candidates")
+    _raw_cands = _raw_cands if isinstance(_raw_cands, list) else []
+    # ★needs_review は『どの案が』引っかかったかを案ごとに保持する（needs_review_by_hook）。
+    #   全案ぶんを1本のリストに混ぜると、選ぼうとしている案が安全かをUIで判断できず、
+    #   「数値主張は人が弾く」という設計の前提そのものが崩れる（＝ゲートが機能する条件）。
+    _cands, _nr_map, _seen_h = [], {}, set()
+    for _h in _raw_cands[:5]:                          # 3案想定・多く返っても5案までしか見ない
+        _t0 = str(_h or "").strip()
+        if not _t0:
+            continue
+        _t, _rmh, _bnh = _clean(_t0)                   # 事実外属性の節除去＋ban（ビート面と同一レイヤー）
+        _t, _wsh = _scrub_cover_copy(_t, facts)        # 物件名・字数・装飾記号・数値主張の検出
+        _reasons = []
+        for r in set(_rmh):
+            warnings.append(f"表紙コピー『{_t0}』: 事実外属性『{r}』を除去。")
+        for w in set(_bnh):
+            warnings.append(f"表紙コピー『{_t0}』: 禁止語『{w}』を除去。")
+        for w in _wsh:
+            warnings.append(f"表紙コピー『{_t0}』: {w}。")
+            if "数字" in w:                            # 数値主張は消さず人力確認へ回す（沈黙破損を作らない）
+                _reasons.append("間取り表記以外の数字（数値主張）")
+        if not _t:
+            warnings.append(f"表紙コピー『{_t0}』: ガードで全部消えたため不採用。")
+            continue                                   # ★落とした案の理由は needs_review に残さない（選べない案なので）
+        if _t in _seen_h:
+            continue
+        _seen_h.add(_t)
+        _cands.append(_t)
+        _reasons += needs_review(_t)                   # 巻き添え語（SNS口語/希少性演出等）＝止めずに人へ回す
+        if _reasons:
+            _nr_map[_t] = sorted(set(_reasons))
+    _hook_source = "ai"
+    if not _cands:                                     # ★全滅＝黙って既定に落ちない（app側で警告表示）
+        _cands = [hooks[0]] if hooks else [""]
+        _hook_source = "feature_fallback"
+        warnings.append("⚠️ 表紙コピーを生成できない／全案がガードで空になったため、特集の既定コピーを使用します。")
+    cover_out = {**_mag_price_fields(facts), "hook_candidates": _cands, "hook": _cands[0],
+                 "hook_source": _hook_source,
+                 # ★案ごとの理由（UIがどの案に⚠️を付けるかの情報源）。{コピー本文: [理由,…]}
+                 "needs_review_by_hook": _nr_map,
+                 # 平坦版は互換用（📖メッセージの⚠️要確認サマリー等）。どの案かが分かる形で並べる。
+                 "needs_review": sorted(f"『{_h}』{_r}" for _h, _rs in _nr_map.items() for _r in _rs)}
     # data_rows：どのビートにも割り当てられなかった設備（差分方式・over_tags含む）＝DATAビート素材（描画はv79-6）
     _used = set()
     for bo in beats_out:
@@ -3061,54 +3132,10 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
     return {"text": out, "limit": limit, "warnings": sorted(set(warnings))}
 
 
-def draft_cover_copy(client, facts: dict, model="gemini-2.5-flash",
-                     concept: str = "normal") -> dict:
-    """雑誌型表紙のキャッチを1つ生成。★12字以内・体言止め・やわらかい語り口。
-    誇大/最上級/断定・物件名・『モテ』等の内部語は禁止（生成後にコードで除去＋警告）。
-    concept: コンセプトの cover.tone を方向づけに使う（★v70cの単一の情報源＝draft_pr_copyの表紙と同源）。
-    normal/wip＝空＝現行トーンに回帰。コンセプト固有ban語も除去。返り値: {copy:str, warnings:[str]}。"""
-    import json as _json
-    limit = 12
-    name = (facts.get("name") or "").strip()
-    _ctone = concept_tone(concept, "cover")             # ★表紙トーンの単一の情報源（コンセプト）
-    _tone_line = (f"・トーン：{_ctone}\n" if _ctone
-                  else "・招きたくなる／居心地の良さのニュアンス。\n")   # 空=現行トーン=回帰
-    instr = (
-        f"あなたは賃貸物件の表紙コピーライターです。表紙のキャッチを1つだけ、"
-        f"**{limit}字以内**の日本語で作ってください。\n"
-        f"{_tone_line}"
-        "・体言止め・短句・やわらかい語り口。\n"
-        "・誇大/最上級/断定（最高・絶対・破格・激安・希少・唯一 等）は使わない。\n"
-        "・物件名・建物名・『モテ』等の内部語は絶対に使わない。数字は入れない。\n"
-        "出力はキャッチ本文のみ（説明・記号・引用符・改行なし）。\n"
-        "物件事実（ヒント）："
-        + _json.dumps({k: v for k, v in facts.items()
-                       if k in ("madori", "area", "equipment")}, ensure_ascii=False)
-    )
-    warnings, copy = [], ""
-    try:
-        resp = client.models.generate_content(model=model, contents=[instr])
-        raw = (getattr(resp, "text", "") or "").strip()
-        copy = raw.splitlines()[0] if raw else ""
-    except Exception as e:  # noqa: BLE001  握り潰さず記録（既定コピーで続行）
-        warnings.append(f"AIコピー生成に失敗（{type(e).__name__}）。既定コピーを使います。")
-
-    copy = re.sub(r"\s+", "", copy).strip("　「」『』\"'。、・")
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + concept_ban_extra(concept):
-        if w and w in copy:
-            copy = copy.replace(w, "")
-            warnings.append(f"ban語『{w}』を除去")
-    if name and name in copy:
-        copy = copy.replace(name, "")
-        warnings.append("物件名を除去")
-    copy = copy.strip("　「」『』\"'。、・")
-    if len(copy) > limit:
-        copy = copy[:limit]
-        warnings.append(f"{limit}字超のため打ち切り")
-    if not copy:
-        copy = "居心地のいい部屋。"                # フォールバック（9字）
-        warnings.append("生成できず既定コピーを使用")
-    return {"copy": copy, "warnings": sorted(set(warnings))}
+# ★covercopy-v1：draft_cover_copy（表紙キャッチ1本のGemini生成）を削除。唯一の呼出元 app._pl_cover_ai_cb が
+#   死にコード（on_click登録先ゼロ）で推移的に到達不能であり、表紙コピー生成は magtext の3案生成に一本化した
+#   （残すと『表紙コピーを作る経路』が2つになる＝issue-v1 で断った2源化の温床）。
+#   機械ガード部分は _scrub_cover_copy() として保存済み（magtext が使用）。
 
 
 def plan_maisoku_photo_tour(client, pdf_bytes, min_px: int = 250):

@@ -125,7 +125,7 @@ def render_settings():
                "商用利用可否はGoogleの利用規約を最終確認してください。")
     _render_caption_template_editor()
     _render_video_env_diagnostics()
-    st.caption("build: issue-v1 (★ISSUE番号のUI化＋エリア自動化＝マストヘッド2行目のハードコード『ISSUE 01 / OSAKA・FUKUSHIMA』を廃止。★主目的=エリア誤表示の事故対策(福島固定のため西区/九条/本町の物件で事実と異なるエリアが表紙・全ビート・DATA面の3面に焼き込まれていた)。生成ロジックは core.magazine_issue_line に一本化(_AREA_ROMAJI＝西区/ドーム前導線を追加・エリア決定順=手入力>マイソク代表駅(_sns_access_pick)のローマ字>空・★取れないときに既定エリアを騙らず ISSUE 03 単独へフォールバック・未知駅はローマ字を推測せず日本語のまま)。描画=_v79_masthead(issue_text)＋fit-to-width(30→22・長い駅名NISHI-NAGAHORIで左右見切れゼロ)、3面(表紙:1579/ビート:1514/DATA:1625)へ配線。UI=📖内にISSUE番号/エリア手動上書き＋確定文字列プレビュー(課金前に目で確定)＋生成前サマリーに1行。★build_data_pageの死に引数area(本体未参照)を削除しissue_textへ統合。★app._pl_cover_subline/_PL_AREA_ROMAJI(呼出元ゼロの死にコード)を削除＝2源化の温床を断つ。『最初からやり直す』は号数を保持(連番運用)・エリアはクリア(物件依存)。fal不要でローカルPNG検証済。★注意=ISSUE番号/エリアはjob_id(glob)に入るため生成後の変更は別ジョブ扱い＝fal再課金。以下 autosort-v1: ★🔀部屋順の整列をデフォルト化(押し忘れ→部屋バラバラ動画の$3.15無駄を防ぐ)。画像化直後に③で1回だけ自動整列。過去のsticky事故(整列が繰り返し適用され手動順を上書き)対策の3条件: 条件1(一回限り)=pl_autosort_doneで再発火しない・条件2(手動不上書き)=_pl_moveがpl_order_manualを立て以後自動整列しない・条件3(明示+取消)=🔀自動整列しました通知＋「元の順に戻す」(_pl_restore_order・元順pl_order_original復元・以後手動扱い)。生成前チェックの整列=表示は状態判定のまま(自動化しても実態反映)。★条件2/3の非再現テスト済(手動↓→再実行×2→手動順保持)。fal不要。以下v79-6-data2: ★DATA面の状態を生成前サマリー(pregen-guard)に追加＝課金前にDATA面の品質を判定。_pl_data_summary()=DATA面 ON/OFF・行数(build_data_rows充足率)・間取り図あり/なし(pl_floorplan)・行少なめ⚠️。生成前サマリー＋📖直後の両方に表示(情報源1箇所)。$3.15を払う前にDATA面がスカスカにならないか/間取り図がAで取れたかが分かる。以下v79-6-data: ★DATA面(動く雑誌の最終ページ)を本編末尾に追加=masthead＋DATA見出し＋間取り図(pl_floorplan)＋スペック表(金ラベル/白値・罫線・fit-to-width)＋注記。静止3.5s・ナレなし・BGM継続。core.build_data_rows(取れない行は省略・方角はマイソク明記時のみ「建物」行・否定facts除外(fact_negated)・生値寸法strip)＋data_note_date(マイソク日付優先→生成日)。rtv.build_data_page(間取り図無しは表を上に詰めてDATA面は必ず出す=silent drop禁止・取得ログ)。run_tour_jobが_cover_clip+_prepend_clipで末尾連結。fal不要。以下ui-stepgate-v1: ★📖文字面生成を④動画化の必須前提として強制(誤課金防止)。修正1=文字面(pl_mag/big_text)空だと🎬ルームツアー生成ボタンをdisabled＋理由caption。修正2=生成前サマリーの最上段に文字面状態(✅生成済Nビート/🔴⚠️未生成)を追加・未生成でボタン封鎖と連動(_pl_pregen_summaryが3-tuple:md,ng,mag_ready)。修正3=ステップバーに📖文字面を追加(①取込→②画像化→③整列・確認→📖文字面→④動画化・現在地太字/未完了グレー/📖未実行は赤⚠️)。修正4=📖expanderを未生成時に自動展開＋タイトル🔴【必須】/生成済✅・ボタンprimary。fal不要でUI検証完結。以下magfit-v79c: ★①②Klingモーション幻覚修正=外観/玄関のカメラワークを静止〜微パンに制約(外観motion=minimal・扉/窓/シャッター開閉変形禁止・人物出現禁止・扉の先の別空間生成禁止)＋_V79_NEGATIVE強化(no opening doors/no people appearing等)。③白サブ文言(comment/ナレ)を動画描画から非表示(build_beat_overlayがcomment描かない・音声TTSは別経路で残す)＋big_text中心≈1470に縦センタリング。④外観/トイレの金色見出しをfact_scrub空化時に方角非依存の安全フォールバックで復活(core._safe_big_fallback:外観=建物種別+階数/トイレ=独立/玄関=シューズ/洗面=独立洗面台/汎用=部屋名・空にしない)。fact_scrubは不変。以下magfit-v79b: ★magfit-v79のリグレッション修正=big_text空化で一部シーンのテキスト層(masthead+tag+金色見出し+サブ)がまるごと消える問題。真因=big_text空→overlay loopの旧スキップ(if not big_text:continue)でoverlay全体を捨てていた(既存機構・fact_scrubで方角等の全節除去→空化が引き金)。修正=①overlay loopはbig_text空でもmasthead/tag/comment描画(真に空のビートだけスキップ)②build_beat_overlay/_v79_fit_fontを例外安全化(getattr size・fit失敗は基準サイズ・非空lines)③per-beat try/except(1ビート失敗で全落ちしない)④magtextでbig_text空化を警告(元テキスト+理由)⑤_rewrite_unnatural空返し防御⑥発火ゲートをbig_text or commentに⑦reading_dict朝→あさ。以下magfit-v79: ★金色スペック行の横幅fit未実装による左右見切れ2件＋不自然文言1件を修正。修正1(描画)=表紙DATAストリップ(_v79_infobar spec行)にfit-to-width(38→26縮小・下限で｜折返し2行・max_w=W-120=左右60px)。修正2(描画)=beat big_text(金色見出し)を_v79_fit_font(96→56縮小・下限で幅折返し・動的y)＝物件により語数が変わっても見切れゼロ。修正3(生成)=magtextの不自然表現ガード『床が余る』系→『余裕がある』系(_rewrite_unnatural・big/comment両方・プロンプト明記・書換はcomment改変=kana stale不採用)。以下pregen-guard: ★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: covercopy-v1 (★表紙コピーを物件別の自由生成に切替＝特集固定文言(cover_hooks[0])の焼き回しを廃止。★併せて既存の受入8違反を解消: magtextが生成した表紙hookをUIは表示するのに _pl_cover_v79_fields が読まず、画面の文言と焼かれる文言が別物になりうる状態だった(旧コードで再現テスト済)。core.magtext=cover節のみ差替え(hook_candidates 3案・全角14字・読点1つ・facts根拠・切り口を変える)。ビート面(big_text/comment/narration_kana/タグ)の生成規則は不変=旧コードとbeats出力バイト一致で確認。ガードは全案に必ず通す(fact_scrub→ban→core._scrub_cover_copy〈物件名/字数14/装飾記号〉→needs_review)。空になった案は落とし全滅なら feature.cover_hooks[0] へ hook_source=feature_fallback で明示フォールバック。★数字は削除せず検出のみ(間取り表記1LDKを機械削除すると『帰りたくなる、LDK。』と壊れるため。間取り以外の数値主張はneeds_reviewで人力確認へ)。UI=📖内に3案ラジオ(全文表示・人が選ぶゲートは維持)＋確定コピー表示。★needs_reviewは案ごとに保持(needs_review_by_hook)＝ラジオ本文末尾に⚠️要確認を付け理由も案別に並べる(全案を1行にまとめると『選ぼうとしている案が安全か』が分からず、数値主張を人が弾く前提が崩れるため)。選択中の案が要確認なら生成前サマリーにも⚠️。配線は _pl_effective_hook が1源(人の選択>magtext既定>特集既定=📖未実行の回帰経路)。stale対策=autoカバー署名に表紙コピー/マストヘッド表記を含め自動追従(無課金)＋PNGに焼いたコピーを記録し手動カバーの食い違いを _pl_cover_stale で検知(📖/🖼️/生成前サマリーの3箇所に警告・サマリーではNG扱い)。死にコード削除=app._pl_cover_ai_cb/_pl_cover_clean_copy・core.draft_cover_copy・rtv.build_cover_magazine。fal不要でローカル検証済。以下 issue-v1: ★ISSUE番号のUI化＋エリア自動化＝マストヘッド2行目のハードコード『ISSUE 01 / OSAKA・FUKUSHIMA』を廃止。★主目的=エリア誤表示の事故対策(福島固定のため西区/九条/本町の物件で事実と異なるエリアが表紙・全ビート・DATA面の3面に焼き込まれていた)。生成ロジックは core.magazine_issue_line に一本化(_AREA_ROMAJI＝西区/ドーム前導線を追加・エリア決定順=手入力>マイソク代表駅(_sns_access_pick)のローマ字>空・★取れないときに既定エリアを騙らず ISSUE 03 単独へフォールバック・未知駅はローマ字を推測せず日本語のまま)。描画=_v79_masthead(issue_text)＋fit-to-width(30→22・長い駅名NISHI-NAGAHORIで左右見切れゼロ)、3面(表紙:1579/ビート:1514/DATA:1625)へ配線。UI=📖内にISSUE番号/エリア手動上書き＋確定文字列プレビュー(課金前に目で確定)＋生成前サマリーに1行。★build_data_pageの死に引数area(本体未参照)を削除しissue_textへ統合。★app._pl_cover_subline/_PL_AREA_ROMAJI(呼出元ゼロの死にコード)を削除＝2源化の温床を断つ。『最初からやり直す』は号数を保持(連番運用)・エリアはクリア(物件依存)。fal不要でローカルPNG検証済。★注意=ISSUE番号/エリアはjob_id(glob)に入るため生成後の変更は別ジョブ扱い＝fal再課金。以下 autosort-v1: ★🔀部屋順の整列をデフォルト化(押し忘れ→部屋バラバラ動画の$3.15無駄を防ぐ)。画像化直後に③で1回だけ自動整列。過去のsticky事故(整列が繰り返し適用され手動順を上書き)対策の3条件: 条件1(一回限り)=pl_autosort_doneで再発火しない・条件2(手動不上書き)=_pl_moveがpl_order_manualを立て以後自動整列しない・条件3(明示+取消)=🔀自動整列しました通知＋「元の順に戻す」(_pl_restore_order・元順pl_order_original復元・以後手動扱い)。生成前チェックの整列=表示は状態判定のまま(自動化しても実態反映)。★条件2/3の非再現テスト済(手動↓→再実行×2→手動順保持)。fal不要。以下v79-6-data2: ★DATA面の状態を生成前サマリー(pregen-guard)に追加＝課金前にDATA面の品質を判定。_pl_data_summary()=DATA面 ON/OFF・行数(build_data_rows充足率)・間取り図あり/なし(pl_floorplan)・行少なめ⚠️。生成前サマリー＋📖直後の両方に表示(情報源1箇所)。$3.15を払う前にDATA面がスカスカにならないか/間取り図がAで取れたかが分かる。以下v79-6-data: ★DATA面(動く雑誌の最終ページ)を本編末尾に追加=masthead＋DATA見出し＋間取り図(pl_floorplan)＋スペック表(金ラベル/白値・罫線・fit-to-width)＋注記。静止3.5s・ナレなし・BGM継続。core.build_data_rows(取れない行は省略・方角はマイソク明記時のみ「建物」行・否定facts除外(fact_negated)・生値寸法strip)＋data_note_date(マイソク日付優先→生成日)。rtv.build_data_page(間取り図無しは表を上に詰めてDATA面は必ず出す=silent drop禁止・取得ログ)。run_tour_jobが_cover_clip+_prepend_clipで末尾連結。fal不要。以下ui-stepgate-v1: ★📖文字面生成を④動画化の必須前提として強制(誤課金防止)。修正1=文字面(pl_mag/big_text)空だと🎬ルームツアー生成ボタンをdisabled＋理由caption。修正2=生成前サマリーの最上段に文字面状態(✅生成済Nビート/🔴⚠️未生成)を追加・未生成でボタン封鎖と連動(_pl_pregen_summaryが3-tuple:md,ng,mag_ready)。修正3=ステップバーに📖文字面を追加(①取込→②画像化→③整列・確認→📖文字面→④動画化・現在地太字/未完了グレー/📖未実行は赤⚠️)。修正4=📖expanderを未生成時に自動展開＋タイトル🔴【必須】/生成済✅・ボタンprimary。fal不要でUI検証完結。以下magfit-v79c: ★①②Klingモーション幻覚修正=外観/玄関のカメラワークを静止〜微パンに制約(外観motion=minimal・扉/窓/シャッター開閉変形禁止・人物出現禁止・扉の先の別空間生成禁止)＋_V79_NEGATIVE強化(no opening doors/no people appearing等)。③白サブ文言(comment/ナレ)を動画描画から非表示(build_beat_overlayがcomment描かない・音声TTSは別経路で残す)＋big_text中心≈1470に縦センタリング。④外観/トイレの金色見出しをfact_scrub空化時に方角非依存の安全フォールバックで復活(core._safe_big_fallback:外観=建物種別+階数/トイレ=独立/玄関=シューズ/洗面=独立洗面台/汎用=部屋名・空にしない)。fact_scrubは不変。以下magfit-v79b: ★magfit-v79のリグレッション修正=big_text空化で一部シーンのテキスト層(masthead+tag+金色見出し+サブ)がまるごと消える問題。真因=big_text空→overlay loopの旧スキップ(if not big_text:continue)でoverlay全体を捨てていた(既存機構・fact_scrubで方角等の全節除去→空化が引き金)。修正=①overlay loopはbig_text空でもmasthead/tag/comment描画(真に空のビートだけスキップ)②build_beat_overlay/_v79_fit_fontを例外安全化(getattr size・fit失敗は基準サイズ・非空lines)③per-beat try/except(1ビート失敗で全落ちしない)④magtextでbig_text空化を警告(元テキスト+理由)⑤_rewrite_unnatural空返し防御⑥発火ゲートをbig_text or commentに⑦reading_dict朝→あさ。以下magfit-v79: ★金色スペック行の横幅fit未実装による左右見切れ2件＋不自然文言1件を修正。修正1(描画)=表紙DATAストリップ(_v79_infobar spec行)にfit-to-width(38→26縮小・下限で｜折返し2行・max_w=W-120=左右60px)。修正2(描画)=beat big_text(金色見出し)を_v79_fit_font(96→56縮小・下限で幅折返し・動的y)＝物件により語数が変わっても見切れゼロ。修正3(生成)=magtextの不自然表現ガード『床が余る』系→『余裕がある』系(_rewrite_unnatural・big/comment両方・プロンプト明記・書換はcomment改変=kana stale不採用)。以下pregen-guard: ★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
 
 
 def _render_video_env_diagnostics():
@@ -688,8 +688,12 @@ def _pl_mag_generate_cb(feature_id):
     st.session_state["pl_mag_cover"] = res["cover"]
     st.session_state["pl_mag_data"] = res.get("data_rows", [])
     _cov = res["cover"]
+    # ★covercopy-v1：📖再生成で候補が入れ替わるので、前回の選択（3案ラジオ）は破棄して1案目に戻す。
+    #   残すと『前物件のコピーが選択されたまま新物件の表紙に焼かれる』事故になる（候補外の値はradioも落ちる）。
+    st.session_state.pop("pl_cover_hook_pick", None)
+    st.session_state.pop("_keep_pl_cover_hook_pick", None)
     if _cov.get("needs_review"):
-        _flags.append(f"表紙hook『{_cov.get('hook_alt') or _cov.get('hook')}』")
+        _flags.append("表紙コピー（" + " / ".join(_cov["needs_review"]) + "）")
     # ★narr-fix-d診断：kana採用率（誤読残存の切り分け＝kana不発なら辞書追加は無意味・まず原因特定）。
     #   commentありビートのうち narration_kana が採用された数。0/N なら Gemini未出力 or ガード過剰弾き or 未デプロイを疑う。
     _wc = [b for b in res["beats"] if (b.get("comment") or "").strip()]
@@ -827,6 +831,8 @@ def _pl_reset():
     # ★issue-v1：影キー(_keep_*)は先頭 "_" なので上のループで消えない＝号数は次の物件へ持ち越す（連番運用で毎回入力し直さない）。
     #   一方エリアは物件依存なので明示クリア（前の物件のエリアを次の物件に焼き込む事故を防ぐ）。
     st.session_state.pop("_keep_pl_issue_area", None)
+    # ★covercopy-v1：表紙コピーの選択も物件依存＝同じ理由で影キーごとクリア（issue-v1のエリアと同型の事故）。
+    st.session_state.pop("_keep_pl_cover_hook_pick", None)
 
 
 def _pl_mag_beats(adopted):
@@ -880,6 +886,18 @@ def _pl_pregen_summary(adopted):
     #   「エリアを出したい回」は手入力を促す（黙って地名なしで焼かない）。
     _iss = _pl_issue_text()
     _parts.append(f"雑誌表記={_iss}" + ("" if "/" in _iss else "　⚠️エリア未取得（手入力で補えます）"))
+    # ★covercopy-v1：表紙に焼かれるコピーを課金前に確定表示。表紙PNGが古い（選択変更後に作り直していない）ならNG扱い。
+    _mcv = st.session_state.get("pl_mag_cover") or {}
+    _hk = _pl_effective_hook()
+    _hk_nr = (_mcv.get("needs_review_by_hook") or {}).get(_hk)
+    _parts.append(f"表紙コピー=『{_hk}』"
+                  + ("　⚠️特集の既定（物件別になっていない）" if _mcv.get("hook_source") == "feature_fallback" else "")
+                  # ★選択中の案に要確認表現があるなら課金前に出す（どの案かは📖側で本文つきに表示）
+                  + (f"　⚠️要確認（{' / '.join(_hk_nr)}）" if _hk_nr else ""))
+    _cstale, _cbaked, _ccur = _pl_cover_stale()
+    if _cstale:
+        _parts.append(f"⚠️表紙PNGが古い（焼込『{_cbaked}』≠現在『{_ccur}』・🖼️表紙特大で作り直し）")
+        _ng.append("表紙PNG古い")
     return "　／　".join(_parts), _ng, _mag_ready
 
 
@@ -2265,34 +2283,11 @@ def _pl_issue_text(facts=None):
         st.session_state.get("pl_issue_area", ""))
 
 
-def _pl_cover_clean_copy(copy, facts):
-    """雑誌型コピーの生成時ガード：ban語・物件名・『モテ』＋事実外属性を除去（構造保証）。
-    ★静的既定『帰りたくない。角部屋。』も含め、角部屋等がfactsに無ければ除去（禁止でなく照合・factguard-v72）。
-    空になったら安全な既定へ。末尾の句点『。』は意図的な演出なので保持する。"""
-    s = str(copy or "")
-    for w in list(core._PR_BANNED) + core._SNS_BAN_EXTRA + ["モテ部屋", "モテ"]:
-        if w and w in s:
-            s = s.replace(w, "")
-    name = (facts.get("name") or "").strip()
-    if name and name in s:
-        s = s.replace(name, "")
-    s, _ = core.fact_scrub(s, facts)       # ★事実外属性（角部屋/眺望/日当たり等）を節単位で除去
-    s = s.strip("　「」『』\"' ")
-    return s or "居心地のいい部屋。"
-
-
-def _pl_cover_ai_cb():
-    """『AIで一言』on_click。生成→pl_cover_copy へ代入。★コールバック内＝widget生成前＝地雷①回避。
-    body-flowで st.session_state['pl_cover_copy']=... すると StreamlitAPIException で落ちる（v78前提1の修正）。"""
-    try:
-        _mcl = make_client()
-    except RuntimeError:
-        st.session_state["_pl_cover_ai_msg"] = "Gemini APIキーが未設定です（設定ページで確認）。"
-        return
-    _cc = core.draft_cover_copy(_mcl, _pl_effective_facts(),
-                                concept=st.session_state.get("pl_concept", "normal"))
-    st.session_state["pl_cover_copy"] = _cc["copy"]     # ← コールバック内なので widget キーへ安全に代入
-    st.session_state["_pl_cover_ai_msg"] = "／".join("🖊️ " + w for w in _cc.get("warnings", [])) or ""
+# ★covercopy-v1：_pl_cover_clean_copy（呼出元ゼロ）と _pl_cover_ai_cb（on_click登録先ゼロ＝ボタン本体が無い）を削除。
+#   両者が使っていた core.draft_cover_copy も併せて削除し、表紙コピーの生成経路を magtext の3案に一本化した。
+#   コピーの機械ガードは core._scrub_cover_copy() に集約。
+#   ※下の _pl_cover_default_src は生きている（autoカバーと表紙UIが使う）。死にコード削除の巻き添えで一度消して
+#     NameError を作り込んだため、範囲を絞って復元した経緯あり。
 
 
 def _pl_cover_default_src(adopted):
@@ -2304,6 +2299,34 @@ def _pl_cover_default_src(adopted):
         if it.get("room") in ("洋室", "寝室"):
             return it["id"]
     return adopted[0]["id"] if adopted else None
+
+
+def _pl_effective_hook(feature_id=None):
+    """★covercopy-v1：表紙コピーの確定文字列を返す唯一の入口（issue-v1 の _pl_issue_text と同じ思想）。
+    優先順＝①人が選んだ案（3案ラジオ）＞②magtextの既定案（1案目）＞③特集の既定コピー（📖未実行時の回帰経路）。
+    ★①は現在の候補に含まれるときだけ有効。📖再生成で候補が入れ替わったのに旧選択が残ると
+      『画面に出ている案と焼かれる案が別物』になるため、候補外なら②へ落とす（受入8と同型の担保）。"""
+    _mc = st.session_state.get("pl_mag_cover") or {}
+    _cands = [c for c in (_mc.get("hook_candidates") or []) if str(c).strip()]
+    _pick = str(st.session_state.get("pl_cover_hook_pick", "") or "").strip()
+    if _cands and _pick not in _cands:
+        _pick = ""
+    _fid = feature_id or st.session_state.get("pl_feature", "mote_heya")
+    _fallback = ((core.FEATURES.get(_fid) or {}).get("cover_hooks") or [""])[0]
+    return _pick or str(_mc.get("hook", "") or "").strip() or _fallback
+
+
+def _pl_cover_stale():
+    """★covercopy-v1：表紙PNGに焼かれたコピーと、現在の確定コピーが食い違っていないかを返す (stale, baked, current)。
+    autoカバーは _feat_sig に hook を含めたので自動追従する（ffmpegのみ＝無課金）。
+    手動生成カバーは追従を止める仕様（_pl_cover_auto_sig=None）なので、ここだけ古いまま残りうる＝黙って使わない。
+    ★hookキーを持たない旧PNG（covercopy-v1以前に作られたもの）は判定不能なので stale としない（誤警告を出さない）。"""
+    _cov = st.session_state.get("pl_cover_png") or {}
+    if not _cov.get("bytes"):
+        return False, "", ""
+    baked = str(_cov.get("hook", "") or "")
+    cur = _pl_effective_hook()
+    return (bool(baked) and baked != cur), baked, cur
 
 
 def _pl_v79_area_line(facts):
@@ -2370,7 +2393,7 @@ def _pl_cover_equip_line(facts, max_items=4, max_w=1000, font_size=30):
 
 def _pl_cover_v79_fields(facts, feature_id, layout):
     """★v79-3：build_cover_v79 に渡す fields を facts＋特集から組む1源（auto/手動が共有＝ピクセル同一の担保）。
-    ★暫定：copy は feature.cover_hooks[0]（読点『、』優先で2行分割）・area_lineは駅アクセス由来（正式はv79-5 magtext）。
+    ★copy は magtext の物件別3案から人が選んだ hook（読点『、』優先で2行分割・covercopy-v1）。area_lineは駅アクセス由来。
     ★家賃には管理費を必ず併記（rentguard資産）。返り値=build_cover_v79 の kwargs dict。"""
     from datetime import datetime, timezone, timedelta
     feat = core.feature_of(feature_id) or {}
@@ -2393,8 +2416,9 @@ def _pl_cover_v79_fields(facts, feature_id, layout):
     _rentfee = (f"賃料{rent}" + (f"＋管理費{fee}/月" if fee else "")) if rent else ""
     spec_line = " ｜ ".join(x for x in (f"{madori} {area}".strip(), tag, _rentfee) if x.strip())
     price = ("¥" + rent.replace("円", "").strip()) if rent else ""
-    hooks = feat.get("cover_hooks") or []
-    hook = hooks[0] if hooks else ""
+    # ★covercopy-v1：hook は物件別の3案から人が選んだもの（_pl_effective_hook が唯一の入口）。
+    #   旧実装は feature.cover_hooks[0] 固定＝全物件で同じコピーが焼かれ、かつ📖が表示するhookと食い違っていた。
+    hook = _pl_effective_hook(feature_id)
     area_line = _pl_v79_area_line(facts)
     # ★issue-v1：マストヘッド2行目（号数＋エリア）も fields 経由で渡す＝auto/手動が同一文字列（1源2消費の担保を維持）。
     kw = {"price": price, "spec_line": spec_line, "equip_line": equip_line, "note_line": note_line,
@@ -2583,7 +2607,8 @@ def _pl_v78_timestamp_probe(rtv):
 _PL_V_KEEP_KEYS = ("pl_v_model", "pl_v_dur", "pl_v_bgm", "pl_v_aspect", "pl_v_caps",
                    "pl_v_tag", "pl_v_note", "pl_v_flashcut", "pl_v_cover_on",
                    "pl_v_cover_sec", "pl_v_narr_on", "pl_v_story", "pl_v_data",
-                   "pl_issue_no", "pl_issue_area")   # ★issue-v1：往復で号数/エリアが消えないように影キー保存
+                   "pl_issue_no", "pl_issue_area",   # ★issue-v1：往復で号数/エリアが消えないように影キー保存
+                   "pl_cover_hook_pick")             # ★covercopy-v1：選んだ表紙コピーを往復で保持
 
 
 def _pl_v_keep(key, default):
@@ -2753,7 +2778,10 @@ def _pl_stage_video():
     # 谷合さんが「表紙が追加されない」を繰返し踏んだため、表紙を自動生成しトグル既定ONに。
     # 表紙生成は ffmpeg のみ・課金なし＝毎回作ってもコスト影響なし。失敗しても止めない（付加価値）。
     # ★v79-3：特集/レイアウトが変わったら auto カバーを再生成（accent/ラベル追従）。手動生成後は追従停止（sig=None）。
-    _feat_sig = (st.session_state.get("pl_feature", "mote_heya"), _pl_cover_layout())
+    # ★covercopy-v1：署名に『焼かれる文字列』（表紙コピー＋マストヘッド表記）も含める＝📖再生成やコピー選択の変更で
+    #   autoカバーが自動的に作り直される（ffmpegのみ＝無課金なので毎回作ってよい）。stale PNG対策の主経路。
+    _feat_sig = (st.session_state.get("pl_feature", "mote_heya"), _pl_cover_layout(),
+                 _pl_effective_hook(), _pl_issue_text())
     _need_auto = ("pl_cover_png" not in st.session_state) or (
         st.session_state.get("_pl_cover_auto_sig") is not None
         and st.session_state.get("_pl_cover_auto_sig") != _feat_sig)
@@ -2761,7 +2789,9 @@ def _pl_stage_video():
         try:
             _acov = _pl_auto_cover_bytes(adopted)
             if _acov:
-                st.session_state["pl_cover_png"] = {"aspect": "9:16", "bytes": _acov}
+                # ★焼いたコピーをPNGと一緒に記録＝あとから「この画は古い」を機械判定できる（_pl_cover_stale）
+                st.session_state["pl_cover_png"] = {"aspect": "9:16", "bytes": _acov,
+                                                    "hook": _pl_effective_hook()}
                 st.session_state["_pl_cover_auto_sig"] = _feat_sig   # ★autoの追従判定用（手動でNoneにする）
         except Exception as e:  # noqa: BLE001  自動生成失敗は止めない（手動ボタンで作れる）
             st.session_state["_pl_cover_auto_err"] = f"{type(e).__name__}"
@@ -2870,7 +2900,39 @@ def _pl_stage_video():
         _mcov = st.session_state.get("pl_mag_cover")
         if _mcov:
             st.caption(f"表紙：{_mcov.get('area_line', '')}／{_mcov.get('price', '')}"
-                       f"（{_mcov.get('price_sub', '')}）／hook『{_mcov.get('hook', '')}』")
+                       f"（{_mcov.get('price_sub', '')}）")
+            # ── ★covercopy-v1：表紙コピーを物件別3案から人が選ぶ（自動採用しない＝型承認ゲートは維持）──
+            _cands = [c for c in (_mcov.get("hook_candidates") or []) if str(c).strip()]
+            if _mcov.get("hook_source") == "feature_fallback":
+                st.warning("⚠️ 表紙コピーをAIで生成できませんでした（または全案がガードで除去）。"
+                           "特集の既定コピーを使用しています＝物件別になっていません。📖再生成で作り直せます。")
+            # ★どの案が引っかかったのかを『選ぶ前に』見せる。全案ぶんを1行にまとめると、選ぼうとしている案が
+            #   安全かを人が判断できず「数値主張は人が弾く」という設計の前提が崩れる（ゲートが機能する条件）。
+            _nrmap = _mcov.get("needs_review_by_hook") or {}
+            if len(_cands) > 1:
+                # ★options差替え地雷：候補が入れ替わると旧選択がoptions外になり radio が落ちる。
+                #   widget生成『前』に session_state を正規化する（pl_cover_src と同じ既存パターン）。
+                #   value=/index= は渡さない（session_state駆動に一本化＝『default値＋SessionState』警告を出さない）。
+                _prev = _pl_v_keep("pl_cover_hook_pick", "")
+                if st.session_state.get("pl_cover_hook_pick") not in _cands:
+                    st.session_state["pl_cover_hook_pick"] = _prev if _prev in _cands else _cands[0]
+                st.radio(f"表紙コピー（この物件のための{len(_cands)}案から選ぶ）", _cands,
+                         key="pl_cover_hook_pick",
+                         format_func=lambda c: c + ("　⚠️要確認" if _nrmap.get(c) else ""))
+            elif _cands:
+                st.caption(f"表紙コピー：**{_cands[0]}**"
+                           + ("　⚠️要確認" if _nrmap.get(_cands[0]) else "") + "（候補1案のみ）")
+            for _hc in _cands:                       # 案ごとの理由（⚠️が付いた案だけ・本文つきで並べる）
+                if _nrmap.get(_hc):
+                    st.caption(f"　⚠️ 『{_hc}』：" + " / ".join(_nrmap[_hc]))
+            _sel_nr = _nrmap.get(_pl_effective_hook())
+            if _sel_nr:                              # 選択中の案が引っかかっている＝いま焼かれる文言の警告
+                st.warning(f"⚠️ 選択中の『{_pl_effective_hook()}』に人力確認が要る表現："
+                           + " / ".join(_sel_nr) + "（別案に変えるか、このまま使うかを判断してください）")
+            _cstale, _cbaked, _ccur = _pl_cover_stale()
+            if _cstale:
+                st.warning(f"⚠️ 生成済みの表紙PNGは古いコピー『{_cbaked}』のままです"
+                           f"（現在の選択は『{_ccur}』）。🖼️ 表紙特大 で作り直してください。")
         # ★v79-6：DATA面（最終ページ）の状態を📖直後にも表示（生成前サマリーと同一情報源＝build_data_rows）。
         st.caption("📄 " + _pl_data_summary())
         if st.session_state.get("_pl_mag_raw"):   # 実機検証：st.code（key無し＝stale回避）
@@ -3031,9 +3093,17 @@ def _pl_stage_video():
         cs2.radio("比率", ["9:16", "4:5"], key="pl_cover_aspect", horizontal=True,
                   format_func=lambda a: {"9:16": "9:16（カバー）",
                                          "4:5": "4:5（1枚目）"}.get(a, a))
-        _hook0 = (core.FEATURES.get(_fid, {}).get("cover_hooks") or [""])[0]
-        st.caption(f"コピー（暫定・{core.FEATURES[_fid]['label']}）：{_hook0}"
-                   "　※正式な文面生成は今後（magtext・v79-5）。家賃には管理費を必ず併記します。")
+        # ★covercopy-v1：ここに出る文字列＝実際に焼かれる文字列（_pl_effective_hook が1源）。
+        _hook_now = _pl_effective_hook(_fid)
+        _hsrc = (st.session_state.get("pl_mag_cover") or {}).get("hook_source")
+        st.caption(f"コピー：**{_hook_now}**　"
+                   + ("（📖の3案から選択中）" if _hsrc == "ai"
+                      else "（⚠️特集の既定＝物件別になっていません。📖でコピーを生成してください）")
+                   + "　※家賃には管理費を必ず併記します。")
+        _cs, _cb, _cc2 = _pl_cover_stale()
+        if _cs:
+            st.warning(f"⚠️ 表示中の表紙PNGは古いコピー『{_cb}』のままです（現在の選択は『{_cc2}』）。"
+                       "下のボタンで作り直してください。")
 
         if st.button("表紙を生成（ffmpegのみ・課金なし）", key="pl_cover_gen"):
             _csrc = next((it for it in adopted
@@ -3057,7 +3127,8 @@ def _pl_stage_video():
                         # ★v79-3：auto と同一の共有ビルダー（1源2消費＝ピクセル同一）。特集/レイアウトを渡す。
                         _cpng = _pl_build_cover_v79(_csrc["gen_bytes"], _cfacts, _fid, _clayout, aspect=_casp)
                     # 生成結果は非ウィジェットキーへ（地雷1回避）。取り込み時に削除される物件固有キー
-                    st.session_state["pl_cover_png"] = {"aspect": _casp, "bytes": _cpng}
+                    st.session_state["pl_cover_png"] = {"aspect": _casp, "bytes": _cpng,
+                                                        "hook": _pl_effective_hook(_fid)}
                     st.session_state["_pl_cover_auto_sig"] = None   # ★手動生成＝以後 auto で上書きしない
                 except Exception as e:  # noqa: BLE001
                     st.error(f"表紙の生成に失敗しました: {e}")
@@ -3315,6 +3386,13 @@ def _pl_stage_video():
         try:
             if not rtv.read_job_state(_job_dir):   # 新規（または再起動で/tmp消失）→初期化
                 rtv.init_job(_job_dir, _images, _scenes, _glob, cover=_cov_bytes)
+            # ★covercopy-v1：表紙PNGは job_id のハッシュ対象（_glob/_scenes/_images）に入らないため、
+            #   コピーを変えても job_id は同じ＝既存jobが見つかり init_job がスキップされ、job_dir の
+            #   古い cover.png がそのまま動画に入る（＝セッション側PNGを直しても動画だけ旧コピーになる穴）。
+            #   DATA面の素材と同じく毎回上書きして解決する（job_id_for は触らない＝fal再課金を起こさない）。
+            if _cov_bytes:
+                with open(_os.path.join(_job_dir, "cover.png"), "wb") as _f:
+                    _f.write(_cov_bytes)
             # ★v79-6：DATA面の間取り図(pl_floorplan)と背景(直前シーン画像)を job_dir に保存（毎回＝再起動/resume耐性）。
             #   pl_floorplan が無ければ保存しない＝run_tour_job が表を上に詰めてDATA面を出す（silent dropしない）。
             _fp_b = st.session_state.get("pl_floorplan")
@@ -3544,4 +3622,4 @@ nav.run()
 with st.sidebar:
     st.caption("生成画像にはSynthIDの不可視透かしが入ります。"
                "商用利用可否はGoogleの利用規約を最終確認してください。")
-    st.caption("build: issue-v1 (★ISSUE番号のUI化＋エリア自動化＝マストヘッド2行目のハードコード『ISSUE 01 / OSAKA・FUKUSHIMA』を廃止。★主目的=エリア誤表示の事故対策(福島固定のため西区/九条/本町の物件で事実と異なるエリアが表紙・全ビート・DATA面の3面に焼き込まれていた)。生成ロジックは core.magazine_issue_line に一本化(_AREA_ROMAJI＝西区/ドーム前導線を追加・エリア決定順=手入力>マイソク代表駅(_sns_access_pick)のローマ字>空・★取れないときに既定エリアを騙らず ISSUE 03 単独へフォールバック・未知駅はローマ字を推測せず日本語のまま)。描画=_v79_masthead(issue_text)＋fit-to-width(30→22・長い駅名NISHI-NAGAHORIで左右見切れゼロ)、3面(表紙:1579/ビート:1514/DATA:1625)へ配線。UI=📖内にISSUE番号/エリア手動上書き＋確定文字列プレビュー(課金前に目で確定)＋生成前サマリーに1行。★build_data_pageの死に引数area(本体未参照)を削除しissue_textへ統合。★app._pl_cover_subline/_PL_AREA_ROMAJI(呼出元ゼロの死にコード)を削除＝2源化の温床を断つ。『最初からやり直す』は号数を保持(連番運用)・エリアはクリア(物件依存)。fal不要でローカルPNG検証済。★注意=ISSUE番号/エリアはjob_id(glob)に入るため生成後の変更は別ジョブ扱い＝fal再課金。以下 autosort-v1: ★🔀部屋順の整列をデフォルト化(押し忘れ→部屋バラバラ動画の$3.15無駄を防ぐ)。画像化直後に③で1回だけ自動整列。過去のsticky事故(整列が繰り返し適用され手動順を上書き)対策の3条件: 条件1(一回限り)=pl_autosort_doneで再発火しない・条件2(手動不上書き)=_pl_moveがpl_order_manualを立て以後自動整列しない・条件3(明示+取消)=🔀自動整列しました通知＋「元の順に戻す」(_pl_restore_order・元順pl_order_original復元・以後手動扱い)。生成前チェックの整列=表示は状態判定のまま(自動化しても実態反映)。★条件2/3の非再現テスト済(手動↓→再実行×2→手動順保持)。fal不要。以下v79-6-data2: ★DATA面の状態を生成前サマリー(pregen-guard)に追加＝課金前にDATA面の品質を判定。_pl_data_summary()=DATA面 ON/OFF・行数(build_data_rows充足率)・間取り図あり/なし(pl_floorplan)・行少なめ⚠️。生成前サマリー＋📖直後の両方に表示(情報源1箇所)。$3.15を払う前にDATA面がスカスカにならないか/間取り図がAで取れたかが分かる。以下v79-6-data: ★DATA面(動く雑誌の最終ページ)を本編末尾に追加=masthead＋DATA見出し＋間取り図(pl_floorplan)＋スペック表(金ラベル/白値・罫線・fit-to-width)＋注記。静止3.5s・ナレなし・BGM継続。core.build_data_rows(取れない行は省略・方角はマイソク明記時のみ「建物」行・否定facts除外(fact_negated)・生値寸法strip)＋data_note_date(マイソク日付優先→生成日)。rtv.build_data_page(間取り図無しは表を上に詰めてDATA面は必ず出す=silent drop禁止・取得ログ)。run_tour_jobが_cover_clip+_prepend_clipで末尾連結。fal不要。以下ui-stepgate-v1: ★📖文字面生成を④動画化の必須前提として強制(誤課金防止)。修正1=文字面(pl_mag/big_text)空だと🎬ルームツアー生成ボタンをdisabled＋理由caption。修正2=生成前サマリーの最上段に文字面状態(✅生成済Nビート/🔴⚠️未生成)を追加・未生成でボタン封鎖と連動(_pl_pregen_summaryが3-tuple:md,ng,mag_ready)。修正3=ステップバーに📖文字面を追加(①取込→②画像化→③整列・確認→📖文字面→④動画化・現在地太字/未完了グレー/📖未実行は赤⚠️)。修正4=📖expanderを未生成時に自動展開＋タイトル🔴【必須】/生成済✅・ボタンprimary。fal不要でUI検証完結。以下magfit-v79c: ★①②Klingモーション幻覚修正=外観/玄関のカメラワークを静止〜微パンに制約(外観motion=minimal・扉/窓/シャッター開閉変形禁止・人物出現禁止・扉の先の別空間生成禁止)＋_V79_NEGATIVE強化(no opening doors/no people appearing等)。③白サブ文言(comment/ナレ)を動画描画から非表示(build_beat_overlayがcomment描かない・音声TTSは別経路で残す)＋big_text中心≈1470に縦センタリング。④外観/トイレの金色見出しをfact_scrub空化時に方角非依存の安全フォールバックで復活(core._safe_big_fallback:外観=建物種別+階数/トイレ=独立/玄関=シューズ/洗面=独立洗面台/汎用=部屋名・空にしない)。fact_scrubは不変。以下magfit-v79b: ★magfit-v79のリグレッション修正=big_text空化で一部シーンのテキスト層(masthead+tag+金色見出し+サブ)がまるごと消える問題。真因=big_text空→overlay loopの旧スキップ(if not big_text:continue)でoverlay全体を捨てていた(既存機構・fact_scrubで方角等の全節除去→空化が引き金)。修正=①overlay loopはbig_text空でもmasthead/tag/comment描画(真に空のビートだけスキップ)②build_beat_overlay/_v79_fit_fontを例外安全化(getattr size・fit失敗は基準サイズ・非空lines)③per-beat try/except(1ビート失敗で全落ちしない)④magtextでbig_text空化を警告(元テキスト+理由)⑤_rewrite_unnatural空返し防御⑥発火ゲートをbig_text or commentに⑦reading_dict朝→あさ。以下magfit-v79: ★金色スペック行の横幅fit未実装による左右見切れ2件＋不自然文言1件を修正。修正1(描画)=表紙DATAストリップ(_v79_infobar spec行)にfit-to-width(38→26縮小・下限で｜折返し2行・max_w=W-120=左右60px)。修正2(描画)=beat big_text(金色見出し)を_v79_fit_font(96→56縮小・下限で幅折返し・動的y)＝物件により語数が変わっても見切れゼロ。修正3(生成)=magtextの不自然表現ガード『床が余る』系→『余裕がある』系(_rewrite_unnatural・big/comment両方・プロンプト明記・書換はcomment改変=kana stale不採用)。以下pregen-guard: ★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
+    st.caption("build: covercopy-v1 (★表紙コピーを物件別の自由生成に切替＝特集固定文言(cover_hooks[0])の焼き回しを廃止。★併せて既存の受入8違反を解消: magtextが生成した表紙hookをUIは表示するのに _pl_cover_v79_fields が読まず、画面の文言と焼かれる文言が別物になりうる状態だった(旧コードで再現テスト済)。core.magtext=cover節のみ差替え(hook_candidates 3案・全角14字・読点1つ・facts根拠・切り口を変える)。ビート面(big_text/comment/narration_kana/タグ)の生成規則は不変=旧コードとbeats出力バイト一致で確認。ガードは全案に必ず通す(fact_scrub→ban→core._scrub_cover_copy〈物件名/字数14/装飾記号〉→needs_review)。空になった案は落とし全滅なら feature.cover_hooks[0] へ hook_source=feature_fallback で明示フォールバック。★数字は削除せず検出のみ(間取り表記1LDKを機械削除すると『帰りたくなる、LDK。』と壊れるため。間取り以外の数値主張はneeds_reviewで人力確認へ)。UI=📖内に3案ラジオ(全文表示・人が選ぶゲートは維持)＋確定コピー表示。★needs_reviewは案ごとに保持(needs_review_by_hook)＝ラジオ本文末尾に⚠️要確認を付け理由も案別に並べる(全案を1行にまとめると『選ぼうとしている案が安全か』が分からず、数値主張を人が弾く前提が崩れるため)。選択中の案が要確認なら生成前サマリーにも⚠️。配線は _pl_effective_hook が1源(人の選択>magtext既定>特集既定=📖未実行の回帰経路)。stale対策=autoカバー署名に表紙コピー/マストヘッド表記を含め自動追従(無課金)＋PNGに焼いたコピーを記録し手動カバーの食い違いを _pl_cover_stale で検知(📖/🖼️/生成前サマリーの3箇所に警告・サマリーではNG扱い)。死にコード削除=app._pl_cover_ai_cb/_pl_cover_clean_copy・core.draft_cover_copy・rtv.build_cover_magazine。fal不要でローカル検証済。以下 issue-v1: ★ISSUE番号のUI化＋エリア自動化＝マストヘッド2行目のハードコード『ISSUE 01 / OSAKA・FUKUSHIMA』を廃止。★主目的=エリア誤表示の事故対策(福島固定のため西区/九条/本町の物件で事実と異なるエリアが表紙・全ビート・DATA面の3面に焼き込まれていた)。生成ロジックは core.magazine_issue_line に一本化(_AREA_ROMAJI＝西区/ドーム前導線を追加・エリア決定順=手入力>マイソク代表駅(_sns_access_pick)のローマ字>空・★取れないときに既定エリアを騙らず ISSUE 03 単独へフォールバック・未知駅はローマ字を推測せず日本語のまま)。描画=_v79_masthead(issue_text)＋fit-to-width(30→22・長い駅名NISHI-NAGAHORIで左右見切れゼロ)、3面(表紙:1579/ビート:1514/DATA:1625)へ配線。UI=📖内にISSUE番号/エリア手動上書き＋確定文字列プレビュー(課金前に目で確定)＋生成前サマリーに1行。★build_data_pageの死に引数area(本体未参照)を削除しissue_textへ統合。★app._pl_cover_subline/_PL_AREA_ROMAJI(呼出元ゼロの死にコード)を削除＝2源化の温床を断つ。『最初からやり直す』は号数を保持(連番運用)・エリアはクリア(物件依存)。fal不要でローカルPNG検証済。★注意=ISSUE番号/エリアはjob_id(glob)に入るため生成後の変更は別ジョブ扱い＝fal再課金。以下 autosort-v1: ★🔀部屋順の整列をデフォルト化(押し忘れ→部屋バラバラ動画の$3.15無駄を防ぐ)。画像化直後に③で1回だけ自動整列。過去のsticky事故(整列が繰り返し適用され手動順を上書き)対策の3条件: 条件1(一回限り)=pl_autosort_doneで再発火しない・条件2(手動不上書き)=_pl_moveがpl_order_manualを立て以後自動整列しない・条件3(明示+取消)=🔀自動整列しました通知＋「元の順に戻す」(_pl_restore_order・元順pl_order_original復元・以後手動扱い)。生成前チェックの整列=表示は状態判定のまま(自動化しても実態反映)。★条件2/3の非再現テスト済(手動↓→再実行×2→手動順保持)。fal不要。以下v79-6-data2: ★DATA面の状態を生成前サマリー(pregen-guard)に追加＝課金前にDATA面の品質を判定。_pl_data_summary()=DATA面 ON/OFF・行数(build_data_rows充足率)・間取り図あり/なし(pl_floorplan)・行少なめ⚠️。生成前サマリー＋📖直後の両方に表示(情報源1箇所)。$3.15を払う前にDATA面がスカスカにならないか/間取り図がAで取れたかが分かる。以下v79-6-data: ★DATA面(動く雑誌の最終ページ)を本編末尾に追加=masthead＋DATA見出し＋間取り図(pl_floorplan)＋スペック表(金ラベル/白値・罫線・fit-to-width)＋注記。静止3.5s・ナレなし・BGM継続。core.build_data_rows(取れない行は省略・方角はマイソク明記時のみ「建物」行・否定facts除外(fact_negated)・生値寸法strip)＋data_note_date(マイソク日付優先→生成日)。rtv.build_data_page(間取り図無しは表を上に詰めてDATA面は必ず出す=silent drop禁止・取得ログ)。run_tour_jobが_cover_clip+_prepend_clipで末尾連結。fal不要。以下ui-stepgate-v1: ★📖文字面生成を④動画化の必須前提として強制(誤課金防止)。修正1=文字面(pl_mag/big_text)空だと🎬ルームツアー生成ボタンをdisabled＋理由caption。修正2=生成前サマリーの最上段に文字面状態(✅生成済Nビート/🔴⚠️未生成)を追加・未生成でボタン封鎖と連動(_pl_pregen_summaryが3-tuple:md,ng,mag_ready)。修正3=ステップバーに📖文字面を追加(①取込→②画像化→③整列・確認→📖文字面→④動画化・現在地太字/未完了グレー/📖未実行は赤⚠️)。修正4=📖expanderを未生成時に自動展開＋タイトル🔴【必須】/生成済✅・ボタンprimary。fal不要でUI検証完結。以下magfit-v79c: ★①②Klingモーション幻覚修正=外観/玄関のカメラワークを静止〜微パンに制約(外観motion=minimal・扉/窓/シャッター開閉変形禁止・人物出現禁止・扉の先の別空間生成禁止)＋_V79_NEGATIVE強化(no opening doors/no people appearing等)。③白サブ文言(comment/ナレ)を動画描画から非表示(build_beat_overlayがcomment描かない・音声TTSは別経路で残す)＋big_text中心≈1470に縦センタリング。④外観/トイレの金色見出しをfact_scrub空化時に方角非依存の安全フォールバックで復活(core._safe_big_fallback:外観=建物種別+階数/トイレ=独立/玄関=シューズ/洗面=独立洗面台/汎用=部屋名・空にしない)。fact_scrubは不変。以下magfit-v79b: ★magfit-v79のリグレッション修正=big_text空化で一部シーンのテキスト層(masthead+tag+金色見出し+サブ)がまるごと消える問題。真因=big_text空→overlay loopの旧スキップ(if not big_text:continue)でoverlay全体を捨てていた(既存機構・fact_scrubで方角等の全節除去→空化が引き金)。修正=①overlay loopはbig_text空でもmasthead/tag/comment描画(真に空のビートだけスキップ)②build_beat_overlay/_v79_fit_fontを例外安全化(getattr size・fit失敗は基準サイズ・非空lines)③per-beat try/except(1ビート失敗で全落ちしない)④magtextでbig_text空化を警告(元テキスト+理由)⑤_rewrite_unnatural空返し防御⑥発火ゲートをbig_text or commentに⑦reading_dict朝→あさ。以下magfit-v79: ★金色スペック行の横幅fit未実装による左右見切れ2件＋不自然文言1件を修正。修正1(描画)=表紙DATAストリップ(_v79_infobar spec行)にfit-to-width(38→26縮小・下限で｜折返し2行・max_w=W-120=左右60px)。修正2(描画)=beat big_text(金色見出し)を_v79_fit_font(96→56縮小・下限で幅折返し・動的y)＝物件により語数が変わっても見切れゼロ。修正3(生成)=magtextの不自然表現ガード『床が余る』系→『余裕がある』系(_rewrite_unnatural・big/comment両方・プロンプト明記・書換はcomment改変=kana stale不採用)。以下pregen-guard: ★$3.15誤爆・巻き戻り対策。①『最初からやり直す』を2段確認(1クリック目は武装のみ・はいで初めて全消し＝再描画ずれの誤爆で①巻き戻り+画像化再課金を防ぐ)。②生成ボタン直上に生成前チェック表示=特集／整列済否(room_tour_rank昇順か)／文字面(🈶kana採用N/M)／⚠️辞書読みK件(部屋名・kana-reasonと同一情報源=pl_magのnarration_kana有無)／カット数・概算$。NG項目は黄色警告。以下kana-reason: ★kana不採用/崩れの切り分けを per-beat 可視化＝magtext warningsに『🈚 部屋: 未出力／不採用(漢字残存N字/長さ乖離/comment改変)』を出す(core._kana_reject_reason)。どのビートがなぜkana不発かが実機で即判明(①採用/フォールバック ②Gemini未出力 ③ガード条件を1発切り分け)。reading_dictに帰宅→きたく追加(採用kanaの残存漢字もnormalize_readingで補正=二段の網)。以下narrkana-diag: ★narration_kana誤読残存(着く→とどく等)の原因特定＝📖生成メッセージにkana採用率『🈶採用 N/Mビート』を表示(0/N=kana不発→Gemini未出力/ガード過剰弾き/未デプロイを疑う)。副次=プロンプトのnarration_kana指示に助詞は→わ/へ→え・英字数字単位のひらがな展開(LDK→えるでぃーけー)を明記／reading_dictに着く/落ち着く/入浴剤(フォールバック用)。以下comment-wrap: commentの画面幅見切れ修正2点。描画側=build_beat_overlayが_v79_wrap_widthでcommentを描画幅(W-180)最大2行に折返し(句読点優先・フォント42固定)。生成側=magtextのcommentを全角24字以内・1文に(プロンプト＋後処理_first_sentenceで2文以上は第1文のみ・警告)。★1文化はcomment改変なのでnarration_kanaはstale→不採用(辞書フォールバック・narr-fix-d 4条件目と整合)。以下narrfix-d: ★漢字誤読クラスを根絶＝magtextが narration_kana（commentの全ひらがな読み・Geminiの文脈読み・数字/英字/単位も日本語読み展開）を1コール内で出力し、TTSはこれを読む。reading_dict辞書はフォールバックへ降格。★ガード=narration_kanaは①非空②ほぼ仮名(漢字1割以下)③commentと長さ乖離なし④commentが後処理(fact_scrub/ban/否定)で改変されていない、を満たすときだけ採用。外れたら黙らず警告＋normalize_reading(comment)=辞書経路へフォールバック(『かなを読んだつもりで漢字を読む』を構造的に防ぐ)。TTSは normalize_reading(kana or comment)＝かな採用時も辞書を通し残存漢字を補正。配線=magtext→pl_mag→scene→_pl_assign_story_beats(grp[0].beat_narration_kana)→run_tour_job(measure-first/fallback両方でkana優先)。measure-firstのタイミング機構は不変(narr_actualはkana音声から_adur測定)。実聴(漢字読みvsかな読みのイントネーション)はCOO実機→谷合さん判定。以下e2e-bugfix: ナレありE2E(被りゼロ=measure-first成功)後の修正3件。★bug①(景表法ブロッカー)=否定文脈付きfacts(駐輪場満車・駐輪厳禁)を全経路で除外=core.fact_negated(強マーカー満車/厳禁/不可等は近接8字・弱マーカーなしは近接3字・無料は否定にしない)＋_drop_neg_clauses、magtextのタグ/プロンプト/big_text/comment全経路でk not in _negated＋警告。★bug②=表紙情報バーの生寸法10x6再出現→_strip_raw_dimをmadori/area/tag全部に適用(1LDK 10x6/area/tag経由も塞ぐ)。★誤読7語をreading_dict.jsonに追記(靴くつ/広々ひろびろ/今日きょう/一日いちにち/洗ってあらって/湯船ゆぶね/浸かってつかって)＝narr-fix-d(narration_kana)までのフォールバック。以下narrfix-c: ★ふりがな辞書（誤読補正）をデータ駆動化＝reading_dict.json（{表記:読み}）を core._READ_TABLE へマージ（最長一致保持）。ElevenLabsの誤読を1行足すだけで直せる（コード変更不要・__で始まるキーは注記スキップ・無い/壊れ→空でフェイルセーフ）。初期語=v78実績誤読（来たか→きたか・洗面台）＋部屋名/設備名の音読み事故（給湯・洗面所・玄関・納戸・独立洗面台）。読みの実効はCOO実機。以下narr-fix-b: ★ナレ音声の実尺を測ってから映像尺を決める（予測係数5.26に依存しない）＝measure-first。run_tour_job順序変更(narration ON＋beatモードのみ): フル正規化seg(無trim)→全comment TTS→実尺測定→d_i=max(MIN_BEAT4.0, narr+TAIL0.5)→segfitへtrim/末尾フリーズ延長→組立→overlay窓/ナレ開始/総尺は Σd_i を共有(逐次=被り0)。ナレ>素材尺はフリーズ延長(>2.5s警告)。★フォールバック=measure-first失敗時は予測trim旧経路へ+警告『旧経路で生成』を明示(黙って落ちない)。★_dur は動画v:0選択で音声を測れず5.0s固定を返す穴を発見→_adur(format=duration)追加(既存CPSログの穴も解消)。narration OFF/非beatは完全回帰。検証: 実run_tour_job(still+モックサイン波)で silencedetect 重なり0ms/はみ出し0ms/総尺一致/検証表/フリーズ警告/フォールバック明示/回帰。実TTS実尺はCOO実機。以下magtext: ★ナレは comment のみ読む（big_textは特大文字で視聴者が読む・声はコメントを添えるだけ）＝magtext narration_text=comment。発話量半減で音声被りの主因が消える。comment空＝ナレ無ビート。★注意: これ単体だとbeat_narr_sec(字数由来の映像尺)が短くなる＝MIN_BEATフロアはnarr-fix-bで入る（a↔b間は本番E2Eを回さない）。以下v79-5b本体: ★ナレOFF回で文字面を生成できない配線ミスを修正＝📖動く雑誌の文字生成を if v_narr_on 外の独立expanderへ移動＋ElevenLabsゲート(disabled=not _narr_ok)除去(文字面はGemini生成でナレ非依存)。ナレOFF経路検証済(narration空でもbig_text注入・ビート割当・overlay成立)＝1本目BGMのみE2Eが回る。物件名自動挿入監査済(既定で挿入なし・冒頭フラッシュは既定OFF・表紙コピーは物件名を明示除去)。以下v79-5b本体: magtext配線+文字面overlay合成。①build_beat_overlay=big_textをaccent_wordで白/accent2行分割+comment+タグ最大3ピル(左余白・金バー)+room_pill(表示名)+マストヘッド+情報バー(透明PNG)。②run_tour_job=big_text保持時に各ビートの文字面PNGを時間窓overlay合成(_burn_beat_overlays・1パス・ビート開始=cover_off+Σbeat_narr_sec)＝v78字幕焼きの代替(背景Kling+文字主役)。③app=📖動く雑誌の文字を生成(特集ベース・core.magtext)→pl_mag_先頭id(room_label/big_text/accent/comment/tags)+pl_narr=narration_text(画面の文字を読む)→scene注入→glob v79_accent。needs_review=型承認ゲート集約表示。★_pl_assign_story_beats堅牢化(短big_text×同室多枚でlen(cuts)<stock→全画像を背景B-rollとしてnsec内均等配置・crash防止・描画尺==nsec維持)。ローカルframe/overlay時間窓/統合seam検証済。実Gemini品質+フルE2E(fal)はCOO実機。前=v79-5a)")
