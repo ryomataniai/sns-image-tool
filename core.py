@@ -1170,10 +1170,13 @@ _FACT_ATTR_GROUPS = [
      # ★feat-merge-2：ひらがな異表記を追加（既存語は1語も削っていない＝回帰なし）。
      #   従来は漢字表記のみ検出で「やわらかい光の、洗面台。」がガードを素通りしていた（実測確認済み）。
      #   ②自分を整える部屋は光を言いたくなる特集なので、AIが表記を崩した瞬間にガードが効かなくなる。
+     #   ★v79-scrub-clause で訂正: 単独「あさひ」は撤回し複合語2つへ置換した。
+     #     単独だと大阪に頻出する物件名（朝日プラザ／あさひ荘）に巻き添えで、正当な節まで丸ごと落ちる
+     #     （実測: 「あさひプラザの、エントランス。」→ 空）。_NEEDS_REVIEW の「『極』単文字は入れない」と同型の失敗。
      "claims": ["南向き", "南面", "陽当たり", "陽当り", "日当たり", "日当り", "朝日が差し",
                 "西日", "日差しが差し込む", "光が差し込む", "自然光", "柔らかな光", "陽光が",
                 "朝は光", "燦々",
-                "やわらかい光", "あたたかい光", "ひかりが差す", "あさひ"],
+                "やわらかい光", "あたたかい光", "ひかりが差す", "あさひが差す", "あさひが入る"],
      "back": ["南向き", "南面", "陽当たり", "陽当り", "日当たり", "日当り", "採光", "日照", "方角", "向き"]},
     {"cat": "角部屋・位置",
      "claims": ["角部屋", "角住戸", "最上階"],       # ★物件位置＝検証可能な事実（静的既定コピーの穴）
@@ -1852,10 +1855,10 @@ def _scrub_cover_copy(text, facts=None, limit=14, feature="normal"):
     ★事実外属性の節除去（fact_scrub）は別レイヤー。呼出側で先に通すこと。"""
     warnings = []
     s = re.sub(r"\s+", "", str(text or "")).strip("　「」『』\"'、・")
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + feature_ng(feature):
-        if w and w in s:
-            s = s.replace(w, "")
-            warnings.append(f"ban語『{w}』を除去")
+    # ★v79-scrub-clause：ここも節単位（14字の短句なので実質「案ごと落ちる」＝magtext側の不採用と整合）。
+    s, _bnc = ban_scrub(s, list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + feature_ng(feature))
+    for w in sorted(set(_bnc)):
+        warnings.append(f"ban語『{w}』を含む節を除去")
     name = ((facts or {}).get("name") or "").strip()
     if name and name in s:
         s = s.replace(name, "")
@@ -2318,10 +2321,10 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     con_tags = feature_hashtags(feature)             # 特集別タグ（ブランド共通に少量追加のみ）
 
     def _clean(s):
-        s = str(s or "")
-        for w in [w for w in ban if w and w in s]:
-            s = s.replace(w, "")
-            warnings.append(w)
+        """★v79-scrub-clause：ban は節ごと除去。ハッシュタグのような単一トークンは区切りが無いので
+        丸ごと落ちる＝『#の住まい』のような壊れたタグを作らない（空タグは _tags 側で除外済み）。"""
+        s, _bn = ban_scrub(str(s or ""), ban)
+        warnings.extend(sorted(set(_bn)))
         return s.strip()
 
     def _tags(raw, n_max):
@@ -2670,10 +2673,12 @@ def fact_negated(key: str, text: str) -> bool:
         start = end
 
 
-def _drop_neg_clauses(text: str, neg_words) -> tuple:
-    """text から、否定設備語(neg_words)を含む節（。/、/／/　区切り）を落とす。返り値 (clean, removed[])。
-    ★big_text/comment が否定設備を『ある』かのように書いた場合の防波堤（節単位・fact_scrub同型）。"""
-    if not text or not neg_words:
+def drop_clauses_containing(text: str, words) -> tuple:
+    """text から、words のいずれかを含む節（。/、/／/　区切り）を落とす。返り値 (clean, removed[])。
+    ★節単位で落とす＝語だけ抜いて破片を残さない（fact_scrub と同じ思想）。
+    ★v79-scrub-clause：否定設備ガード（旧 _drop_neg_clauses）と ban 除去（ban_scrub）が
+      この1関数を共有する＝節の切り方を2箇所に書かない。"""
+    if not text or not words:
         return text, []
     import re as _re
     parts = _re.split(r"([。、／　\n])", str(text))
@@ -2681,13 +2686,31 @@ def _drop_neg_clauses(text: str, neg_words) -> tuple:
     while i < len(parts):
         seg = parts[i]
         sep = parts[i + 1] if i + 1 < len(parts) else ""
-        hit = next((w for w in neg_words if w and w in seg), None)
+        hit = next((w for w in words if w and w in seg), None)
         if hit:
             removed.append(hit)
         else:
             kept.append(seg + sep)
         i += 2
-    return "".join(kept).strip("、。／　\n "), removed
+    if not removed:
+        return str(text), []          # ★1語も当たらなければ1文字も触らない（回帰ゼロの担保）
+    # ★末尾の『。』は落とさない。『帰りたくなる、1LDK。』の句点は表紙・文末の意図的な演出で、
+    #   旧 _drop_neg_clauses は無条件 strip("。") していた＝ban 経路をここへ寄せた時点で
+    #   ヒットの有無に関わらず句点が消える回帰になっていた（自己テストで検出）。
+    #   前後の整え方は fact_scrub と同一にそろえる（節除去の後始末を2通り持たない）。
+    clean = re.sub(r"[、，]{2,}", "、", "".join(kept))
+    return clean.strip("　 \n").lstrip("、，。．／").rstrip("、，　 "), removed
+
+
+def ban_scrub(text, ban_words) -> tuple:
+    """★v79-scrub-clause：ban語を『語ごと置換』でなく『節ごと除去』する。返り値 (clean, removed[])。
+    ★経緯＝置換方式だと『安心の、オートロック。』→『の、オートロック。』のように助詞始まりの断片が残り、
+      そのまま動画に焼かれていた（警告は出るが止まらない）。covercopy-v1 で数字の機械削除をやめて
+      検出のみに切り替えたのと同じ型の沈黙破損。壊れた日本語を残すより、その節を落とす。
+    ★全節が落ちて空になった場合の受け皿は既存仕様にある（comment 空＝ナレ無ビート／
+      表紙コピーは案ごと不採用→feature_fallback）。
+    ★除去は常に「多い側」に倒れる＝景表法ガードを緩める方向には決して動かない。"""
+    return drop_clauses_containing(text, ban_words)
 
 
 def _first_sentence(text: str) -> tuple:
@@ -2981,11 +3004,11 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
     _ban = _story_ban_words(feature_id)
 
     def _clean(text):
-        """fact_scrub＋ban除去。返り値 (clean, removed[], banned[])。"""
+        """fact_scrub＋ban除去。返り値 (clean, removed[], banned[])。
+        ★v79-scrub-clause：ban は語の置換でなく ban_scrub（節ごと除去）。
+          置換だと『安心の、オートロック。』→『の、オートロック。』の断片が動画に焼かれていた。"""
         t, rm = fact_scrub(text or "", facts)
-        bn = [w for w in _ban if w and w in t]
-        for w in bn:
-            t = t.replace(w, "")
+        t, bn = ban_scrub(t, _ban)
         return t.strip(), rm, bn
     _by = {}
     for o in (parsed.get("beats") or []):
@@ -2999,8 +3022,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         big, _rm1, _bn1 = _clean(str(o.get("big_text", "")))
         cmt, _rm2, _bn2 = _clean(str(o.get("comment", "")))
         # ★否定文脈ガード：AIが否定設備を『ある』かのように書いた節を落とす（景表法・タグと同じ_negated基準）。
-        big, _ng1 = _drop_neg_clauses(big, _negated)
-        cmt, _ng2 = _drop_neg_clauses(cmt, _negated)
+        big, _ng1 = drop_clauses_containing(big, _negated)
+        cmt, _ng2 = drop_clauses_containing(cmt, _negated)
         # ★comment は1文に（2文comment暴走→見切れ防止・描画側は2行折返し）。narration_kanaはstale化するので後で不採用。
         cmt, _trunc = _first_sentence(cmt)
         if _trunc:
@@ -3307,10 +3330,10 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
         warnings.append(f"整え生成に失敗（{type(e).__name__}）。元テロップを正規化しました。")
     out = normalize_reading(out)                   # 読み正規化（英字/記号→カナ/和数）
     name = (facts.get("name") or "").strip()
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + feature_ng(feature):
-        if w and w in out:
-            out = out.replace(w, "")
-            warnings.append(f"ban語『{w}』を除去")
+    # ★v79-scrub-clause：ban は語の置換でなく節ごと除去（助詞始まりの断片を耳に流さない）。
+    out, _bn = ban_scrub(out, list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + feature_ng(feature))
+    for w in sorted(set(_bn)):
+        warnings.append(f"ban語『{w}』を含む節を除去")
     if name and name in out:
         out = out.replace(name, "")
         warnings.append("物件名を除去")
