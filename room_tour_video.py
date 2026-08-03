@@ -1917,6 +1917,18 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
         return os.path.join(job_dir, path)
 
     _unified = bool(glob.get("unified_subtitle"))   # ★B: ナレ=字幕一本化時はメイン/情感を焼かない（字幕は動画レベルで③時刻焼き）
+    # ★feat-merge-1.5：v79「動く雑誌」モードでは v78 テロップ層（メイン＋情感2行＋上部タグ）を焼かない。
+    #   理由＝v79 は big_text/comment/room_pill/マストヘッドが同じ役割を担う。両方焼くと画面に同役割の文字が
+    #   2系統重なる（実測: 情感2行が big_text 直下に沈み、上部タグが OSAKA ROOMS マストヘッドと交差する）。
+    #   ★subtitle_beats の焼込みは既に `not _v79_mag` でスキップ済みだったが、この seg 段のテロップ層だけ
+    #     ゲートが漏れていた＝v79-5b の設計意図（画面の主役は big_text）と実装の食い違いを解消する。
+    #   ★判定は `ordered`（描画完了分）ではなく `scenes`（ジョブ全体）で行う。_make_seg は描画の最初に走るため
+    #     この時点で ordered は空＝ゲートが必ず False に倒れるのと、seg は冪等キャッシュなので再開時に
+    #     判定が揺れると「テロップ有りseg と 無しseg が混ざる」ため、ジョブ単位で不変な情報源を使う。
+    #   ★note（※画像はイメージです）と flash は落とさない。ビート面の情報バー(note_line)は scene に載らず
+    #     常に空＝景表法の注記はこのテロップ層の note が唯一の出口。ここを一緒に落とすと注記が消える。
+    _v79_mag_planned = any((sc.get("big_text") or sc.get("comment")) for sc in scenes)
+    _telop_off = _unified or _v79_mag_planned
     # ★narr-fix-b：実尺先行（measure-first）＝narration ON ＋ beatモード。segを予測trimせずフル正規化で残し、
     #   フェーズCでTTS実尺測定→d_i=max(_MIN_BEAT, narr+_TAIL_PAD)→segfitへtrim/フリーズ延長→組立（予測係数に依存しない）。
     _measure_first = bool(glob.get("narration_on")) and any(
@@ -1924,9 +1936,10 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
 
     def _make_seg(sc):   # raw → seg（テロップ・注記込み normalize）。冪等
         _normalize_clip(_jp(sc["raw"]), _jp(sc["seg"]),
-                        caption="" if _unified else sc.get("caption", ""),
-                        sub_lines=None if _unified else sc.get("subs"),
-                        top_tag=sc.get("top_tag", ""), note=sc.get("note", ""),
+                        caption="" if _telop_off else sc.get("caption", ""),
+                        sub_lines=None if _telop_off else sc.get("subs"),
+                        top_tag="" if _telop_off else sc.get("top_tag", ""),
+                        note=sc.get("note", ""),
                         taste=sc.get("taste", "clean"), pos=sc.get("pos", "下中央"),
                         flash=sc.get("flash", ""), out_w=out_w, out_h=out_h,
                         fit_mode=sc.get("fit", "fill"))
