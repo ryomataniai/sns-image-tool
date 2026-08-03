@@ -1313,10 +1313,17 @@ _PR_MAX_HIGHLIGHT = 14   # ◎魅力ポイント 各1つ
 # ★合格条件＝データ駆動：1コンセプト=1行。残り2つ(career_qol/hobby)は表に行を足すだけで動く。
 #   コンセプト名は内部語（顧客向け出力に出さない）。下流は concept_of() だけ参照＝単一の情報源。
 #   voice_id は「設定」なので表に直書き（鍵ではない・漏れても実害ゼロ）。None → 既定 ELEVENLABS_VOICE_ID。
-_MOTE_HARD_NG = [   # モテのハードNG（機械除去＋警告。型承認=宅建/広告専門家は別ゲート）
+# ★feat-ban-1：旧 _MOTE_HARD_NG を _COMMON_HARD_NG へ改名し、全特集共通のハードNGに正式昇格。
+#   経緯＝_story_ban_words() が concept_ban_extra("mote") を引数ハードコードしていたため、magtext /
+#   story_narration は特集に関係なくこの語群を除去する一方、polish_narration / draft_sns_captions は
+#   特集依存だった＝同じ語が経路によって消えたり消えなかったりしていた。共通に上げて食い違いを解消する。
+#   機械除去＋警告。型承認（宅建/広告の専門家確認）は別ゲート。
+#   ★「可愛い」「かわいい」の2語だけ ban から _NEEDS_REVIEW へ降格（谷合さん判断 2026-08-03）。
+#     止めずに人が見る＝設備や内装の素直な形容まで機械的に消していたため。
+_COMMON_HARD_NG = [
     "モテ部屋", "モテる", "モテ",
     "エロ", "セクシー", "色気", "誘惑", "抱かれ", "夜のお誘い", "お持ち帰り",
-    "可愛い", "かわいい", "美人", "美女", "イケメン", "美脚", "美肌", "スタイル抜群",
+    "美人", "美女", "イケメン", "美脚", "美肌", "スタイル抜群",
     "彼女が喜ぶ", "彼が喜ぶ", "女子力", "男らしい", "女らしい", "主婦向け",
 ]
 
@@ -1357,7 +1364,7 @@ CONCEPT_PRESETS = {
         },
         "narration": {"voice_id": None,     # None → 既定 ELEVENLABS_VOICE_ID(=HIRO)。v70cでvoice作業ゼロ
                       "tone": "低い声・落ち着き・余白。時間の匂わせと言い切り。煽らない。基準『帰りたくない。角部屋。』"},
-        "ban_words": _MOTE_HARD_NG,
+        "ban_words": _COMMON_HARD_NG,   # ★feat-ban-1で改名（この表自体は feat-dead-1 で削除）
         "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
                     "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},   # ブランド共通に少量追加
         "cover": {"tone": "基準『帰りたくない。角部屋。』の文体。短句・体言止め・句点。",
@@ -1818,6 +1825,7 @@ _SNS_BAN_EXTRA = ["格安", "希少", "超お得", "家賃保証", "掘り出し
 # ★v79 needs_review：ブロックはしないが人力確認が要る表現（SNS口語・希少性演出・正当語への巻き添え語）。
 #   ban（止める）とは別レイヤー＝止めずにフラグを返すだけ。景表法の最終判断は人（型承認は別ゲート）。
 _NEEDS_REVIEW = [
+    "かわいい", "可愛い",  # ★feat-ban-1：ban から降格（谷合さん判断）。止めずに人が見る
     "完全",              # 完全分離/完全個室/完全防音（実在機能）に巻き添え→誇大か事実かを人が見る
     "極上", "極み",       # 「極」単文字はbanしない（積極的/究極/北極の巻き添え）＝複合語だけ人力確認
     "正直ナメてた", "ヤバい", "神", "早い者勝ち", "今だけ", "新築みたい", "ホテルのような",
@@ -1836,7 +1844,7 @@ def needs_review(text):
 _RE_MADORI_TOKEN = re.compile(r"[0-9０-９]+\s*[SLDKRＳＬＤＫＲ]{1,4}|ワンルーム")
 
 
-def _scrub_cover_copy(text, facts=None, limit=14, concept="normal"):
+def _scrub_cover_copy(text, facts=None, limit=14, feature="normal"):
     """★covercopy-v1：表紙コピーの機械ガード（1源）。ban語・最上級・物件名・字数超過・装飾記号を落とす。
     返り値 (clean, warnings)。★空文字を返すことがある（＝全節が落ちた）。既定コピーへ倒すかは**呼出側の判断**で、
     ここでは勝手に埋めない（どこで既定に落ちたかを呼出側が warning に出せるようにするため）。
@@ -1844,7 +1852,7 @@ def _scrub_cover_copy(text, facts=None, limit=14, concept="normal"):
     ★事実外属性の節除去（fact_scrub）は別レイヤー。呼出側で先に通すこと。"""
     warnings = []
     s = re.sub(r"\s+", "", str(text or "")).strip("　「」『』\"'、・")
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + concept_ban_extra(concept):
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ", "モテ部屋"] + feature_ng(feature):
         if w and w in s:
             s = s.replace(w, "")
             warnings.append(f"ban語『{w}』を除去")
@@ -1913,7 +1921,9 @@ FEATURES = {
         "comment_tone": "ナイトルーティン視点・現在形・照れは話法に（few-shot 2本参照）",
         "narration": {"voice_id": None,     # None → 既定 ELEVENLABS_VOICE_ID(=HIRO)
                       "tone": "低い声・落ち着き・余白。時間の匂わせと言い切り。煽らない。基準『帰りたくない。角部屋。』"},
-        "ban_words": _MOTE_HARD_NG,
+        # ★feat-ban-1：旧 _MOTE_HARD_NG は _COMMON_HARD_NG として全特集へ昇格したので、
+        #   ここは「モテ部屋にだけ効く追加語」の枠になる（現在は無し）。
+        "ban_words": [],
         "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
                     "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},
     },
@@ -2036,13 +2046,20 @@ def feature_hashtags(fid):
 
 
 def feature_ban_extra(fid):
-    """特集固有のハードNG語のみ（共通ban は _PR_BANNED / _SNS_BAN_EXTRA 側）。生成物の post-filter 用。"""
+    """★その特集にだけ効く追加NG語（②の安心/安全/防犯、③の防音/楽器可 等）。共通分は含まない。"""
     return [w for w in (feature_of(fid).get("ban_words") or []) if w]
 
 
+def feature_ng(fid):
+    """★feat-ban-1：生成物から機械除去するハードNG＝全特集共通 ＋ その特集固有。
+    ★下流の post-filter は全部これを使う（経路ごとに集合が違う状態を作らない）。
+    共通語群を「モテ部屋を選んだときだけ」効かせていたのが従来の食い違いの原因だった。"""
+    return list(_COMMON_HARD_NG) + feature_ban_extra(fid)
+
+
 def feature_ban(fid):
-    """その特集で機械除去する語＝共通ban ＋ 特集固有ハードNG（旧 concept_ban と同型）。"""
-    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(feature_ban_extra(fid))
+    """その特集で機械除去する語＝景表法ban ＋ ハードNG（共通＋特集固有）。旧 concept_ban と同型。"""
+    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + feature_ng(fid)
 
 
 # ★v79 room_facts_map（部屋⇔映像/文字/設備の対応表・★最初から3用途スキーマ）:
@@ -2295,7 +2312,7 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     except Exception as e:  # noqa: BLE001  握り潰さず記録（事実部分だけでも返す＝実運用を止めない）
         warnings.append(f"AIによるフック/ハッシュタグ生成に失敗（{type(e).__name__}）。事実部分のみで出力します。")
 
-    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA + feature_ban_extra(feature)  # ＋特集固有ハードNG
+    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA + feature_ng(feature)  # ＋ハードNG（共通＋特集固有）
     if walk is None or walk > 8:                     # 徒歩8分超/不明→立地訴求語も禁止
         ban += _PR_LOCATION_WORDS
     con_tags = feature_hashtags(feature)             # 特集別タグ（ブランド共通に少量追加のみ）
@@ -2467,15 +2484,15 @@ _STORY_FEWSHOT = (
 )
 
 
-def _story_ban_words():
+def _story_ban_words(feature_id="normal"):
     """物語ナレの禁止語＝PRban（最上級/断定）＋SNSban＋容姿/性的ハードNG（来訪者の容姿・性的示唆）。
     ★主人公自身の動作（手が丁寧になる 等）は含めない＝A-1で実測ロック済み。"""
-    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(concept_ban_extra("mote")) + ["モテ", "モテ部屋"]
+    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + feature_ng(feature_id) + ["モテ", "モテ部屋"]
 
 
 def story_narration(client, beats, facts, situation, style="独白",
                     budget_sec=33, coefficient=_BEAT_COEF_PROVISIONAL,
-                    model="gemini-2.5-flash") -> dict:
+                    model="gemini-2.5-flash", feature_id="normal") -> dict:
     """★story-v78 A: 全ビートを『1回のGeminiコール』で1つの連続した物語として生成する。
     beats=[{room, stock}] 部屋順（🔀整列後）。situation=シチュエーション文。style='独白'(A系)/'語りかけ'(B系)。
     ★Aに渡すのは3つ（beat_generation_targets）: 各ビート字数上限／総字数予算(≈budget_sec秒)／ビート長を揃えない。
@@ -2540,7 +2557,7 @@ def story_narration(client, beats, facts, situation, style="独白",
     for o in arr if isinstance(arr, list) else []:
         if isinstance(o, dict) and o.get("room"):
             by_room.setdefault(str(o["room"]).strip(), str(o.get("text", "")).strip())
-    ban = _story_ban_words()
+    ban = _story_ban_words(feature_id)
     for i, b in enumerate(beats):
         room = b["room"]
         # 位置対応（room名一致）→ 無ければ index 対応の保険
@@ -2961,7 +2978,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
             if _try == 1:
                 warnings.append(f"文字面の生成に失敗（{type(e).__name__}）。")
     parsed = parsed if isinstance(parsed, dict) else {}
-    _ban = _story_ban_words()
+    _ban = _story_ban_words(feature_id)
 
     def _clean(text):
         """fact_scrub＋ban除去。返り値 (clean, removed[], banned[])。"""
@@ -3059,7 +3076,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         if not _t0:
             continue
         _t, _rmh, _bnh = _clean(_t0)                   # 事実外属性の節除去＋ban（ビート面と同一レイヤー）
-        _t, _wsh = _scrub_cover_copy(_t, facts)        # 物件名・字数・装飾記号・数値主張の検出
+        # ★feat-ban-1：特集の ban も通す（②の安心/安全/防犯 等が表紙コピーに素通りしていた穴を塞ぐ）
+        _t, _wsh = _scrub_cover_copy(_t, facts, feature=feature_id)
         _reasons = []
         for r in set(_rmh):
             warnings.append(f"表紙コピー『{_t0}』: 事実外属性『{r}』を除去。")
@@ -3072,6 +3090,13 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         if not _t:
             warnings.append(f"表紙コピー『{_t0}』: ガードで全部消えたため不採用。")
             continue                                   # ★落とした案の理由は needs_review に残さない（選べない案なので）
+        # ★feat-ban-1：ban は語を置換して消すため、途中の語だけ抜けると『の、オートロック。』のような
+        #   壊れた断片が「選べる案」として残る（②の安心/安全/防犯 を通したことで実際に発生した）。
+        #   ガードは通ったが人が選べる文になっていない＝案ごと落とす。既存の『全滅したら特集既定へ
+        #   フォールバック』が受け皿になるので、表紙コピーが空になることはない。
+        if _bnh:
+            warnings.append(f"表紙コピー『{_t0}』: 禁止語の除去で文が壊れるため案ごと不採用。")
+            continue
         if _t in _seen_h:
             continue
         _seen_h.add(_t)
@@ -3282,7 +3307,7 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
         warnings.append(f"整え生成に失敗（{type(e).__name__}）。元テロップを正規化しました。")
     out = normalize_reading(out)                   # 読み正規化（英字/記号→カナ/和数）
     name = (facts.get("name") or "").strip()
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + feature_ban_extra(feature):
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + feature_ng(feature):
         if w and w in out:
             out = out.replace(w, "")
             warnings.append(f"ban語『{w}』を除去")
