@@ -1911,6 +1911,63 @@ def _scrub_cover_copy(text, facts=None, limit=14, feature="normal"):
     return s, warnings
 
 
+# ★brand-v1 ブランドマスタ：マストヘッドに焼く誌名を data 駆動にする（issue-v1 と同型）。
+#   従来は _v79_masthead 内に "O S A K A   R O O M S" が直書きで、表紙・全ビート・DATA面の3面に
+#   固定で焼かれていた（設定・環境変数・UIのどこからも変えられない）。事業B「こだわリノベ」を
+#   同じスタジオで作るために引数化する。
+#   ★masthead（焼く文字）は字間込みでそのまま持つ。字間を規則で入れないこと＝
+#     "OSAKA ROOMS" は英字11字で半角字間、"こだわリノベ" は和字6字。同じ規則を当てると崩れる
+#     （実測: 66px で 686px / 396px。全角字間を入れて 726px＝OSAKA ROOMS と同等の視覚重量になる）。
+#   ★name（プレーン名）は magtext のプロンプトと area_line フォールバックが使う。焼く文字とは別物
+#     （FEATURES の label / feature_display_name と同じ分離）。
+BRANDS = {
+    "osaka_rooms": {
+        "label": "OSAKA ROOMS（賃貸）",
+        "name": "OSAKA ROOMS",
+        "masthead": "O S A K A   R O O M S",   # ★現行と1バイトも同じ（既定＝賃貸経路の回帰ゼロ）
+        "mode": "賃貸ステージング",
+    },
+    "kodawarinobe": {
+        "label": "こだわリノベ（事業B・売買）",
+        "name": "こだわリノベ",
+        "masthead": "こ　だ　わ　リ　ノ　ベ",   # 全角字間（英字と同じ半角字間だと細く見える）
+        "mode": "リノベ提案（事業B）",
+    },
+}
+BRAND_ORDER = ["osaka_rooms", "kodawarinobe"]
+DEFAULT_BRAND = "osaka_rooms"
+
+
+def brand_of(bid):
+    """ブランド定義。未知は既定（OSAKA ROOMS）へ倒す＝誌名を騙らない側でなく現行維持側に倒す。"""
+    return BRANDS.get(bid) or BRANDS[DEFAULT_BRAND]
+
+
+def brand_masthead(bid):
+    """★マストヘッドに実際に焼く文字（字間込み）。表紙・全ビート・DATA面の3面が同じ文字列を使う。"""
+    return str(brand_of(bid).get("masthead", "")) or BRANDS[DEFAULT_BRAND]["masthead"]
+
+
+def brand_name(bid):
+    """プレーンな誌名（字間なし）。magtext のプロンプトと area_line のフォールバックが使う。"""
+    return str(brand_of(bid).get("name", "")) or BRANDS[DEFAULT_BRAND]["name"]
+
+
+def brand_display_name(bid):
+    """UI表示名（人が選ぶときに読む名前）。"""
+    return str(brand_of(bid).get("label", "")) or brand_name(bid)
+
+
+def brand_for_mode(mode, default=DEFAULT_BRAND):
+    """用途モード（PL_MODES）→ 既定ブランド。★あくまで既定で、UIで手動上書きできること
+    （自動だけにすると誤った側で焼いたときに気づけない）。"""
+    m = str(mode or "").strip()
+    for bid, b in BRANDS.items():
+        if b.get("mode") and b["mode"] == m:
+            return bid
+    return default
+
+
 # ★v79 特集マスタ（features）＝テイストの唯一の情報源（feat-merge-1）。
 #   CONCEPT_PRESETS から『実際に消費されているキーだけ』を移植した。移植した7キー＝
 #     style_default / staging_prompt / narration.tone / narration.voice_id / ban_words /
@@ -2703,13 +2760,39 @@ def story_situations_for(rooms, feature_id="normal"):
     return out
 
 
-def _mag_price_fields(facts):
-    """★v79-5 表紙の facts由来3要素（price/price_sub/area_line・deterministic）。hookはfeatureから選択（AI自由生成しない）。"""
-    import re
+def money_fields(facts) -> dict:
+    """★sale-v1：表紙の金額表示を組む唯一の入口。返り値 {price, price_sub, kind}。
+    kind = 'rent'（賃料）／'sale'（販売価格）／''（金額が取れない）。
+    ★賃貸の戻り値は従来と1バイトも変えない（回帰ゼロ）。
+    ★売買は price をマイソク由来の日本語表記のまま出す（『3,350万円』）。
+      賃貸の書式 '¥' + 数字 を流用すると『¥3,350万円』という存在しない表記になる。
+    ★売買の price_sub は管理費と修繕積立金を併記する。事業Bの訴求は『月々いくら』なので
+      修繕積立金が落ちると投稿の意味が失われる。
+    ★core と app の2箇所で金額を組んでいた状態を解消するための1源（app は これを呼ぶだけ）。"""
     rent = (facts.get("rent", "") or "").strip()
     fee = (facts.get("fee", "") or "").strip()
-    price = ("¥" + rent.replace("円", "").strip()) if rent else ""
-    price_sub = (f"管理費 {fee}/月" if fee else "")
+    price_raw = (facts.get("price", "") or "").strip()
+    shuzen = (facts.get("shuzen", "") or "").strip()
+    if rent:                                   # ── 賃貸（従来経路・1バイトも変えない）
+        return {"price": "¥" + rent.replace("円", "").strip(),
+                "price_sub": (f"管理費 {fee}/月" if fee else ""), "kind": "rent"}
+    if price_raw:                              # ── 売買
+        _subs = []
+        if fee:
+            _subs.append(f"管理費 {fee}/月")
+        if shuzen:
+            _subs.append(f"修繕積立金 {shuzen}/月")
+        return {"price": price_raw, "price_sub": " ／ ".join(_subs), "kind": "sale"}
+    # 金額が取れない（従来どおり管理費だけは出す）
+    return {"price": "", "price_sub": (f"管理費 {fee}/月" if fee else ""), "kind": ""}
+
+
+def _mag_price_fields(facts, brand_id=DEFAULT_BRAND):
+    """★v79-5 表紙の facts由来3要素（price/price_sub/area_line・deterministic）。hookはfeatureから選択（AI自由生成しない）。
+    ★sale-v1：金額は money_fields に委譲（賃貸/売買の分岐を2箇所に書かない）。"""
+    import re
+    _mf = money_fields(facts)
+    price, price_sub = _mf["price"], _mf["price_sub"]
     # area_line：access最短徒歩から『{駅}、駅{n}分。』／無ければ間取り・面積
     band = ""
     for a in (facts.get("access") or []):
@@ -2722,7 +2805,9 @@ def _mag_price_fields(facts):
         area_line = f"{m_st.group(1)}、駅{m_wk.group(1)}分。"
     else:
         _mad = (facts.get("madori", "") or "").split("[")[0].strip()
-        area_line = " ".join(x for x in (_mad, (facts.get("area", "") or "").strip()) if x) or "OSAKA ROOMS"
+        # ★brand-v1：誌名の直書きをやめ、選択中のブランドから引く（誌名が2箇所にある状態を断つ）。
+        area_line = (" ".join(x for x in (_mad, (facts.get("area", "") or "").strip()) if x)
+                     or brand_name(brand_id))
     return {"price": price, "price_sub": price_sub, "area_line": area_line}
 
 
@@ -2912,6 +2997,17 @@ def build_data_rows(facts: dict) -> list:
     _fee = (facts.get("fee", "") or "").strip()
     if _rent:
         rows.append(("賃料", _rent + (f"（＋管理費 {_fee}）" if _fee else "")))
+    # ★sale-v1：売買の金額行。従来は price/shuzen を読む分岐が無く、DATA面に金額が1行も出なかった。
+    #   ★_price があるときだけ（＝売買）追加する。賃貸は上の『賃料』行に管理費を括弧書きする従来仕様のまま
+    #     ＝管理費が二重に出ない。取れない行は従来どおり省略。
+    _price = (facts.get("price", "") or "").strip()
+    _shuzen = (facts.get("shuzen", "") or "").strip()
+    if _price:
+        rows.append(("価格", _price))
+        if _fee:
+            rows.append(("管理費", _fee + "/月"))
+        if _shuzen:
+            rows.append(("修繕積立金", _shuzen + "/月"))
     # 初期費用（敷金・礼金・保証金 が full_text に明記のときだけ）
     _init = []
     for _lbl, _key in (("敷金", "敷金"), ("礼金", "礼金"), ("保証金", "保証金")):
@@ -2948,13 +3044,29 @@ def ai_note_line(facts: dict = None, gen_date_str: str = "") -> str:
 
 def data_note_date(facts: dict, gen_date_str: str = "") -> str:
     """★v79-6 注記の年月：マイソクに情報日付があればそれ、無ければ生成日（呼出側が渡す）。景表法『現況優先』併記前提。
-    full_text から『YYYY年M月』or『YYYY/M』を拾う（情報日付/更新日 近傍優先）。無ければ gen_date_str。"""
+    full_text から『YYYY年M月』or『YYYY/M』を拾う（情報日付/更新日 近傍優先）。無ければ gen_date_str。
+    ★sale-v1 で修正: 近傍ラベルが無いときの緩い拾い方が full_text 内の『どの年月でも』拾っていたため、
+      売買マイソクの築年月（例 1982年6月）を情報時点として焼いていた（実測: 表紙注記が
+      『※1982年6月時点の情報』になる）。注記は景表法の表示なので、誤った年月を騙るくらいなら生成日に倒す。
+      対策2つ = ①築系ラベル（築年月/築/建築/竣工/新築）の近傍にある年月は情報日付として採らない
+      ②生成年より古すぎる年（前年より前）は採らない（情報時点は直近のはず）。
+      ★情報日付/更新日 が明記されている経路（_near）は従来どおり最優先で不変。"""
     import re as _re
     _ft = str(facts.get("full_text", ""))
     _near = _re.search(r"(?:情報日付|情報登録日|更新日|作成日)[^\d]{0,6}(\d{4})[年/\-.](\d{1,2})", _ft)
-    _any = _near or _re.search(r"(\d{4})\s*年\s*(\d{1,2})\s*月", _ft)
-    if _any:
-        return f"{_any.group(1)}年{int(_any.group(2))}月"
+    if _near:
+        return f"{_near.group(1)}年{int(_near.group(2))}月"
+    _gen_y = 0
+    _gm = _re.search(r"(\d{4})", str(gen_date_str or ""))
+    if _gm:
+        _gen_y = int(_gm.group(1))
+    for _m in _re.finditer(r"(\d{4})\s*年\s*(\d{1,2})\s*月", _ft):
+        _before = _ft[max(0, _m.start() - 8):_m.start()]
+        if _re.search(r"築|建築|竣工|新築", _before):
+            continue                       # ★築年月＝情報時点ではない
+        if _gen_y and int(_m.group(1)) < _gen_y - 1:
+            continue                       # ★古すぎる年は情報時点として採らない
+        return f"{_m.group(1)}年{int(_m.group(2))}月"
     return gen_date_str
 
 
@@ -2991,7 +3103,8 @@ def _kana_reject_reason(kana: str, comment: str, cmt_clean: bool) -> str:
     return ""
 
 
-def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash") -> dict:
+def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-flash",
+            brand_id=DEFAULT_BRAND) -> dict:
     """★v79-5 magtext：動く雑誌の文字面を『1回のGeminiコール』で生成（A-unit刷新・story_narration同型）。
     beats=[{room, stock}]（部屋順・🔀後）。返り値:
       {beats:[{room_label,big_text,accent_word,comment,narration_text,narration_kana,tags,over_tags,needs_review}],
@@ -3036,7 +3149,8 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
                                        "features", "full_text")}, ensure_ascii=False)
     _mote = feature_id == "mote_heya"
     instr = (
-        "あなたは不動産SNS『動く雑誌 OSAKA ROOMS』の編集者です。各ビートの画面文字を作ります。\n"
+        # ★brand-v1：誌名を直書きしない（生成トーンがブランドに引きずられるため1源から差し込む）。
+        f"あなたは不動産SNS『動く雑誌 {brand_name(brand_id)}』の編集者です。各ビートの画面文字を作ります。\n"
         f"■ 特集：{feat.get('label','')}（トーン：{feat.get('comment_tone','')}）\n\n"
         "■ 必ず守る（景表法・雑誌トーン）：\n"
         "・big_text＝そのビートに映る事実のみ（例『リビング10帖、角部屋。』）。★数字は映っているカットでだけ言う"
@@ -3217,7 +3331,7 @@ def magtext(client, beats, facts, feature_id, budget_sec=33, model="gemini-2.5-f
         _cands = [hooks[0]] if hooks else [""]
         _hook_source = "feature_fallback"
         warnings.append("⚠️ 表紙コピーを生成できない／全案がガードで空になったため、特集の既定コピーを使用します。")
-    cover_out = {**_mag_price_fields(facts), "hook_candidates": _cands, "hook": _cands[0],
+    cover_out = {**_mag_price_fields(facts, brand_id), "hook_candidates": _cands, "hook": _cands[0],
                  "hook_source": _hook_source,
                  # ★案ごとの理由（UIがどの案に⚠️を付けるかの情報源）。{コピー本文: [理由,…]}
                  "needs_review_by_hook": _nr_map,

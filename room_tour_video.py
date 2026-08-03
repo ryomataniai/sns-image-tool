@@ -1265,15 +1265,27 @@ def _v79_gradient(canvas, y0, y1, a0, a1):
     canvas.alpha_composite(Image.fromarray(ov, "RGBA"))
 
 
-def _v79_masthead(canvas, accent=_V79_GOLD, issue_text=""):
-    """★固定マストヘッド：OSAKA ROOMS（字間・SERIF66px y205）＋ISSUE行（30px y268）＋accentライン（y308）。
+_V79_BRAND_DEFAULT = "O S A K A   R O O M S"   # ★brand-v1：既定＝現行表示と1バイトも同じ
+
+
+def _v79_masthead(canvas, accent=_V79_GOLD, issue_text="", brand_text=""):
+    """★マストヘッド：誌名（字間込み・SERIF66px y205）＋ISSUE行（30px y268）＋accentライン（y308）。
     ★issue-v1：ISSUE行は core.magazine_issue_line の生成文字列を受け取る（号数・エリアがハードコードでなくなる）。
       issue_text が空でも 'ISSUE 01' へ倒すだけで、**エリア名（旧 FUKUSHIMA 固定）は絶対に出さない**
       ＝物件と異なるエリアを全面に焼き込む事故の再発防止。
+    ★brand-v1：誌名も同じ型で引数化した（旧: "O S A K A   R O O M S" を関数内に直書き）。
+      brand_text は core.brand_masthead が返す『字間込みの焼く文字』をそのまま受ける（字間を規則で作らない）。
+      空なら既定＝現行表示へ倒す（賃貸経路の回帰ゼロ）。
+    ★誌名にも fit-to-width を入れる（和文ブランド名で幅が変わるため）。66→44 で縮小し、
+      下限でも溢れるときは折り返さず1行で描く（ISSUE行と同じ silent drop 禁止の方針）。
+      ★"O S A K A   R O O M S" は 66px で 686px（max_w=920）＝縮小されず現行と同一描画。
     ★駅名が長い場合（NISHI-NAGAHORI 等）の左右見切れを fit-to-width で防ぐ（30→22縮小・1行に収める）。"""
     from PIL import ImageDraw
     W = canvas.size[0]
-    _v79_shadow_text(canvas, (W // 2, 205), "O S A K A   R O O M S", _v79_serif(66), _V79_WHITE, blur=6)
+    _brand = str(brand_text or "").strip() or _V79_BRAND_DEFAULT
+    _bf, _blines = _v79_fit_font(_brand, _v79_serif, W - 160, 66, 44)
+    _v79_shadow_text(canvas, (W // 2, 205), (_blines[0] if len(_blines) == 1 else _brand),
+                     _bf, _V79_WHITE, blur=6)
     _line = str(issue_text or "").strip() or "ISSUE 01"   # ★空でもエリア名を騙らない
     _f, _lines = _v79_fit_font(_line, _v79_sans_r, W - 160, 30, 22)
     # 下限22pxでも溢れる異常長のときは折返さず全文を1行で描く（多少はみ出しても文字を捨てない＝silent drop禁止）。
@@ -1399,7 +1411,7 @@ def _v79_fit_font(text, size_fn, max_w, base, min_size, step=4):
 
 def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
                        accent=_V79_GOLD, spec_line="", equip_line="", note_line="",
-                       issue_text="", aspect="9:16") -> bytes:
+                       issue_text="", aspect="9:16", brand_text="") -> bytes:
     """★v79 ビート文字面（透明PNG・背景=Kling映像に重ねる）。権威=ov.py の座標。
     big_text の accent_word を色分けし2行に割る（l1=白 y1330 ／ l2=accent色 y1465）。単一行なら 1330白＋comment上げ。
     comment: 2行時 y1590 ／ 1行時 y1470（SANS_R42px GREY）。タグ（最大3・左余白）＋マストヘッド＋情報バー常時。
@@ -1410,7 +1422,7 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
     canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     _v79_gradient(canvas, 0, 460, 190, 0)         # 上グラデ（ビート面 0→460）
     _v79_gradient(canvas, 1200, H, 0, 235)        # 下グラデ
-    _v79_masthead(canvas, accent, issue_text)
+    _v79_masthead(canvas, accent, issue_text, brand_text)
     _v79_room_pill(canvas, room_label)
     _v79_tag_pills(canvas, tags, accent=accent)   # 追加情報タグ（最大3・左余白・静的）
     # ★big_text（金色スペック見出し）fit-to-width：l1(白)/l2(accent)を各 fit-or-wrap（96→56縮小・下限で折返し）→
@@ -1481,7 +1493,7 @@ def _v79_feature_label(canvas, feat_label, accent, y0=360):
 def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub="",
                     copy1="", copy2="", area_line="", hook="",
                     spec_line="", equip_line="", note_line="",
-                    issue_text="", layout="feature", aspect="9:16") -> bytes:
+                    issue_text="", layout="feature", aspect="9:16", brand_text="") -> bytes:
     """★v79 表紙（動く雑誌カバー・権威=feat23.py(特集版)/gen.py(price_hero)）。
     ★動画冒頭カバー=この表紙特大PNGと同一ソースに統一（1源2消費・配線はv79-3）。accentは feature の色。
     layout='feature'（標準・特集版）: 特集ラベル＋copy1(y1000)＋copy2(y1140)白＋price(y1330)accent＋price_sub(y1440)。
@@ -1501,20 +1513,30 @@ def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub=
     canvas = base.convert("RGBA")
     _v79_gradient(canvas, 0, 520, 190, 0)          # cover上グラデ（0→520）
     _v79_gradient(canvas, 1200, H, 0, 235)
-    _v79_masthead(canvas, accent, issue_text)
+    _v79_masthead(canvas, accent, issue_text, brand_text)
     # ★feat-merge-1：core が読めなかった場合(feat=None)に『モテ部屋』を騙らない（空＝枠を描かない）。
     #   issue-v1 でエリア名を騙らないようにしたのと同じ方針＝取れないものを既定で埋めない。
     _v79_feature_label(canvas, (feat or {}).get("label", ""), accent)
+    # ★sale-v1：価格行と補足行にも fit-to-width を入れる。売買は price が『3,350万円』、
+    #   price_sub が『管理費 …円/月 ／ 修繕積立金 …円/月 ／ 駅アクセス』と賃貸より長く、
+    #   実測で price_sub が 1430px（max_w 960）＝左右見切れになる。
+    #   ★賃貸の実値は縮小されない（price 582px / price_sub 924px ≦ 960）＝基準フォントのまま＝PNGバイト一致。
+    #   下限でも溢れるときは折り返さず1行で描く（マストヘッド・ISSUE行と同じ silent drop 禁止の方針）。
+    _MW = W - 120
     if layout == "price_hero":
         _v79_shadow_text(canvas, (W // 2, 1000), area_line, _v79_fit_serif(area_line, 96), _V79_WHITE)
-        _v79_shadow_text(canvas, (W // 2, 1180), price, _v79_serif(190), accent)
-        _v79_shadow_text(canvas, (W // 2, 1310), price_sub, _v79_sans_r(40), _V79_GREY)
+        _v79_shadow_text(canvas, (W // 2, 1180), price,
+                         _v79_fit_font(price, _v79_serif, _MW, 190, 120)[0], accent)
+        _v79_shadow_text(canvas, (W // 2, 1310), price_sub,
+                         _v79_fit_font(price_sub, _v79_sans_r, _MW, 40, 26)[0], _V79_GREY)
         _v79_shadow_text(canvas, (W // 2, 1470), hook, _v79_fit_serif(hook, 72), _V79_WHITE)
     else:                                          # feature（標準・特集版）
         _v79_shadow_text(canvas, (W // 2, 1000), copy1, _v79_fit_serif(copy1, 104), _V79_WHITE)
         _v79_shadow_text(canvas, (W // 2, 1140), copy2, _v79_fit_serif(copy2, 104), _V79_WHITE)
-        _v79_shadow_text(canvas, (W // 2, 1330), price, _v79_serif(150), accent)
-        _v79_shadow_text(canvas, (W // 2, 1440), price_sub, _v79_sans_r(40), _V79_GREY)
+        _v79_shadow_text(canvas, (W // 2, 1330), price,
+                         _v79_fit_font(price, _v79_serif, _MW, 150, 96)[0], accent)
+        _v79_shadow_text(canvas, (W // 2, 1440), price_sub,
+                         _v79_fit_font(price_sub, _v79_sans_r, _MW, 40, 26)[0], _V79_GREY)
     if spec_line or equip_line or note_line:
         _v79_infobar(canvas, spec_line, equip_line, note_line)
     buf = BytesIO()
@@ -1523,7 +1545,7 @@ def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub=
 
 
 def build_data_page(floorplan_bytes, *, feature_id="mote_heya", issue_text="",
-                    rows=None, notes=None, bg_bytes=None, aspect="9:16") -> tuple:
+                    rows=None, notes=None, bg_bytes=None, aspect="9:16", brand_text="") -> tuple:
     """★v79-6 DATA面（動く雑誌の最終ページ／通称・背表紙）。masthead＋DATA見出し＋間取り図(任意)＋
     スペック表(金ラベル/白値・行間の細い罫線・★fit-to-widthで左右60px内)＋注記。背景=物件写真を暗くぼかして敷く。
     ★間取り図が無ければ表を上に詰める（silent dropしない）。返り値 (png_bytes, floorplan_used_bool)。
@@ -1551,7 +1573,7 @@ def build_data_page(floorplan_bytes, *, feature_id="mote_heya", issue_text="",
     canvas = base.convert("RGBA")
     _v79_gradient(canvas, 0, 460, 170, 0)
     _v79_gradient(canvas, 1200, H, 0, 205)
-    _v79_masthead(canvas, accent, issue_text)
+    _v79_masthead(canvas, accent, issue_text, brand_text)
     _v79_shadow_text(canvas, (W // 2, 445), "DATA", _v79_serif(96), accent)
     d = ImageDraw.Draw(canvas)
     # ── 間取り図（白ボックスに contain 配置）。無ければ表を上に詰める ──
@@ -2202,6 +2224,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                         spec_line=sc.get("spec_line") or "", equip_line=sc.get("equip_line") or "",
                         note_line=sc.get("note_line") or "",
                         issue_text=glob.get("v79_issue", ""),   # ★issue-v1：号数＋エリア（表紙/DATA面と同一文字列）
+                        brand_text=glob.get("v79_brand", ""),   # ★brand-v1：誌名（3面で同一・空なら既定）
                         aspect=_aspect)
                     _ov.append((_png, _s, _s + _nsec))
                 except Exception as e:  # noqa: BLE001  1ビート失敗は隔離＝ログのみ（他ビートは描く）
@@ -2260,6 +2283,8 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 #   欠けたら glob["v79_issue"] へフォールバック（3面の文字列一致を機械的に担保）。
                 issue_text=_dp.get("issue_text") or glob.get("v79_issue", ""),
                 rows=_dp.get("rows") or [],
+                # ★brand-v1：DATA面の誌名。_dp を優先し欠けたら glob へフォールバック（issue_text と同型）。
+                brand_text=_dp.get("brand_text") or glob.get("v79_brand", ""),
                 notes=_dp.get("notes") or [], bg_bytes=_bg_bytes, aspect=glob.get("aspect", "9:16"))
             # ★観測点1：間取り図取得の結果をログ（A=pl_floorplan使用/なし=表上詰め）
             cover_warn.append("📄 DATA面: 間取り図" + ("あり（pl_floorplan使用）" if _fp_used
