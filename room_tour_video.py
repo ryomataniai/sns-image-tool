@@ -1440,8 +1440,12 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
 
 def _v79_feature_label(canvas, feat_label, accent, y0=360):
     """★特集ラベル箱（feat23.py cover）：rectangle（角丸なし）y360-432・fill(20,20,24,170)・枠accent w3・
-    SANS_B42px accent色・『特集　○○』。"""
+    SANS_B42px accent色・『特集　○○』。
+    ★feat-merge-1：feat_label が空＝『特集なし（normal）』の合図。枠ごと描かない（何もせず戻る）。
+      空文字のまま従来どおり描くと『特集　』という中身のない枠だけが残るため、必ずここで落とす。"""
     from PIL import ImageDraw
+    if not str(feat_label or "").strip():
+        return
     W = canvas.size[0]
     text = f"特集　{feat_label}"
     f = _v79_sans_b(42)
@@ -1476,7 +1480,9 @@ def build_cover_v79(image_bytes, *, feature_id="mote_heya", price="", price_sub=
     _v79_gradient(canvas, 0, 520, 190, 0)          # cover上グラデ（0→520）
     _v79_gradient(canvas, 1200, H, 0, 235)
     _v79_masthead(canvas, accent, issue_text)
-    _v79_feature_label(canvas, feat["label"] if feat else "モテ部屋", accent)
+    # ★feat-merge-1：core が読めなかった場合(feat=None)に『モテ部屋』を騙らない（空＝枠を描かない）。
+    #   issue-v1 でエリア名を騙らないようにしたのと同じ方針＝取れないものを既定で埋めない。
+    _v79_feature_label(canvas, (feat or {}).get("label", ""), accent)
     if layout == "price_hero":
         _v79_shadow_text(canvas, (W // 2, 1000), area_line, _v79_fit_serif(area_line, 96), _V79_WHITE)
         _v79_shadow_text(canvas, (W // 2, 1180), price, _v79_serif(190), accent)

@@ -1860,36 +1860,184 @@ def _scrub_cover_copy(text, facts=None, limit=14, concept="normal"):
     return s, warnings
 
 
-# ★v79 特集マスタ（features）：1特集=1行のdata駆動（CONCEPT_PRESETSとは当面併存・v79-2でUI配線）。
-#   変わるのは4点のみ（ラベル・アクセント色・stagingプロンプト・コピートーン）。accentはPIL実値(RGB)。
+# ★v79 特集マスタ（features）＝テイストの唯一の情報源（feat-merge-1）。
+#   CONCEPT_PRESETS から『実際に消費されているキーだけ』を移植した。移植した7キー＝
+#     style_default / staging_prompt / narration.tone / narration.voice_id / ban_words /
+#     caption.tone / caption.hashtags
+#   移植しなかったキーと理由（工程0の実測で消費先が死んでいると確定・工程5で CONCEPT_PRESETS ごと削除）：
+#     cover.default  … concept_cover_default の呼出元ゼロ（covercopy-v1 で役目終了）
+#     cover.style    … _pl_follow_concept_cover_style 自体が呼出元ゼロ
+#     cover.tone     … 消費先は draft_pr_copy の title/subtitle＝冒頭フラッシュのみ。表紙挿入ON（既定）で不発
+#     telop / sub_template … 消費先は v78 テロップ層（情感2行）。v79 では comment が同じ役割を担うため一本化して落とす
+#   ★accent は PIL 実値(RGB)。★label が空文字＝表紙に「特集　○○」枠を描かない合図（normal 用）。
+#     表示名が要る場所は feature_label() を使うこと（label を表示名で埋めると枠が復活する）。
 FEATURES = {
+    # ── 特集なし（標準）。統合後の既定＝旧 pl_concept="normal" と完全一致させる回帰防止用 ──
+    "normal": {
+        "label": "",                       # ★空＝表紙の「特集　○○」枠を描かない（_v79_feature_label 側で分岐）
+        "accent": (232, 196, 104),         # 既存GOLD流用（枠は描かないので実質マストヘッド線の色のみ）
+        "style_default": "ナチュラル/北欧",  # ★旧 CONCEPT_PRESETS["normal"] と同値＝回帰なし
+        "staging_prompt": "",              # ★空＝現行の「追加なし」挙動と完全一致
+        "comment_tone": "",
+        "cover_hooks": [],                 # ★空。normalに同格コピーを発明しない（旧 concept_cover_default の設計意図を継承）
+        "narration": {"voice_id": None, "tone": ""},
+        "ban_words": [],
+        "caption": {"tone": "", "hashtags": []},
+    },
     "mote_heya": {
         "label": "モテ部屋",
         "accent": (232, 196, 104),   # GOLD
-        "staging_prompt": "ダークトーン家具・間接照明・レコード/スピーカー・ワイン・観葉植物・夜の照明シーン",
+        "style_default": "ホテルライク",   # ★見た目の源＝特集（北欧ではない）。谷合さん決定 2026-07-15
+        # ★旧 CONCEPT_PRESETS["mote"]["staging_prompt"] をバイト単位でそのまま移設（回帰ゼロの対象）。
+        #   旧 FEATURES["mote_heya"]["staging_prompt"] の1行短文は参照ゼロの死にデータだったため破棄。
+        #   【厳守】1行目＝造作照明の追加を禁じる景表法ガード（『間接照明』とだけ書くとAIが天井に造作照明を埋める）。
+        "staging_prompt": (
+            "夜の気配と艶を出す。均一に明るくせず、明暗のコントラストを残す。\n"
+            "- 灯り: 電球色。置き型の照明器具（フロアランプ／テーブルランプ）で光だまりと陰を作る。"
+            "天井から均一に照らさない。\n"
+            "- 素材: 光沢とマットの対比。レザー／ベルベット／ガラス／磨いた金属を1〜2点だけ差し、"
+            "他はマットでまとめる。\n"
+            "- 色: 深い色を1点だけ差す（チャコール／ネイビー／ダークグリーン）。全体は低彩度。\n"
+            "- 家具: 視線を低く（ローソファ・ローテーブル）。曲線を1つ入れる。\n"
+            "- 余白: 置きすぎない。生活の気配は1〜2点まで（畳んだブランケット、グラス2つ、本）。\n"
+            "【厳守】\n"
+            "- 照明は置き型の器具のみ。造作の間接照明・ダウンライトの増設・配線の変更はしない。\n"
+            "- 人物・人体・シルエットを描かない。\n"
+            "- 衣類や寝具の乱れなど直接的な示唆はしない。\n"
+            "- 既存の構造・設備・窓・眺望を変えない、足さない。"),
         "cover_hooks": ["この部屋、自慢したくなる。", "帰りたくなる、1LDK。", "夜が、楽しみになる部屋。"],
         "comment_tone": "ナイトルーティン視点・現在形・照れは話法に（few-shot 2本参照）",
+        "narration": {"voice_id": None,     # None → 既定 ELEVENLABS_VOICE_ID(=HIRO)
+                      "tone": "低い声・落ち着き・余白。時間の匂わせと言い切り。煽らない。基準『帰りたくない。角部屋。』"},
+        "ban_words": _MOTE_HARD_NG,
+        "caption": {"tone": "余白のある短文・言い切り。生活の気配。誇大にしない。",
+                    "hashtags": ["#ひとり暮らし", "#夜が好き", "#帰りたくなる部屋"]},
     },
     "totonoeru": {
         "label": "自分を整える部屋",
         "accent": (228, 170, 168),   # ROSE
-        "staging_prompt": "明るいナチュラル・ドレッサー・バスグッズ・アロマ・リネン・朝の自然光",
+        "style_default": "ナチュラル/北欧",
+        "staging_prompt": (
+            "朝の光と清潔感を出す。影を残しすぎず、白とやわらかい影で明るくまとめる。\n"
+            "- 灯り: 自然光を主体にする。窓からの光が床や壁に届いている状態。人工照明は点けないか、点けても弱く。\n"
+            "- 素材: 綿・リネン・木・陶器など、マットで手ざわりのある素材。光沢は最小限。\n"
+            "- 色: 生成り・白・淡いグレーを基調に、くすんだピンクかベージュを1点だけ差す。全体は低彩度。\n"
+            "- 家具: 角のとれた形。数を絞り、向きと高さを揃えて整列させる（乱雑にしない）。\n"
+            "- 小物: 手入れの気配を1〜2点まで（畳んだタオル、一輪挿し、アロマ、朝のマグ）。\n"
+            "- 水回り: 洗面・浴室のカットは物を減らし、鏡と面を清潔に。ボトル類は色を揃えて2〜3本まで。\n"
+            "【厳守】\n"
+            "- 照明は置き型の器具のみ。造作の間接照明・ダウンライトの増設・配線の変更はしない。\n"
+            "- 人物・人体・シルエットを描かない。\n"
+            "- 設備を足さない。独立洗面台・浴室乾燥・室内物干し・食洗機・宅配ボックス等を、写真に無いのに描き加えない。\n"
+            "- 収納の扉を開けた状態にしない（中身を描き足さない）。\n"
+            "- 既存の構造・設備・窓・眺望を変えない、足さない。"),
+        # ★光・方角・日当たりを言葉で書かせない：fact_scrub がマイソクに記載の無い採光主張を節ごと削除するため、
+        #   ②の芯である「朝の光」は言葉では消える。光は画（staging）で作り、言葉は設備で語る。
+        "comment_tone": ("設備×時間の1行（例: 独立洗面台。朝の10分が変わる。）。"
+                         "★光・方角・日当たりは言わない（それは画で見せる）。設備語で語る。"),
         "cover_hooks": ["がんばった日の、帰る場所。", "朝の支度が、好きになる。", "暮らしを、ていねいに。"],
-        "comment_tone": "設備×時間の1行（例: 独立洗面台。朝の10分が変わる。）",
+        "narration": {"voice_id": None,   # ★女性ボイスID決定後にここへ直書き（鍵ではない・設定）
+                      "tone": "落ち着き・押しつけない・言い切り。設備は事実として言い、感情を足しすぎない。"},
+        # ★②固有ban：オートロック＝安全/防犯と断定するのは優良誤認リスク（法務は専門家確認が前提）。
+        #   ②は設備訴求が芯なので、この語が一番出やすい。
+        "ban_words": ["安心", "安全", "防犯", "セキュリティ万全", "完全防犯"],
+        "caption": {"tone": "やわらかい短文・言い切り。設備は事実として書く。誇大にしない。",
+                    "hashtags": ["#暮らしを整える", "#朝時間", "#ひとり暮らしの部屋"]},
     },
     "hobby": {
         "label": "趣味部屋",
         "accent": (168, 205, 172),   # SAGE
-        "staging_prompt": "デスク+モニター/本棚/自転車壁掛け等、1物件1趣味に絞る",
-        "cover_hooks": ["好きを、まんなかに。", "趣味に、1部屋あげる。", "デスクから、はじまる部屋。"],
-        "comment_tone": "趣味の動線1行（帖数等はfacts必須）",
+        "style_default": "ナチュラル/北欧",
+        # ★定義書(07-17)の③には「自転車壁掛け」とあるが、同じ定義書の賃貸staging原則
+        #   「壁・建具は1mmも変えない／入居者が実際に再現できるもの」と矛盾する（賃貸で壁にビスは打てない）。
+        #   再現不能な状態の提示になるため自立式に置換した。
+        "staging_prompt": (
+            "「好きなものが置いてある部屋」を、1つの趣味に絞って作る。詰め込まない。\n"
+            "- 趣味の選定: 1物件1趣味。部屋の広さ・形状から逆算して1つだけ選ぶ"
+            "（デスク／本と棚／自転車／楽器／プロジェクター等）。2つ以上を同じ物件に混ぜない。\n"
+            "- 灯り: 昼の自然光に、手元の照明を1つ。作業している気配を光で示す。\n"
+            "- 素材: 木・スチール・布を混ぜる。過度に整えない（使っている部屋に見せる）。\n"
+            "- 色: 生成り・木・グレーを基調に、セージグリーンかモスを1点だけ。全体は低彩度。\n"
+            "- 家具: 床の余白を残し『まだ置ける』を見せる。棚は高くしすぎない。\n"
+            "- 余白: 使いかけの気配を1〜2点まで（開いた本、マグ、ヘッドホン）。コレクションを大量に並べない。\n"
+            "【厳守】\n"
+            "- 壁・床・建具に固定する表現をしない。壁掛けラック・ビス留めの棚・造作の飾り棚は描かない。"
+            "自立式ラック・突っ張り式・置き型で表現する（入居者が原状回復できる範囲だけ）。\n"
+            "- 照明は置き型の器具のみ。造作の間接照明・ダウンライトの増設・配線の変更はしない。\n"
+            "- 人物・人体・シルエットを描かない。\n"
+            "- 防音・楽器可・ペット可を想起させる物を、物件事実に無いのに置かない"
+            "（ドラムセット・グランドピアノ・アンプ等）。\n"
+            "- 既存の構造・設備・窓・眺望を変えない、足さない。"),
+        "comment_tone": ("趣味の動線1行。帖数・広さは facts にある時だけ言う"
+                         "（例: 洋室6帖は、デスクを置いてもまだ余裕がある。）"),
+        # ★旧案「趣味に、1部屋あげる。」を落とした理由：_scrub_cover_copy の数値検出で
+        #   「間取り表記以外の数字を含む（数値主張＝要確認）」警告が立つ。cover_hooks は AI3案が全滅したときの
+        #   最後の砦（feature_fallback）なので、警告つきの文言では fallback として機能しない。
+        "cover_hooks": ["好きを、まんなかに。", "デスクから、はじまる部屋。", "好きなものと、暮らす。"],
+        "narration": {"voice_id": None,
+                      "tone": "気負わない・少し楽しそう・言い切り。趣味を説明しすぎない。"},
+        "ban_words": ["防音", "楽器可", "ペット可", "DIY自由"],
+        "caption": {"tone": "気負わない短文。好きなものを説明しすぎない。",
+                    "hashtags": ["#趣味部屋", "#デスク環境", "#好きなものに囲まれて"]},
     },
 }
+# ★セレクタの並び＝この明示リスト（dictのキー順に依存しない／CONCEPT_ORDER と同型）。
+FEATURE_ORDER = ["normal", "mote_heya", "totonoeru", "hobby"]
 
 
 def feature_of(fid):
-    """特集id の定義を返す（未知は None）。下流は これだけ参照＝単一の情報源（CONCEPT_PRESETSと同型）。"""
-    return FEATURES.get(fid)
+    """特集id の定義を返す。★未知は normal（旧実装は None。concept_of と同型に揃えた）。
+    下流は これだけ参照＝単一の情報源。呼出側の `feature_of(x) or {}` は dict が常に真なので無害。
+    ★挙動変更の実害を確認済み：未知idのとき表紙が『特集　モテ部屋』を騙っていた（rtv:1479）のが
+      normal＝枠なしになる。issue-v1 の『取れないときに既定を騙らない』と同じ方針。"""
+    return FEATURES.get(fid) or FEATURES["normal"]
+
+
+def feature_label(fid):
+    """UI表示名。★label とは別物：label は表紙の枠に焼く文字（normal は空＝枠を描かない合図）で、
+    こちらは人が選ぶときに読む名前。両者を1つにすると normal に表示名を入れた瞬間に表紙の枠が復活する。"""
+    lb = str(feature_of(fid).get("label", "")).strip()
+    return lb or "特集なし（標準）"
+
+
+def feature_style_default(fid, default=None):
+    """特集が決める『スタイル既定』（INTERIOR_STYLES のキー）。★見た目の単一の情報源＝特集。
+    未定義なら default。UI側で sticky 追従させる（人が変えたら停止）。"""
+    return feature_of(fid).get("style_default") or default
+
+
+def feature_staging(fid):
+    """特集の staging プロンプト追記。normal は ''＝追加なし（回帰）。
+    ★これが今まで無かったため FEATURES[*]['staging_prompt'] は参照ゼロの死にデータだった（feat-merge-2 で接続）。"""
+    return str(feature_of(fid).get("staging_prompt", "") or "")
+
+
+def feature_voice_id(fid, default_voice=None):
+    """特集の voice_id（表に直書き＝設定）。None → 既定にフォールバック。★鍵はSecrets、設定は表。"""
+    return (feature_of(fid).get("narration") or {}).get("voice_id") or default_voice
+
+
+def feature_tone(fid, key):
+    """特集のトーン文字列。key∈{narration, caption}。normal は ''＝回帰。
+    ★key='cover' は用意しない：旧 cover.tone の消費先（draft_pr_copy の title/subtitle）が
+      冒頭フラッシュ以外に無く、既定設定では焼かれないため移植しなかった（工程0の実測）。"""
+    return str((feature_of(fid).get(key) or {}).get("tone", "")).strip()
+
+
+def feature_hashtags(fid):
+    """特集別ハッシュタグ（ブランド共通に少量追加するだけ）。normal は []。"""
+    return [str(x).strip() for x in ((feature_of(fid).get("caption") or {}).get("hashtags") or [])
+            if str(x).strip()]
+
+
+def feature_ban_extra(fid):
+    """特集固有のハードNG語のみ（共通ban は _PR_BANNED / _SNS_BAN_EXTRA 側）。生成物の post-filter 用。"""
+    return [w for w in (feature_of(fid).get("ban_words") or []) if w]
+
+
+def feature_ban(fid):
+    """その特集で機械除去する語＝共通ban ＋ 特集固有ハードNG（旧 concept_ban と同型）。"""
+    return list(_PR_BANNED) + list(_SNS_BAN_EXTRA) + list(feature_ban_extra(fid))
 
 
 # ★v79 room_facts_map（部屋⇔映像/文字/設備の対応表・★最初から3用途スキーマ）:
