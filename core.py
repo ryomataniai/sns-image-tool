@@ -2807,6 +2807,18 @@ def build_data_rows(facts: dict) -> list:
     return rows
 
 
+# ★v79-note：AI生成イメージの明示（景表法）。表紙・ビート面・DATA面が同じ文言を使うための1源。
+#   ここを直せば3面すべてが変わる（面ごとに書き分けない＝文言のドリフトを構造的に防ぐ）。
+AI_IMAGE_NOTE = "※家具・小物はAI生成のイメージ"
+
+
+def ai_note_line(facts: dict = None, gen_date_str: str = "") -> str:
+    """★v79-note：表紙・ビート面に焼く1行注記。『AI生成イメージ』＋『◯年◯月時点の情報』。
+    年月は data_note_date と同じ規則（マイソク記載を優先→無ければ呼出側の生成日）＝3面で年月がずれない。"""
+    ym = data_note_date(facts or {}, gen_date_str)
+    return AI_IMAGE_NOTE + (f"　※{ym}時点の情報" if ym else "")
+
+
 def data_note_date(facts: dict, gen_date_str: str = "") -> str:
     """★v79-6 注記の年月：マイソクに情報日付があればそれ、無ければ生成日（呼出側が渡す）。景表法『現況優先』併記前提。
     full_text から『YYYY年M月』or『YYYY/M』を拾う（情報日付/更新日 近傍優先）。無ければ gen_date_str。"""

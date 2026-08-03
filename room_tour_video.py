@@ -1438,6 +1438,28 @@ def build_beat_overlay(room_label, big_text, accent_word, comment, *, tags=None,
     return buf.getvalue()
 
 
+def build_note_overlay(note_line: str, aspect: str = "9:16") -> bytes:
+    """★v79-note：景表法注記（※家具・小物はAI生成のイメージ …）だけの透明PNG。
+    ★これを本編全長の時間窓で焼く＝ビート構成に依存せず「全カットに出る」ことを構造的に保証する。
+      ビート文字面は先頭sceneにしか載らず、間取り図カットのように room_label も big_text も無いカットは
+      overlay ループで skip されるため、注記をビート文字面に相乗りさせると そこだけ注記が消える。
+    ★色は _V79_GREY（200）。ビート面の下グラデ（alpha 235）の“上”に描くので沈まない
+      （テロップ層の note はグラデの下敷きになりコントラストが 212→40 まで落ちていた）。"""
+    from PIL import Image
+    from io import BytesIO
+    W, H = COVER_DIMS.get(aspect, COVER_DIMS["9:16"])
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    txt = str(note_line or "").strip()
+    if txt:
+        # 幅に収める（長い年月表記や将来の文言追加で左右が見切れないように）。下限22px。
+        _f, _lines = _v79_fit_font(txt, _v79_sans_r, W - 120, 26, 22)
+        _v79_shadow_text(canvas, (W // 2, 1872), (_lines[0] if len(_lines) == 1 else txt),
+                         _f, _V79_GREY, blur=6)
+    buf = BytesIO()
+    canvas.save(buf, "PNG")
+    return buf.getvalue()
+
+
 def _v79_feature_label(canvas, feat_label, accent, y0=360):
     """★特集ラベル箱（feat23.py cover）：rectangle（角丸なし）y360-432・fill(20,20,24,170)・枠accent w3・
     SANS_B42px accent色・『特集　○○』。
@@ -1925,10 +1947,13 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
     #   ★判定は `ordered`（描画完了分）ではなく `scenes`（ジョブ全体）で行う。_make_seg は描画の最初に走るため
     #     この時点で ordered は空＝ゲートが必ず False に倒れるのと、seg は冪等キャッシュなので再開時に
     #     判定が揺れると「テロップ有りseg と 無しseg が混ざる」ため、ジョブ単位で不変な情報源を使う。
-    #   ★note（※画像はイメージです）と flash は落とさない。ビート面の情報バー(note_line)は scene に載らず
-    #     常に空＝景表法の注記はこのテロップ層の note が唯一の出口。ここを一緒に落とすと注記が消える。
+    #   ★flash は落とさない（冒頭タイトルは別機能）。
     _v79_mag_planned = any((sc.get("big_text") or sc.get("comment")) for sc in scenes)
     _telop_off = _unified or _v79_mag_planned
+    # ★v79-note：景表法注記だけは別ゲート。v79 側（build_note_overlay）が本編全長で焼くようになったときだけ
+    #   seg 側を止める。glob["v79_note"] が無い＝旧い job state や旧経路なので、seg 側の注記を残す
+    #   （新旧どちらでも注記がゼロになる瞬間を作らない＝景表法の明示を配線都合で落とさない）。
+    _note_off = _v79_mag_planned and bool(str(glob.get("v79_note", "") or "").strip())
     # ★narr-fix-b：実尺先行（measure-first）＝narration ON ＋ beatモード。segを予測trimせずフル正規化で残し、
     #   フェーズCでTTS実尺測定→d_i=max(_MIN_BEAT, narr+_TAIL_PAD)→segfitへtrim/フリーズ延長→組立（予測係数に依存しない）。
     _measure_first = bool(glob.get("narration_on")) and any(
@@ -1939,7 +1964,7 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                         caption="" if _telop_off else sc.get("caption", ""),
                         sub_lines=None if _telop_off else sc.get("subs"),
                         top_tag="" if _telop_off else sc.get("top_tag", ""),
-                        note=sc.get("note", ""),
+                        note="" if _note_off else sc.get("note", ""),
                         taste=sc.get("taste", "clean"), pos=sc.get("pos", "下中央"),
                         flash=sc.get("flash", ""), out_w=out_w, out_h=out_h,
                         fit_mode=sc.get("fit", "fill"))
@@ -2182,13 +2207,27 @@ def run_tour_job(job_dir, progress=None, poll_interval=8, max_wait=1800) -> dict
                 except Exception as e:  # noqa: BLE001  1ビート失敗は隔離＝ログのみ（他ビートは描く）
                     narr_warn.append(f"⚠️ ビート{bid + 1}（{_room}）: 文字面の描画に失敗し省略（"
                                      + _log_failure(f"build_beat_overlay(beat {bid})", e) + "）。")
+            # ★v79-note：景表法注記を本編全長（表紙区間を除く）の1枚で焼く。
+            #   ビート文字面に相乗りさせない理由＝ビート文字面は先頭sceneにしか載らず、間取り図カットのように
+            #   room_label も big_text も無いカットは上の loop で skip される＝そこだけ注記が消える。
+            #   全長の時間窓にすることで「全カットに出る」がビート構成に依存しなくなる。
+            #   表紙は build_cover_v79 の note_line、DATA面は build_data_page の notes が別途持つ（3面とも1源）。
+            _note_txt = str(glob.get("v79_note", "") or "").strip()
+            if _note_txt:
+                _ov.append((build_note_overlay(_note_txt, aspect=_aspect),
+                            _cover_off, max(_cover_off, _dur(body)) + 1.0))
             _mag = _jp("_tmp_magazine.mp4")
             _burn_beat_overlays(body, _ov, _mag, out_w, out_h)
             shutil.move(_mag, _jp("room_tour_silent.mp4"))
             body = _jp("room_tour_silent.mp4")
         except Exception as e:  # noqa: BLE001  文字面焼き込み全体の失敗はフェイルセーフ（動画は止めない）＝ログに残す
-            cover_warn.append("文字面の焼き込みに失敗したため文字なしで生成しました（"
-                              + _log_failure("burn_beat_overlays", e) + "）。")
+            # ★v79-note：この失敗は「文字が付かない」だけでなく AI生成イメージの注記も焼かれていない状態。
+            #   seg 側の注記は v79 モードで止めてあるため、ここで落ちた動画は景表法の明示が欠けている。
+            #   黙って“文字なし動画”として渡さず、投稿してはいけないことを明示する（silent drop 禁止）。
+            cover_warn.append("🔴 文字面の焼き込みに失敗しました（"
+                              + _log_failure("burn_beat_overlays", e) + "）。"
+                              "★この動画には『※家具・小物はAI生成のイメージ』の注記が入っていません。"
+                              "投稿せず、もう一度生成してください。")
 
     # ── ★story-v78 B ③：ナレ字幕を『字数比の1行ずつ切替』で無音bodyに焼く（with-timestamps不要のフォールバック水準）──
     #   ビート開始=cover_off+Σ前ビートdur（＝ナレ音声の配置と同一・A0の単純化）。表紙区間は字幕なし（唯一の例外）。
