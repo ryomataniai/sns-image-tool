@@ -662,12 +662,27 @@ ROOM_TOUR_FURNITURE = {
 
 
 def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
-                           with_ref: bool = False, user_request: str = "") -> str:
+                           with_ref: bool = False, user_request: str = "",
+                           concept_staging: str = "") -> str:
     """マイソク → 同一住戸の指定部屋の内観を生成するプロンプト。
     with_ref=True のときは2枚目の参照画像に「配色・素材だけ」合わせる指示を足す。
-    部屋タイプ別の家具ルールを厳守させ、トイレ等への家具転写を防ぐ。"""
+    部屋タイプ別の家具ルールを厳守させ、トイレ等への家具転写を防ぐ。
+    concept_staging: 特集の方向づけ（空＝特集なし＝追加なし＝回帰なし）。
+    ★v79-feature-reach(a)：ここに特集が届いていなかったため、写真の無い部屋（補完生成）だけ
+      テイストが素通りしていた（②③を選んでも間取り図から起こす内観は normal のまま）。"""
     furni = ROOM_TOUR_FURNITURE.get(room_label, "")
     furni_line = f"\n- {furni}" if furni else ""
+    # ★ROOM_TOUR_FURNITURE は部屋別の家具を固定で指示する（例 洋室＝ベッドを主役に）。
+    #   ③趣味部屋の staging_prompt は「デスク＋本棚」なので、両方を素で並べると1枚のプロンプトの中で
+    #   家具の指示が正面衝突する。優先順を明示して解く（ROOM_TOUR_FURNITURE の中身は1文字も変えない
+    #   ＝normal/mote の回帰を避けるため）。用途に合わない家具の禁止だけは特集に関わらず厳守のまま。
+    # ★空のときは改行すら足さない＝特集なし(normal)は変更前とバイト一致（回帰ゼロの担保）。
+    _cst_line = ("\n" + _concept_line(concept_staging).rstrip("\n")) \
+        if str(concept_staging or "").strip() else ""
+    furni_prio = ("\n- 上の部屋別の家具は『既定』であって固定ではない。"
+                  "下に【コンセプト方向づけ】がある場合は、家具の種類はそちらを優先する"
+                  "（ただし、その部屋の用途に合わない家具＝トイレや浴室のソファ・水回りのベッド等は"
+                  "特集に関わらず絶対に置かない）。" if str(concept_staging or "").strip() else "")
     ref_line = (
         "\n- 参照として渡した2枚目の画像（同じ住戸の別カット、または住戸全体の3D俯瞰パース）からは、"
         "床材・壁の色・木部やファブリックの色味・照明・全体のスタイルの雰囲気『だけ』を合わせる。"
@@ -679,10 +694,10 @@ def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
         "1枚目の画像は賃貸物件のマイソク／間取り図です。"
         f"この同一住戸の中の「{room_label}」の内観写真を、フォトリアルに1枚生成してください。\n"
         f"- {room_hint}"
-        f"{furni_line}\n"
+        f"{furni_line}{furni_prio}\n"
         f"- インテリアは{style_desc}。住戸全体で統一感を持たせる。\n"
         "- 自然光の入る清潔で心地よい雰囲気。"
-        f"{ref_line}"
+        f"{ref_line}{_cst_line}"                 # ★特集の方向づけ（空=特集なし=1バイトも足さない）
         f"{_request_line(user_request)}\n"
         "【厳守】建物の外観・外観写真・間取り図の線や文字・平面図・数字は一切出さない。"
         "内観のみ。実際にあり得ない広さ・設備・眺望を足して誇張しない。"
@@ -690,8 +705,13 @@ def build_room_tour_prompt(style_desc: str, room_label: str, room_hint: str,
     )
 
 
-def build_3d_perspective_prompt(style_desc: str = "", user_request: str = "") -> str:
-    """間取り図 → 斜め上から見下ろす3Dドールハウス風の俯瞰パース（試験）。"""
+def build_3d_perspective_prompt(style_desc: str = "", user_request: str = "",
+                                concept_staging: str = "") -> str:
+    """間取り図 → 斜め上から見下ろす3Dドールハウス風の俯瞰パース（試験）。
+    concept_staging: 特集の方向づけ（空＝特集なし＝追加なし＝回帰なし・v79-feature-reach(a)）。"""
+    # ★空のときは改行すら足さない＝特集なし(normal)は変更前とバイト一致（回帰ゼロの担保）。
+    _cst_line = ("\n" + _concept_line(concept_staging).rstrip("\n")) \
+        if str(concept_staging or "").strip() else ""
     return (
         "1枚目の画像は賃貸／中古物件の間取り図（マイソク）です。"
         "この間取りを基に、屋根と手前側の壁を取り払って斜め上から見下ろした"
@@ -699,6 +719,7 @@ def build_3d_perspective_prompt(style_desc: str = "", user_request: str = "") ->
         "- 各部屋に家具・小物を配置し、間取りの部屋配置・広さ・動線が一目で分かるようにする。\n"
         f"- インテリアは{style_desc}。住戸全体で統一感を持たせる。\n"
         "- 自然な陰影と採光で立体感を出す。"
+        f"{_cst_line}"                           # ★特集の方向づけ（空=特集なし=1バイトも足さない）
         f"{_request_line(user_request)}\n"
         "【厳守】間取り図の線・寸法・文字・平面図そのものは出さない。3Dの立体パースにする。"
         "実在しない広さ・階数・設備を誇張しない。"
@@ -2604,33 +2625,76 @@ def story_narration(client, beats, facts, situation, style="独白",
 
 # ★シチュエーション（story-v78 §3・13→6に削減。軸＝「全部屋を回る口実になるか」）。
 #   need=必要な部屋（いずれか在れば提案・空=どんな物件でも）。style=独白(A系)/語りかけ(B系)。
+# ★v79-feature-reach(b)：各エントリに feature を追加した。従来は検出部屋でしか絞らず特集を一切見ないため、
+#   ②③を選んでも A系（モテ部屋の世界観）しか出てこなかった。feature=None＝全特集共通。
+#   ★A系/B3 の文面・style・need は1文字も変えていない（mote_heya の回帰を避けるため）。
+#   ★B1 を共通に置くのは、特集なし(normal)を選んだときに候補がゼロにならないようにするため。
+#     各特集にも need 空のものを1本以上置いてある（候補ゼロで物語生成が始められない状態を作らない）。
 STORY_SITUATIONS = [
-    {"id": "A1", "style": "独白", "need": ["玄関"],
+    {"id": "A1", "style": "独白", "need": ["玄関"], "feature": "mote_heya",
      "text": "引っ越したって言ったら、気になってる女友達が来た",
      "label": "A1｜気になってる女友達が来た（独白）"},
-    {"id": "A2", "style": "独白", "need": [],
+    {"id": "A2", "style": "独白", "need": [], "feature": "mote_heya",
      "text": "明日、あの子が来る。そわそわしながら仕込んでいる",
      "label": "A2｜明日、あの子が来る（独白・どんな物件でも）"},
-    {"id": "A3", "style": "独白", "need": ["玄関", "外観"],
+    {"id": "A3", "style": "独白", "need": ["玄関", "外観"], "feature": "mote_heya",
      "text": "飲みの帰り「近いんでしょ？」って言われた",
      "label": "A3｜飲みの帰りに寄られた（独白）"},
-    {"id": "A4", "style": "独白", "need": ["玄関"],
+    {"id": "A4", "style": "独白", "need": ["玄関"], "feature": "mote_heya",
      "text": "駅まで送るつもりが、雨が降ってきた",
      "label": "A4｜雨で戻ってきた（独白）"},
-    {"id": "B1", "style": "語りかけ", "need": [],
+    {"id": "B1", "style": "語りかけ", "need": [], "feature": None,
      "text": "引っ越してきた初日。一人で、部屋を見て回っている",
      "label": "B1｜引っ越し初日のルームツアー（語りかけ・どんな物件でも）"},
-    {"id": "B3", "style": "語りかけ", "need": ["キッチン"],
+    {"id": "B3", "style": "語りかけ", "need": ["キッチン"], "feature": "mote_heya",
      "text": "イケてる男のナイトルーティン",
      "label": "B3｜ナイトルーティン（語りかけ）"},
+    # ── ②自分を整える部屋（谷合さんFB後に文面確定・ban / needs_review / 数字は全て回避済み）──
+    {"id": "C1", "style": "独白", "need": ["洗面"], "feature": "totonoeru",
+     "text": "朝、いちばんに顔を洗う。今日は少し早く起きた",
+     "label": "C1｜朝いちばんに顔を洗う（独白）"},
+    {"id": "C2", "style": "独白", "need": ["玄関"], "feature": "totonoeru",
+     "text": "残業して帰ってきた。とりあえず全部いったん置く",
+     "label": "C2｜残業して帰ってきた（独白）"},
+    {"id": "C3", "style": "語りかけ", "need": [], "feature": "totonoeru",
+     "text": "なにもしない休日。部屋を整えるところから始める",
+     "label": "C3｜なにもしない休日（語りかけ・どんな物件でも）"},
+    {"id": "C4", "style": "語りかけ", "need": ["浴室"], "feature": "totonoeru",
+     "text": "湯船にお湯をためている間に、部屋を片づける",
+     "label": "C4｜湯船をためている間に（語りかけ）"},
+    # ── ③趣味部屋 ──
+    {"id": "D1", "style": "独白", "need": [], "feature": "hobby",
+     "text": "引っ越してきた。どの部屋を「好きなこと」に使うか決める",
+     "label": "D1｜どの部屋を好きなことに使うか（独白・どんな物件でも）"},
+    {"id": "D2", "style": "語りかけ", "need": ["洋室"], "feature": "hobby",
+     "text": "空いている部屋がある。ここを自分の場所にしようと思う",
+     "label": "D2｜空いている部屋を自分の場所に（語りかけ）"},
+    {"id": "D3", "style": "語りかけ", "need": [], "feature": "hobby",
+     "text": "在宅の日。仕事のあと、そのまま好きなことに切り替える",
+     "label": "D3｜在宅の日の切り替え（語りかけ・どんな物件でも）"},
+    {"id": "D4", "style": "独白", "need": ["LDK"], "feature": "hobby",
+     "text": "休みの日、朝から好きなことだけをして過ごす",
+     "label": "D4｜休みの日は好きなことだけ（独白）"},
 ]
 
 
-def story_situations_for(rooms):
-    """検出部屋 rooms で成立するシチュエーションだけ返す（§4）。need空=常に／need有=いずれか在れば。
-    ★玄関が無ければ A1/A3/A4 を出さない・キッチンが無ければ B3 を出さない・A2/B1 はどんな物件でも出す。"""
+def story_situations_for(rooms, feature_id="normal"):
+    """検出部屋 rooms ＋ 特集 で成立するシチュエーションだけ返す（§4 / v79-feature-reach(b)）。
+    need空=常に／need有=いずれか在れば。エントリ側の feature=None は全特集共通の意味。
+    ★引数の既定は "normal"（None＝絞らない、ではない）。呼出側が feature_id を渡し忘れたときに
+      全特集の世界観が混ざったリストを返すと、モテ部屋の選択肢に②③が紛れても気づけない。
+      既定を normal にしておけば「候補が共通1本だけ」という目に見える壊れ方になり、必ず直される。
+      絞り込みを意図的に外したいときだけ明示的に None を渡す。
+    ★玄関が無ければ A1/A3/A4 を出さない・キッチンが無ければ B3 を出さない。"""
     rset = set(r for r in (rooms or []) if r)
-    return [s for s in STORY_SITUATIONS if not s["need"] or any(r in rset for r in s["need"])]
+    out = []
+    for s in STORY_SITUATIONS:
+        if s["need"] and not any(r in rset for r in s["need"]):
+            continue
+        if feature_id is not None and s.get("feature") not in (None, feature_id):
+            continue                      # 他特集の世界観は出さない（共通=None は常に出す）
+        out.append(s)
+    return out
 
 
 def _mag_price_fields(facts):
