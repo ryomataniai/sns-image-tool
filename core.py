@@ -1874,7 +1874,7 @@ def _scrub_cover_copy(text, facts=None, limit=14, concept="normal"):
 #     cover.tone     … 消費先は draft_pr_copy の title/subtitle＝冒頭フラッシュのみ。表紙挿入ON（既定）で不発
 #     telop / sub_template … 消費先は v78 テロップ層（情感2行）。v79 では comment が同じ役割を担うため一本化して落とす
 #   ★accent は PIL 実値(RGB)。★label が空文字＝表紙に「特集　○○」枠を描かない合図（normal 用）。
-#     表示名が要る場所は feature_label() を使うこと（label を表示名で埋めると枠が復活する）。
+#     表示名が要る場所は feature_display_name() を使うこと（label を表示名で埋めると枠が復活する）。
 FEATURES = {
     # ── 特集なし（標準）。統合後の既定＝旧 pl_concept="normal" と完全一致させる回帰防止用 ──
     "normal": {
@@ -1997,9 +1997,10 @@ def feature_of(fid):
     return FEATURES.get(fid) or FEATURES["normal"]
 
 
-def feature_label(fid):
-    """UI表示名。★label とは別物：label は表紙の枠に焼く文字（normal は空＝枠を描かない合図）で、
-    こちらは人が選ぶときに読む名前。両者を1つにすると normal に表示名を入れた瞬間に表紙の枠が復活する。"""
+def feature_display_name(fid):
+    """UI表示名（人が選ぶときに読む名前）。★label とは別物：label は表紙の枠に焼く文字で、
+    normal は空＝枠を描かない合図。両者を1つにすると normal に表示名を入れた瞬間に表紙の枠が復活する。
+    ★feat-merge-3：旧名 feature_label は『焼く文字』に読めて役割が逆に伝わるため改名した。"""
     lb = str(feature_of(fid).get("label", "")).strip()
     return lb or "特集なし（標準）"
 
@@ -2213,15 +2214,16 @@ def magazine_issue_line(facts, issue_no=1, area_override="") -> str:
     return f"ISSUE {nn}  /  {head}{area}"
 
 
-def _concept_caption_line(concept: str) -> str:
-    """draft_sns_captions 用コンセプトのトーン1行（hook/area_blurの文体）。normal/wipは空＝回帰。"""
-    tone = concept_tone(concept, "caption")
+def _feature_caption_line(feature: str) -> str:
+    """draft_sns_captions 用 特集のトーン1行（hook/area_blurの文体）。normal＝空＝回帰。
+    ★feat-merge-3：情報源を CONCEPT_PRESETS から FEATURES へ移した（テイストの単一情報源）。"""
+    tone = feature_tone(feature, "caption")
     return f"・hook/文体のトーン：{tone}（数値・設備は創作しない＝上の厳守が優先）。\n" if tone else ""
 
 
 def draft_sns_captions(client, facts: dict, templates: dict = None,
                        gen_date: str = None, model="gemini-2.5-flash",
-                       concept: str = "normal") -> dict:
+                       feature: str = "normal") -> dict:
     """マイソク事実から Instagram×2 / TikTok×2 / コメント返信テンプレ を生成。
     ★数値（賃料・管理費・㎡・徒歩分）・設備は facts 由来をコードで固定し改変させない。
       Gemini はフック文・エリアぼかし・設備の選定・ハッシュタグの創作のみ。フッター/CTA/エリア大ハッシュタグ/
@@ -2269,7 +2271,7 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
         "・hook は1行・数字は事実のみ。フックA=数字/コスパ訴求（必ず具体的な金額または数字を含める）、"
         "フックB=特徴/内装訴求。\n"
         "・hashtags(IG)は15〜20個：エリア大5・エリア小4・属性5・ニッチ4の配分。TikTokは4個。\n"
-        f"{_concept_caption_line(concept)}"      # ★コンセプトのトーン（空=ノーマル=回帰）
+        f"{_feature_caption_line(feature)}"      # ★特集のトーン（空=特集なし=回帰）
         "出力JSON（これのみ・説明なし）：\n"
         '{"ig_a":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
         '"ig_b":{"hook":"","area_blur":"","equip":[],"hashtags":[]},'
@@ -2293,10 +2295,10 @@ def draft_sns_captions(client, facts: dict, templates: dict = None,
     except Exception as e:  # noqa: BLE001  握り潰さず記録（事実部分だけでも返す＝実運用を止めない）
         warnings.append(f"AIによるフック/ハッシュタグ生成に失敗（{type(e).__name__}）。事実部分のみで出力します。")
 
-    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA + concept_ban_extra(concept)  # ＋コンセプト固有ハードNG
+    ban = list(_PR_BANNED) + _SNS_BAN_EXTRA + feature_ban_extra(feature)  # ＋特集固有ハードNG
     if walk is None or walk > 8:                     # 徒歩8分超/不明→立地訴求語も禁止
         ban += _PR_LOCATION_WORDS
-    con_tags = concept_hashtags(concept)             # コンセプト別タグ（ブランド共通に少量追加のみ）
+    con_tags = feature_hashtags(feature)             # 特集別タグ（ブランド共通に少量追加のみ）
 
     def _clean(s):
         s = str(s or "")
@@ -3253,18 +3255,19 @@ def narration_has_ascii(text: str) -> bool:
 
 
 def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
-                     model="gemini-2.5-flash", concept: str = "normal") -> dict:
+                     model="gemini-2.5-flash", feature: str = "normal") -> dict:
     """テロップ（目向け・体言止め）を耳向けの口語ナレへ整える。
     ★字数上限（正規化後）にハード収束・読み正規化・ban語/物件名/モテ除去。返り値 {text, limit, warnings}。
-    concept: ナレのトーン方向づけ（narration.tone）。normal/wip＝空＝回帰。コンセプト固有banも除去。"""
+    feature: ナレのトーン方向づけ（FEATURES[*].narration.tone）。normal＝空＝回帰。特集固有banも除去。
+    ★feat-merge-3：旧 concept= から改名（情報源を FEATURES に一本化）。"""
     limit = narration_char_limit(dur_sec)
     facts = facts or {}
-    _ntone = concept_tone(concept, "narration")
+    _ntone = feature_tone(feature, "narration")
     _tone_line = f"・トーン：{_ntone}\n" if _ntone else ""
     instr = (
         "次のテロップ文を、低い声の男性ナレーターが読む『耳向けの一文』に整えてください。\n"
         f"・{limit}字以内・言い切り・短文・煽らない。誇大/最上級/断定は使わない。\n"
-        f"{_tone_line}"                              # ★コンセプトのトーン（空=ノーマル=回帰）
+        f"{_tone_line}"                              # ★特集のトーン（空=特集なし=回帰）
         "・眺望・方角・日当たり・階数の見え方・静けさ・周辺環境には触れない"
         "（例『夜空』『見晴らし』『南向き』『閑静』はマイソクに明示が無ければ書かない）。部屋の中の事実だけ。\n"
         "・物件名・『モテ』等の内部語は使わない。数字や単位はそのまま残してよい。\n"
@@ -3279,7 +3282,7 @@ def polish_narration(client, text: str, dur_sec=5, facts: dict = None,
         warnings.append(f"整え生成に失敗（{type(e).__name__}）。元テロップを正規化しました。")
     out = normalize_reading(out)                   # 読み正規化（英字/記号→カナ/和数）
     name = (facts.get("name") or "").strip()
-    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + concept_ban_extra(concept):
+    for w in list(_PR_BANNED) + _SNS_BAN_EXTRA + ["モテ部屋", "モテ"] + feature_ban_extra(feature):
         if w and w in out:
             out = out.replace(w, "")
             warnings.append(f"ban語『{w}』を除去")
