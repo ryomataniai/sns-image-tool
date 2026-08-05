@@ -3778,3 +3778,88 @@ def build_plan(rows, per_prompt_count=1):
             for n in range(1, total + 1):
                 plan.append((f"{pid}_{n:02d}", prompt))
     return plan
+
+
+# ── SUUMO入稿用（suumo-export-v1）─────────────────────────────────────
+# ★ここは『SUUMOへ入稿するZIP』専用の追記ブロック。既存の定数・関数は1行も編集していない。
+#   SNS用の出力（画像だけ保存ZIP・v79動画）はこのブロックを一切参照しないので、回帰の経路が無い。
+# SUUMOはJPEG/GIFのみ受付（PNG不可）。ファイル名は半角英数のみ。
+# 注記は不動産公正取引協議会の表示規約／景品表示法が求める2要素を満たすこと:
+#   (1) CG・AI生成であること (2) 実際の物件に家具・調度品が付属しないこと
+# ★文言は公開されている規約解説を根拠にしたもので、専門家の確認は未了（エンクスの法務確認リスト済）。
+#   定数化してあるので、見解が出たらここ1箇所を直せば全出力に効く。
+SUUMO_DISC_STAGING = "※CG家具配置イメージ。実際の物件に家具・調度品は付属しません"
+SUUMO_DISC_RENOVATION = "※リノベ後のCGイメージ。仕上がりは設計により異なり、家具は付属しません"
+
+# 部屋名 → 半角英数（ファイル名用）。★未知の部屋名はローマ字を推測せず room01 形式の連番へ倒す
+#   （issue-v1 で未知駅のローマ字を推測せず日本語のまま出した判断と同型。
+#    推測で作った名前は間違っていても気づけない）。
+SUUMO_ROOM_ASCII = {
+    "間取り図": "madori", "外観": "gaikan", "エントランス": "entrance",
+    "共用部": "kyoyo", "玄関": "genkan", "廊下": "roka",
+    "LDK": "living", "洋室": "youshitsu", "寝室": "bedroom", "和室": "washitsu",
+    "キッチン": "kitchen", "浴室": "bath", "洗面": "senmen", "トイレ": "toilet",
+    "バルコニー": "balcony", "収納": "storage", "眺望": "view", "周辺": "shuhen",
+}
+
+# SUUMOの名寄せが見ている5カテゴリ（オプション資料『写真5カテゴリ以上・7点以上』の区分に対応）。
+# ★"other" は5カテゴリのどれでもない＝カテゴリ数に数えない（数えると充足を過大に見せる）。
+SUUMO_CATEGORIES = ("madori", "gaikan", "kyoshitsu", "kitchen", "bath")
+
+
+def suumo_category(room: str) -> str:
+    """部屋名 → SUUMOの名寄せ5カテゴリ。どれでもなければ 'other'。"""
+    r = str(room or "")
+    if "間取" in r:
+        return "madori"
+    if r in ("外観", "エントランス", "共用部"):
+        return "gaikan"
+    if r in ("LDK", "洋室", "寝室", "和室"):
+        return "kyoshitsu"
+    if "キッチン" in r:
+        return "kitchen"
+    if r in ("浴室", "洗面", "トイレ"):
+        return "bath"
+    return "other"
+
+
+def suumo_disclaimer(disc) -> str:
+    """SNS用の注記(disc) → SUUMO入稿用の注記。返り値が空なら注記を焼かない。
+    ★disc が None（高解像度化のみ＝AI生成物でない）は空を返す。
+      加工していない画像に『CGイメージ』と書くのは逆に不正確なので、足さない。
+    ★リノベ以外のAI生成（家具ステージング／水回り演出／補完生成／3Dパース）は
+      すべて STAGING 文言に寄せる＝AI生成なのに注記が無い画像を作らない側へ倒す。"""
+    d = str(disc or "").strip()
+    if not d:
+        return ""
+    return SUUMO_DISC_RENOVATION if "リノベ" in d else SUUMO_DISC_STAGING
+
+
+def to_suumo_jpeg(png_bytes: bytes, quality: int = 90) -> bytes:
+    """PNG→JPEG変換（SUUMOはPNG非対応）。RGBA/P は白背景で合成してから RGB へ。"""
+    from PIL import Image
+    img = Image.open(BytesIO(png_bytes))
+    if img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGBA")
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[-1])
+        img = bg
+    else:
+        img = img.convert("RGB")
+    out = BytesIO()
+    img.save(out, format="JPEG", quality=quality, optimize=True)
+    return out.getvalue()
+
+
+def suumo_filename(idx: int, room: str, used: set = None) -> str:
+    """SUUMO入稿用のファイル名（半角英数のみ）。例: 01_madori.jpg / 03_living.jpg
+    未知の部屋名は room{idx} へ倒す。同名が既にあれば末尾に連番を付す。"""
+    base = SUUMO_ROOM_ASCII.get(str(room or "").strip(), f"room{idx:02d}")
+    name = f"{idx:02d}_{base}"
+    if used is not None:
+        n, k = name, 2
+        while name in used:
+            name = f"{n}_{k}"
+            k += 1
+        used.add(name)
+    return name + ".jpg"
