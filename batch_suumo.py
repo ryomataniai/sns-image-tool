@@ -268,7 +268,7 @@ def _warn_madori_downgrade(dest: Path, tmp: Path, log):
 
 
 def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
-               fp_meta=None):
+               fp_meta=None, text_subj=None):
     """1室ぶんを書き出す。★一時フォルダに全部書いてから rename で確定させる
     （途中で落ちたフォルダが残ると、次回 --skip-existing が『完了済み』と誤認する）。"""
     dest = out_dir / key
@@ -296,7 +296,11 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
                          "suumo_category": _ASCII_TO_CATEGORY.get(
                              re.sub(r"_\d+$", "", name.split("_", 1)[1].rsplit(".", 1)[0]),
                              "999999"),
-                         "pdf_index": it["pdf_index"], "treatment": it["treatment"]})
+                         "pdf_index": it["pdf_index"], "treatment": it["treatment"],
+                         # ★text-subject-v1：文字が主題の画像を人が目視で外すための手がかり。
+                         #   非空＝その画像の主題（AI判定）。空＝文字は主題でない（写り込みは空になる）。
+                         #   ここを根拠に自動で落としたりはしない（選別は人がする）。
+                         "text_subject": (text_subj or {}).get(it["pdf_index"], "")})
         else:
             # ★madori-v1：間取り図の行には判定根拠とWARNを残す。採用は取り消さない方針なので、
             #   「なぜこれを間取り図と判定したか」「怪しいかどうか」を後から辿れる形で置く。
@@ -311,7 +315,8 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
                          "warn": m.get("warn", "")})
     with (tmp / "_manifest.csv").open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["file", "room", "suumo_category",
-                                          "pdf_index", "treatment", "detect", "warn"],
+                                          "pdf_index", "treatment", "text_subject",
+                                          "detect", "warn"],
                            restval="")
         w.writeheader()
         w.writerows(rows)
@@ -328,6 +333,21 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
         shutil.rmtree(dest)
     tmp.rename(dest)
     log(f"    → {dest.name}/ に{len(files)}枚（＋_manifest.csv）")
+    txt = [(r["file"], r["text_subject"]) for r in rows if r.get("text_subject")]
+    if txt:
+        log(f"    ⚠ 文字が主題の画像 {len(txt)}件（高解像度化で日本語が化けるため入稿から外す候補）: "
+            + ", ".join(f"{f}={t}" for f, t in txt))
+        # ★外した場合の名寄せ点の変化を、外す判断をする場で見せる。
+        #   実測でこの手の画像（給湯・浴室乾燥のリモコン）が、その室で唯一の
+        #   『バス・シャワールーム』カテゴリを持っていることがある。外すと5点落ちる。
+        #   点数を理由に残せという話ではなく、代替写真の追加が必要かを判断するための材料。
+        all_names = [n for n, _ in files]
+        keep = [n for n in all_names if n not in {f for f, _ in txt}]
+        before, _b5, _b1 = score_hint(all_names)
+        after, _a5, _a1 = score_hint(keep)
+        if after < before:
+            log(f"      → 全部外すと名寄せ見込みが {before}点 → {after}点"
+                + ("（23点未満になる。代替写真が必要）" if after < 23 else ""))
     unknown = [r["file"] for r in rows if r["suumo_category"] == "999999"]
     if unknown:
         log(f"    ⚠ 部屋が特定できず『その他(999999)』になったファイル {len(unknown)}件: "
@@ -404,6 +424,9 @@ def main(argv=None):
     ap.add_argument("--workers", type=int, default=4, help="1室内の並列生成数（既定4＝UIと同じ）")
     ap.add_argument("--overwrite", action="store_true",
                     help="既存の出力フォルダを作り直す（既定は既存をスキップ）")
+    ap.add_argument("--no-text-check", action="store_true",
+                    help="文字が主題の画像の判定（_manifest.csvのtext_subject列）を省く。"
+                         "1室につきGeminiのテキスト呼び出しが1回減る")
     a = ap.parse_args(argv)
 
     in_dir, out_dir = Path(a.in_dir).expanduser(), Path(a.out_dir).expanduser()
@@ -522,6 +545,18 @@ def main(argv=None):
         codes, cwarn = classify_with_retry(client, photos, log)
         if cwarn:
             log(f"    ⚠ 分類が不十分: {cwarn}（部屋名がその他に寄る＝ファイル名がroomNNになる）")
+        # ★text-subject-v1：文字が主題の画像（給湯リモコン・注意書き・QRコード等）に印を付ける。
+        #   「高解像度化のみ」でも画像内の日本語は別の文字に化けるため（実測）、入稿から外す候補を
+        #   人が目視で選べるようにする。落とす判断はしない＝ここでは印を付けるだけ。
+        #   ローカルの画素統計では測れないことを確認済み（core.detect_text_subject のdocstring）。
+        text_subj = {}
+        if not a.no_text_check:
+            try:
+                subs = core.detect_text_subject(client, photos)
+                text_subj = {i: s for i, s in enumerate(subs) if s}
+            except Exception as e:  # noqa: BLE001  握り潰さない・失敗しても本処理は続ける
+                log(f"    ⚠ 文字主題の判定に失敗: {type(e).__name__}: {str(e)[:100]}"
+                    "（_manifest.csv の text_subject 列が空になる）")
         # ★madori-v1：間取り図は構造判定で確定している（extract_sources で算出済み・LLM非依存）。
         #   構造判定で候補0件のときだけ、LLMのFLOORPLANタグにフォールバックする。
         floorplan = fp_struct
@@ -548,7 +583,7 @@ def main(argv=None):
             continue
         try:
             names = write_room(out_dir, key, items, floorplan, a.overwrite, log,
-                               fp_meta)
+                               fp_meta, text_subj)
         except FileExistsError as e:  # noqa: PERF203
             log(f"    ✗ 出力先が既に存在: {e}")
             results.append({"key": key, "status": "FAIL", "files": 0, "score": "",

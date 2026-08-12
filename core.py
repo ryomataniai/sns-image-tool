@@ -3800,6 +3800,11 @@ SUUMO_ROOM_ASCII = {
     "LDK": "living", "洋室": "youshitsu", "寝室": "bedroom", "和室": "washitsu",
     "キッチン": "kitchen", "浴室": "bath", "洗面": "senmen", "トイレ": "toilet",
     "バルコニー": "balcony", "収納": "storage", "眺望": "view", "周辺": "shuhen",
+    # ★storage-key-v1：分類コード STORAGE の部屋名は『クローゼット』（MAISOKU_CODE_TO_ROOM）で、
+    #   ここに無かったため room{NN}.jpg に落ち、SUUMOのカテゴリも 999999 その他になっていた。
+    #   実測で 08_room08.jpg（中身はクローゼット）が該当。040107 収納 に機械割当できる方が価値が高い
+    #   （名寄せ点は 999999 も 収納 も1点なので点数は変わらない・ファイル名だけ変わる）。
+    "クローゼット": "storage",
 }
 
 # SUUMOの名寄せが見ている5カテゴリ（オプション資料『写真5カテゴリ以上・7点以上』の区分に対応）。
@@ -4094,5 +4099,49 @@ MAISOKU_CODE_TO_ROOM = {
 }
 # 部屋種別ではなく「設備痕跡フラグ」＝主種別・coverage の判定から除外する
 MAISOKU_FEATURE_CODES = ("WASHER_PAN",)
+
+
+def detect_text_subject(client, images, model="gemini-2.5-flash"):
+    """各画像が「文字が主題」か判定する（Gemini呼び出しは1回）。→ ["", "給湯リモコン", ...]。
+
+    空文字＝文字が主題ではない。非空＝その画像の主題（短い日本語）。
+
+    ★なぜAIに聞くのか（ローカル判定を試して捨てた記録）
+      「高解像度化のみ」でも画像内の日本語は別の文字に化ける（実測：給湯リモコンの注意書きが
+      『ライルター濶島リル秀に⊃诙む』になった）。そこで文字が主題の画像を選別したいが、
+      ローカルの画素統計では測れない：横方向ゼロ交差密度を測ると
+      給湯リモコン0.0102 に対しキッチン0.0100・外観0.0391・間取り図0.0750 で、
+      文字より線画・輪郭の方が高く出て分離しない。元画像が300×300で細字が既に潰れているため。
+      ＝「測れないものを測ったことにしない」ので、ローカル代理指標は採用しない。
+    ★これは選別の自動化ではなく、人が目視で選別するための手がかり（_manifest.csv の列）。
+      判定を根拠に画像を落としたりはしない（落とす判断は人がする）。
+    ★例外は握り潰さず上位へ伝播させる（呼び出し側が警告を出して続行する）。
+    """
+    import json as _json
+    n = len(images)
+    if n == 0:
+        return []
+    parts = [_image_part(b, "image/png") for b in images]
+    instruction = (
+        f"以下は不動産マイソクから抽出した画像{n}枚です（先頭から順に0〜{n-1}）。"
+        "各画像について『文字・数字が主題になっているか』を判定してください。\n"
+        "主題になっている例：給湯器やインターホンの操作パネル、設備の注意書き・説明シール、"
+        "看板・掲示物、ゴミ出しルールの表示、QRコード、価格や間取りが書かれた広告カット。\n"
+        "主題ではない例：室内・外観の写真（壁のスイッチや小さなラベルが写り込んでいるだけのものは"
+        "『主題ではない』とする）、間取り図、地図。\n"
+        "★『写り込んでいるだけ』と『文字を見せるための写真』を区別すること。\n"
+        f"出力はJSON配列のみ・長さ{n}。文字が主題の画像はその主題を10文字以内の日本語で、"
+        "そうでない画像は空文字 \"\" にする。説明文は書かない。\n"
+        '例: ["", "給湯リモコン", "", "QRコード", ""]'
+    )
+    resp = client.models.generate_content(model=model, contents=parts + [instruction])
+    text = (getattr(resp, "text", "") or "").strip()
+    m = re.search(r"\[.*\]", text, re.S)
+    arr = _json.loads(m.group(0)) if m else []
+    out = []
+    for i in range(n):
+        el = arr[i] if i < len(arr) else ""
+        out.append(str(el).strip() if isinstance(el, str) else "")
+    return out
 # 生成対象から除外するコード（間取り図・地図・白紙）。外観は掴みに使うため除外しない
 MAISOKU_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")

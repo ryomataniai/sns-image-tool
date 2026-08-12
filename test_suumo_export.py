@@ -148,6 +148,22 @@ def test_exclude_idempotent():
     _check("除外分だけ連番が詰まる（8枚＋間取り図=9件）", len(a) == 9, f"{len(a)}件")
 
 
+def test_room_ascii_covers_classifier_vocab():
+    """分類コードが返す部屋名すべてに ASCII 名があること（room{NN} へ落ちるのは『その他』だけ）。
+
+    ★storage-key-v1 の再発防止。MAISOKU_CODE_TO_ROOM は STORAGE を『クローゼット』に写すが、
+      SUUMO_ROOM_ASCII 側のキーが『収納』しか無く、実測で 08_room08.jpg（中身はクローゼット）
+      が 999999 その他に落ちていた。片方だけ増やすと黙ってカテゴリが失われるので、
+      対応の穴をテストで塞ぐ。
+    """
+    vocab = set(core.MAISOKU_CODE_TO_ROOM.values())
+    missing = sorted(r for r in vocab if r != "その他" and r not in core.SUUMO_ROOM_ASCII)
+    _check("分類が返す部屋名にASCII名の穴がない", not missing, str(missing))
+    _check("クローゼット → storage", core.SUUMO_ROOM_ASCII.get("クローゼット") == "storage")
+    _check("『その他』は意図的に未定義（room{NN} へ倒す）",
+           "その他" not in core.SUUMO_ROOM_ASCII)
+
+
 def test_naming():
     """命名規則：連番2桁＋部位ASCII、衝突は _2、未知は room{NN}、間取り図は末尾。"""
     fp = _png(w=600, h=450, color=(250, 250, 250))
@@ -217,7 +233,8 @@ def test_app_matches_core():
 
 
 if __name__ == "__main__":
-    for fn in (test_zip_identical, test_exclude_idempotent, test_naming,
+    for fn in (test_zip_identical, test_exclude_idempotent,
+               test_room_ascii_covers_classifier_vocab, test_naming,
                test_jpeg_and_disclaimer, test_floorplan_not_stamped, test_app_matches_core):
         print(f"\n▶ {fn.__name__}: {(fn.__doc__ or '').splitlines()[0]}")
         fn()

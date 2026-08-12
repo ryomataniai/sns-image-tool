@@ -78,6 +78,11 @@ class _Stub:
             return None, "STUB: 意図的な生成失敗"
         return _stub_png(), None
 
+    def detect_text_subject(self, client, images, model=None):
+        """文字主題の判定スタブ。実データでは給湯リモコン等に1件立つのが実測なので、
+        先頭から3枚目に1件だけ立てて manifest の text_subject 列を通す。"""
+        return ["" if i != 2 else "給湯リモコン" for i in range(len(images))]
+
     def classify_maisoku_images(self, client, images, model=None):
         self.classify_calls += 1
         n = len(images)
@@ -91,9 +96,11 @@ class _Stub:
 def _install(stub, monkey):
     monkey.append((core, "generate_from_images", core.generate_from_images))
     monkey.append((core, "classify_maisoku_images", core.classify_maisoku_images))
+    monkey.append((core, "detect_text_subject", core.detect_text_subject))
     monkey.append((core, "get_client", core.get_client))
     core.generate_from_images = stub.generate_from_images
     core.classify_maisoku_images = stub.classify_maisoku_images
+    core.detect_text_subject = stub.detect_text_subject
     core.get_client = lambda *a, **k: object()          # APIキー不要にする
 
 
@@ -164,6 +171,15 @@ def test_single_room(in_dir, tmp):
            all(r["suumo_category"] for r in rows))
     _check("manifestのfileが実ファイルと一致",
            sorted(r["file"] for r in rows) == jpgs)
+    _check("manifestにtext_subject列がある（文字主題の手がかり）",
+           all("text_subject" in r for r in rows))
+    _check("文字主題が1件だけ立っている（スタブどおり）",
+           sum(1 for r in rows if r.get("text_subject")) == 1,
+           str([r["file"] for r in rows if r.get("text_subject")]))
+    _check("クローゼットが storage に寄る（999999に落ちない）",
+           all(r["suumo_category"] != "999999" or r["room"] != "クローゼット" for r in rows),
+           str([(r["file"], r["room"], r["suumo_category"]) for r in rows
+                if r["room"] == "クローゼット"]))
     print("    出力:", jpgs)
     print("    カテゴリ:", [f"{r['file']}→{r['suumo_category']}" for r in rows])
 
