@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import concurrent.futures as cf
 import csv
 import re
@@ -63,6 +64,23 @@ def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
+def api_key_from_secrets(repo_dir: Path = None):
+    """`.streamlit/secrets.toml` から GEMINI_API_KEY を読む。無ければ None。
+
+    ★core.get_api_key は環境変数しか見ない（UIは st.secrets 経由で読む）。CLIから使うたびに
+      export し直すのは事故のもとなので、UIと同じ置き場所を読めるようにする。
+    ★値はログにも標準出力にも出さない（あるかないかだけを扱う）。
+    """
+    p = (repo_dir or Path(__file__).resolve().parent) / ".streamlit" / "secrets.toml"
+    if not p.is_file():
+        return None
+    try:
+        import toml            # streamlit の依存に含まれるので追加インストール不要
+        return (toml.load(p) or {}).get("GEMINI_API_KEY") or None
+    except Exception:  # noqa: BLE001  読めなければ環境変数側に任せる
+        return None
+
+
 # ── 対象PDFの決定 ──────────────────────────────────────────────────
 def resolve_targets(in_dir: Path, since_ts: str = "", only: list = None, limit: int = 0):
     """入力フォルダ → 処理対象 [(部屋キー, PDFパス)]。
@@ -99,13 +117,21 @@ def resolve_targets(in_dir: Path, since_ts: str = "", only: list = None, limit: 
 
 # ── 1室ぶんの素材準備（API呼び出しは分類の1回だけ）────────────────────────
 def extract_sources(pdf_path: Path):
-    """PDF → (写真バイト列リスト, 間取り図候補[ローカル判定]). APIを呼ばない＝dry-runでも使える。"""
+    """PDF → (写真バイト列リスト, 間取り図, 判定meta)。APIを呼ばない＝dry-runでも使える。
+
+    ★madori-v1：間取り図はPDF内での構造（配置面積・ラスタ寸法・彩度）で決めるので、
+      LLMを呼ばずに確定する。dry-run と本番で同じ結果になる（以前はローカル判定だけで
+      dry-runが過度に悲観的だった）。
+    """
     pdf_bytes = pdf_path.read_bytes()
     photos = [b for (b, _w, _h) in core.extract_pdf_photos(pdf_bytes, min_px=250)]
     # 中身ゼロの白い枠（マイソクの枠線）を除外＝空ファイル防止＋分類の配列ズレ防止
     photos = [b for b in photos if not core.is_blank_frame(b)]
-    fp_local = core.choose_floorplan(photos, [])   # codes無し＝ローカル判定のみ
-    return photos, fp_local
+    fp, meta = core.find_floorplan_in_pdf(pdf_bytes)
+    if fp is not None:
+        # 抽出リスト内の同一オブジェクトに寄せる（`b is floorplan` の除外判定のため）
+        fp = next((b for b in photos if b == fp), fp)
+    return photos, fp, meta
 
 
 def _all_other(codes) -> bool:
@@ -202,7 +228,8 @@ def generate_items(client, items, model, aspect, workers, log):
     return ok, fails
 
 
-def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log):
+def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
+               fp_meta=None):
     """1室ぶんを書き出す。★一時フォルダに全部書いてから rename で確定させる
     （途中で落ちたフォルダが残ると、次回 --skip-existing が『完了済み』と誤認する）。"""
     dest = out_dir / key
@@ -232,11 +259,21 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log):
                              "999999"),
                          "pdf_index": it["pdf_index"], "treatment": it["treatment"]})
         else:
+            # ★madori-v1：間取り図の行には判定根拠とWARNを残す。採用は取り消さない方針なので、
+            #   「なぜこれを間取り図と判定したか」「怪しいかどうか」を後から辿れる形で置く。
+            m = fp_meta or {}
             rows.append({"file": name, "room": "間取り図", "suumo_category": "madori",
-                         "pdf_index": "", "treatment": "実物（生成AI非通過）"})
+                         "pdf_index": "", "treatment": "実物（生成AI非通過）",
+                         "detect": f"{m.get('source', '?')} {m.get('w', 0)}x{m.get('h', 0)}"
+                                   f" 配置{m.get('placed', 0):.0f}"
+                                   f" 白{m.get('white', 0):.2f}"
+                                   f" 黒{m.get('black', 0):.3f}"
+                                   f" 彩{m.get('sat', 0):.3f}",
+                         "warn": m.get("warn", "")})
     with (tmp / "_manifest.csv").open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["file", "room", "suumo_category",
-                                          "pdf_index", "treatment"])
+                                          "pdf_index", "treatment", "detect", "warn"],
+                           restval="")
         w.writeheader()
         w.writerows(rows)
     if dest.exists():
@@ -358,10 +395,10 @@ def main(argv=None):
 
     # ── dry-run：APIを呼ばずに室数・枚数・概算コストを出す ──────────────
     if a.dry_run:
-        rows, total = [], 0
+        rows, total, warns = [], 0, []
         for key, pdf in targets:
             try:
-                photos, fp = extract_sources(pdf)
+                photos, fp, meta = extract_sources(pdf)
             except Exception as e:  # noqa: BLE001
                 log(f"  ✗ {key}: PDF読取失敗 {type(e).__name__}: {e}")
                 rows.append((key, 0, "NO", "PDF読取失敗"))
@@ -371,35 +408,45 @@ def main(argv=None):
             #   よってこれは「上限」＝実際の生成枚数はこれ以下になる（過小申告はしない）。
             n = max(0, len(photos) - (1 if fp is not None else 0))
             exists = (out_dir / key).is_dir()
-            rows.append((key, n, "あり" if fp is not None else "なし",
-                         "既存（スキップ対象）" if exists and not a.overwrite else ""))
+            fpcol = f"{meta['w']}x{meta['h']}" if fp is not None else "なし"
+            note = "既存（スキップ対象）" if exists and not a.overwrite else ""
+            if meta.get("warn"):
+                note = (note + " ⚠" + meta["warn"]).strip()
+                warns.append((key, meta["warn"]))
+            rows.append((key, n, fpcol, note))
             if not (exists and not a.overwrite):
                 total += n
         usd, jpy = core.estimate_cost(total, a.model)
-        n_nofp = sum(1 for _k, _n, fp, _t in rows if fp == "なし")
+        n_fp = sum(1 for _k, _n, fp, _t in rows if fp != "なし" and fp != "NO")
+        sizes = collections.Counter(fp for _k, _n, fp, _t in rows)
         log("")
-        log(f"{'部屋キー':<44} {'生成枚数(上限)':>12} {'間取図(ローカル)':>16}  備考")
+        log(f"{'部屋キー':<44} {'生成枚数(上限)':>12} {'間取り図':>10}  備考")
         for key, n, fp, note in rows:
-            log(f"{key:<44} {n:>12} {fp:>16}  {note}")
+            log(f"{key:<44} {n:>12} {fp:>10}  {note}")
         log("")
         log(f"対象 {len(targets)}室 / 生成枚数 上限 {total}枚 / 処理={a.treatment} / model={a.model}")
         log(f"概算コスト ≈ ${usd:.2f}（約{jpy:,.0f}円・単価${core.PRICE_PER_IMAGE.get(a.model):.3f}/枚）")
         log("※分類（MAP/白紙/その他の除外）はAPIを使うためdry-runでは引いていない＝実際はこれ以下。")
         log("※動画化（fal）は呼ばないため追加課金なし。")
-        if n_nofp:
-            log(f"\n⚠ 間取図がローカル判定で拾えていない室 {n_nofp}件。"
-                "\n  この列は core.choose_floorplan の『ローカル画像判定』だけの結果で、"
-                "\n  本番実行にはこの後にLLMのFLOORPLANタグによるフォールバックが入る（dry-runでは呼ばない）。"
-                "\n  ★つまりこの『なし』は確定した欠落ではないが、拾えることも未実測。"
-                "\n  本番実行後、サマリCSVの madori 列で室ごとに必ず確認すること"
-                "（madori＝5点カテゴリなので欠けると名寄せ点が5点下がる）。")
+        # ★madori-v1：間取り図は構造判定＝LLM非依存なので、dry-runの結果が本番の結果と一致する。
+        log(f"\nmadori: {n_fp}/{len(targets)}  検出サイズの内訳: "
+            + " / ".join(f"{k}×{v}室" for k, v in sorted(sizes.items(), key=lambda t: -t[1])))
+        if n_fp < len(targets):
+            log(f"⚠ 間取り図が検出できない室 {len(targets) - n_fp}件（madori＝5点カテゴリなので"
+                "欠けると名寄せ点が5点下がる）: "
+                + ", ".join(k for k, _n, fp, _t in rows if fp in ("なし", "NO")))
+        if warns:
+            log(f"⚠ 間取り図らしくない疑いのある室 {len(warns)}件（採用はしている。中身を目視すること）:")
+            for k, w in warns:
+                log(f"    {k}  {w}")
         log(f"ログ: {log_path}")
         log_fh.close()
         return 0
 
     # ── 本番実行 ──────────────────────────────────────────────────
     try:
-        client = core.get_client()
+        # 環境変数 → .streamlit/secrets.toml（UIと同じ置き場所）の順で探す
+        client = core.get_client(core.get_api_key() or api_key_from_secrets())
     except RuntimeError as e:
         log(f"✗ {e}")
         log_fh.close()
@@ -416,7 +463,7 @@ def main(argv=None):
                             "cats": "", "madori": "-", "note": "既存"})
             continue
         try:
-            photos, _fp_local = extract_sources(pdf)
+            photos, fp_struct, fp_meta = extract_sources(pdf)
         except Exception as e:  # noqa: BLE001
             log(f"    ✗ PDF読取失敗 {type(e).__name__}: {e}")
             results.append({"key": key, "status": "FAIL", "files": 0, "score": "",
@@ -430,15 +477,23 @@ def main(argv=None):
         codes, cwarn = classify_with_retry(client, photos, log)
         if cwarn:
             log(f"    ⚠ 分類が不十分: {cwarn}（部屋名がその他に寄る＝ファイル名がroomNNになる）")
-        # choose_floorplan はローカル判定（決定的）→ LLMのFLOORPLANタグ の順で選ぶ。
-        # extract_sources が返す fp_local はそのローカル判定だけを先に走らせたもの（dry-run用）。
-        floorplan = core.choose_floorplan(photos, codes)
+        # ★madori-v1：間取り図は構造判定で確定している（extract_sources で算出済み・LLM非依存）。
+        #   構造判定で候補0件のときだけ、LLMのFLOORPLANタグにフォールバックする。
+        floorplan = fp_struct
+        if floorplan is None:
+            floorplan = core.choose_floorplan(photos, codes)
+            if floorplan is not None:
+                fp_meta = dict(fp_meta, source="llm_tag")
         items, skipped = build_items(photos, codes, floorplan, a.treatment)
         log(f"    抽出{len(photos)}枚 → 生成{len(items)}枚"
             f"（除外{len(skipped)}枚: {', '.join(f'#{i}{c}' for i, c in skipped) or '-'}）"
-            f" / 間取り図={'あり' if floorplan is not None else 'なし'}")
+            f" / 間取り図="
+            + ("なし" if floorplan is None
+               else f"{fp_meta['w']}x{fp_meta['h']}（{fp_meta.get('source', '?')}）"))
         if floorplan is None:
             log("    ⚠ 間取り図が検出できていない（madori＝5点カテゴリが欠ける）")
+        elif fp_meta.get("warn"):
+            log(f"    ⚠ 間取り図 {fp_meta['warn']}")
         ok, fails = generate_items(client, items, a.model, a.aspect, a.workers, log)
         if ok == 0:
             log("    ✗ 生成できた画像が0枚。この室はフォルダを作らない")
@@ -447,7 +502,8 @@ def main(argv=None):
                             "note": f"生成全失敗({len(fails)}枚)"})
             continue
         try:
-            names = write_room(out_dir, key, items, floorplan, a.overwrite, log)
+            names = write_room(out_dir, key, items, floorplan, a.overwrite, log,
+                               fp_meta)
         except FileExistsError as e:  # noqa: PERF203
             log(f"    ✗ 出力先が既に存在: {e}")
             results.append({"key": key, "status": "FAIL", "files": 0, "score": "",
@@ -459,6 +515,8 @@ def main(argv=None):
             note = (note + " / 分類不十分").strip(" /")
         if floorplan is None:
             note = (note + " / 間取り図なし").strip(" /")
+        elif fp_meta.get("warn"):
+            note = (note + " / 間取り図WARN:" + fp_meta["warn"]).strip(" /")
         log(f"    名寄せ見込み {sc}点（5点カテゴリ {len(cat5)}={','.join(cat5) or '-'} / "
             f"1点 {len(others)}）※Phase2でカテゴリ設定した場合の上限")
         if sc < 23:
@@ -466,7 +524,9 @@ def main(argv=None):
         results.append({"key": key, "status": "OK" if not fails else "PARTIAL",
                         "files": len(names), "score": sc,
                         "cats": ",".join(cat5),
-                        "madori": "あり" if floorplan is not None else "なし",
+                        "madori": ("なし" if floorplan is None else
+                                   f"{fp_meta['w']}x{fp_meta['h']}"
+                                   f"({fp_meta.get('source', '?')})"),
                         "note": note})
 
     # ── サマリ ────────────────────────────────────────────────────

@@ -3955,15 +3955,128 @@ def is_blank_frame(img_bytes):
     return white_ratio > 0.9 and black_ratio < 0.01
 
 
-def choose_floorplan(pdf_imgs, codes):
-    """PDF抽出画像から間取り図を1枚選ぶ。ローカル判定（決定的）→ LLMフォールバック→ None。"""
-    best_b, best_score = None, -1.0
-    for b in pdf_imgs:
-        gate, score = score_floorplan(b)
-        if gate and score > best_score:
-            best_b, best_score = b, score
-    if best_b is not None:
-        return best_b
+# ── madori-v1：間取り図の構造判定 ─────────────────────────────────────
+# ★白地率・黒線率のヒューリスティックをやめ、PDF内での「構造」で決める。
+#   旧ヒューリスティックの実測（マイソク68本）: 32本で検出できず、31本で
+#   300×300の室内写真サムネイルを間取り図として拾っていた（＝拾えていた5本以外は全部外れ）。
+#
+# ★選定の順序（この順序自体が測った結果である。順序を変えると壊れる）
+#   除外1: ページ全面の背景（配置矩形がページの95%以上）
+#   除外2: 小アイコン（ラスタの短辺 < min_px）
+#   絞り1: 正方形ラスタがあればそれだけを候補にする
+#          ＝リアプロのマイソクは 間取り図/写真=正方形、地図=520×390、訴求イラスト=320×340。
+#            地図とイラストを構造だけで落とせる。
+#   順位1: ページ上の配置面積（大きい順・ページ面積の0.1%単位に量子化）。間取り図は写真
+#          サムネイルより大きく置かれる（実測 263.6pt角 対 92.1pt角）。ラスタ寸法は写真と
+#          同じ300×300なので寸法では分けられない。
+#          ★量子化が必須。プレサンス京町堀ノースは間取り図と外観写真の配置面積が
+#            29897.8641 と 29897.8694（差0.005）で、生値で比べると常に写真が勝ってしまい
+#            下の順位2・3に落ちない。見た目は同じ大きさなので同値として扱う。
+#   順位2: 同値なら ラスタの画素数（大きい順）。AQUA GALAXY_701 は間取り図600×600と
+#          写真300×300が同じ275pt角に置かれており、ここで間取り図が勝つ。
+#   順位3: なお同値なら 平均彩度の低い順（線画は無彩色・写真は色がある）。
+#          プレサンス京町堀ノースはここで分かれる（間取り図 彩0.000 対 外観写真 彩0.127）。
+_FP_AREA_BUCKETS = 1000    # ページ面積を1000分割して配置面積を量子化（＝0.1%単位）
+
+# ★白地率・黒線率は選定に使わず、WARNの材料にだけ使う（低い値の実物の間取り図が
+#   存在するため。除外条件にすると本物を落とす）。
+# ★実測（マイソク63本）での発火率と使い分け:
+#   ・彩度 > 0.10 …… 2本で発火。どちらも実際に写真を拾っていた＝**当てになる**。
+#     実物の間取り図の彩度は 0.000〜0.049 に収まり、室内・外観写真は 0.10〜0.28。境界が空いている。
+#   ・白地率 < 0.30 / 黒線率 < 0.005 …… 20本で発火。うち18本は正しい間取り図だった
+#     （背景が濃い間取り図・線が薄いグレーの間取り図が実在する）。
+#     見逃し防止には効くが誤発火が多いので、彩度とは severity を分けて出す。
+_FP_WARN_SAT = 0.10       # これ超なら「写真の可能性が高い」＝強い警告
+_FP_WARN_WHITE = 0.30     # これ未満なら参考警告（実物の間取り図でもよく発火する）
+_FP_WARN_BLACK = 0.005    # これ未満なら同上（線が薄いグレーで黒判定されない場合を含む）
+
+
+def find_floorplan_in_pdf(pdf_bytes, min_px: int = 250):
+    """PDFの埋め込み画像から間取り図を1枚選ぶ（構造判定）。→ (png_bytes|None, meta:dict)。
+
+    返す画像は extract_pdf_photos と同じ手順（PIL で RGB 化して PNG 保存）で作るので、
+    同じPDFに対する extract_pdf_photos の出力と**バイト一致**する＝呼び出し側が
+    「この画像は間取り図だから生成対象から外す」という同一性判定をそのまま使える。
+    meta には判定の根拠（寸法・配置面積・白地率・黒線率・彩度・warn）を入れる（ログ・manifest用）。
+    """
+    import fitz  # PyMuPDF
+    meta = {"w": 0, "h": 0, "placed": 0.0, "white": 0.0, "black": 0.0, "sat": 0.0,
+            "candidates": 0, "warn": "", "source": "structural"}
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:  # noqa: BLE001  PDFが壊れていても呼び出し側を止めない
+        meta["warn"] = f"PDF読取失敗 {type(e).__name__}"
+        return None, meta
+    try:
+        page = doc[0]
+        page_area = page.rect.width * page.rect.height
+        cands, seen = [], set()
+        for im in page.get_images(full=True):
+            xref = im[0]
+            if xref in seen:
+                continue
+            seen.add(xref)
+            rects = page.get_image_rects(xref)
+            if not rects:
+                continue
+            r = max(rects, key=lambda t: t.width * t.height)   # 同一画像の複数配置は最大を採る
+            placed = r.width * r.height
+            d = doc.extract_image(xref)
+            w, h = d.get("width", 0), d.get("height", 0)
+            if placed >= page_area * 0.95 or min(w, h) < min_px:
+                continue                                        # 背景・小アイコンを除外
+            cands.append({"w": w, "h": h, "placed": placed, "raw": d["image"]})
+        meta["candidates"] = len(cands)
+        if not cands:
+            return None, meta
+        square = [c for c in cands if c["w"] == c["h"]]
+        pool = square or cands       # 正方形があれば地図(520×390)・イラスト(320×340)を落とせる
+        for c in pool:
+            c["sat"] = img_stats(_to_png(c["raw"]))[2]
+            # 配置面積の量子化（生値の微差で順位2・3に落ちなくなるのを防ぐ。上のコメント参照）
+            c["bucket"] = round(c["placed"] / page_area * _FP_AREA_BUCKETS)
+        pick = max(pool, key=lambda c: (c["bucket"], c["w"] * c["h"], -c["sat"]))
+        png = _to_png(pick["raw"])
+        white, black, sat = img_stats(png)
+        meta.update({"w": pick["w"], "h": pick["h"], "placed": pick["placed"],
+                     "white": white, "black": black, "sat": sat})
+        if sat > _FP_WARN_SAT:      # ★強い警告：実測ではこれが出た2本は本当に写真だった
+            meta["warn"] = (f"★写真の可能性が高い（彩度{sat:.3f} > {_FP_WARN_SAT}）。"
+                            f"白地率{white:.2f} 黒線率{black:.3f}。中身を必ず目視すること")
+        elif white < _FP_WARN_WHITE or black < _FP_WARN_BLACK:
+            meta["warn"] = (f"参考：白地率{white:.2f} 黒線率{black:.3f}（薄い線・濃い背景の"
+                            f"間取り図でも出る。彩度{sat:.3f}は正常域）")
+        return png, meta
+    finally:
+        doc.close()
+
+
+def _to_png(raw_bytes: bytes) -> bytes:
+    """埋め込み画像の生バイト → PNG。★extract_pdf_photos と同じ手順にすること
+    （ここがずれると『同じ画像なのにバイトが違う』ので同一性判定が黙って外れる）。"""
+    img = Image.open(BytesIO(raw_bytes)).convert("RGB")
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def choose_floorplan(pdf_imgs, codes, pdf_bytes=None):
+    """PDF抽出画像から間取り図を1枚選ぶ。
+    pdf_bytes があれば構造判定（madori-v1・決定的）→ 無ければ／候補0件なら LLMのFLOORPLANタグ → None。
+
+    ★戻り値は可能なかぎり pdf_imgs の要素そのもの（同一オブジェクト）にする。
+      呼び出し側（app._pl_stage_input / batch_suumo.build_items）は `b is floorplan` で
+      生成対象から外しているため、別オブジェクトを返すと間取り図がAI生成にも回る。
+    ★白地率・黒線率のゲートは選定から外した（madori-v1）。実物の間取り図で
+      白0.24／黒0.000 の例があり、ゲートにすると本物を落とすため警告に降格した。
+    """
+    if pdf_bytes:
+        png, _meta = find_floorplan_in_pdf(pdf_bytes)
+        if png is not None:
+            for b in pdf_imgs:
+                if b == png:            # 同一バイト＝抽出リスト内の同じ画像を返す
+                    return b
+            return png                  # 抽出条件のズレでリストに無い場合はそのまま返す
     # フォールバック：classify_maisoku_images が FLOORPLAN とタグした最初の画像
     # （codes[i] はマルチラベル＝コードのリスト）
     for i, b in enumerate(pdf_imgs):

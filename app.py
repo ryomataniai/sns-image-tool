@@ -1052,9 +1052,10 @@ def _pl_is_blank_frame(img_bytes):
     return core.is_blank_frame(img_bytes)
 
 
-def _pl_choose_floorplan(pdf_imgs, codes):
-    """PDF抽出画像から間取り図を1枚選ぶ。→ core.choose_floorplan"""
-    return core.choose_floorplan(pdf_imgs, codes)
+def _pl_choose_floorplan(pdf_imgs, codes, pdf_bytes=None):
+    """PDF抽出画像から間取り図を1枚選ぶ。→ core.choose_floorplan
+    ★madori-v1：pdf_bytes を渡すと構造判定（PDF内での配置から決める・決定的）が効く。"""
+    return core.choose_floorplan(pdf_imgs, codes, pdf_bytes)
 
 
 def _pl_pick_floorplan():
@@ -1746,8 +1747,9 @@ def _pl_stage_input():
                        "部屋種別を手動で選んでください。")
         parsed = _pl_parse_maisoku(active_pdf_bytes) if pdf is not None else {"rooms": [], "summary": ""}
         _mode = st.session_state.get("pl_mode", PL_MODES[0])
-        # 間取り図はローカル画像判定で選ぶ（LLM誤タグ対策・決定的）。候補はPDF抽出画像のみ
-        floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)])
+        # 間取り図は構造判定で選ぶ（madori-v1・PDF内の配置から決める＝決定的）。候補はPDF抽出画像のみ。
+        # ★active_pdf_bytes を渡すのが本体。渡さないとLLMタグ頼みに落ちる。
+        floor_plan = _pl_choose_floorplan(pdf_imgs, codes[:len(pdf_imgs)], active_pdf_bytes)
         items = []
         for i, b in enumerate(raw_srcs):
             code_list = codes[i] if i < len(codes) else ["OTHER"]   # マルチラベル（生コード）
