@@ -76,9 +76,22 @@ def api_key_from_secrets(repo_dir: Path = None):
         return None
     try:
         import toml            # streamlit の依存に含まれるので追加インストール不要
-        return (toml.load(p) or {}).get("GEMINI_API_KEY") or None
-    except Exception:  # noqa: BLE001  読めなければ環境変数側に任せる
-        return None
+        v = (toml.load(p) or {}).get("GEMINI_API_KEY")
+        if v:
+            return str(v)
+    except Exception:  # noqa: BLE001  TOMLとして壊れていても下の行単位フォールバックで拾う
+        pass
+    # ★フォールバック：値が引用符で囲まれていない secrets.toml は TOML として不正で
+    #   toml.load が落ちる（実際にこれで踏んだ）。CLIは動かせるようにしておく。
+    #   ただし st.secrets は厳密にTOMLを読むため、**UI側は直さないと動かない**。
+    try:
+        for ln in p.read_text(encoding="utf-8").splitlines():
+            m = re.match(r'^\s*GEMINI_API_KEY\s*=\s*(.+?)\s*$', ln)
+            if m:
+                return m.group(1).strip("\"'") or None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 # ── 対象PDFの決定 ──────────────────────────────────────────────────
@@ -228,6 +241,32 @@ def generate_items(client, items, model, aspect, workers, log):
     return ok, fails
 
 
+def _madori_size(folder: Path):
+    """フォルダ内の *madori*.jpg の画素数と寸法。無ければ None。"""
+    from PIL import Image
+    for p in sorted(folder.glob("*madori*.jpg")):
+        try:
+            w, h = Image.open(p).size
+            return w * h, f"{w}x{h}", p.name
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _warn_madori_downgrade(dest: Path, tmp: Path, log):
+    """上書きで間取り図の解像度が下がるなら警告する（受入基準5）。判断は人に返す＝止めない。"""
+    old, new = _madori_size(dest), _madori_size(tmp)
+    if old and new and new[0] < old[0]:
+        log(f"    ⚠ 上書きで間取り図の解像度が下がる: 既存 {old[1]}（{old[2]}）→ 新 {new[1]}。"
+            "\n      既存の方が高精細です。この室は --overwrite を外して既存を残す方が良い"
+            "可能性があります（既存はPDF以外の経路で用意されたものと思われます）。")
+        return True
+    if old and not new:
+        log(f"    ⚠ 上書きで間取り図が無くなる: 既存 {old[1]}（{old[2]}）→ 新しい出力に間取り図なし")
+        return True
+    return False
+
+
 def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
                fp_meta=None):
     """1室ぶんを書き出す。★一時フォルダに全部書いてから rename で確定させる
@@ -280,6 +319,12 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
         if not overwrite:
             shutil.rmtree(tmp)
             raise FileExistsError(str(dest))
+        # ★madori-v1 受入基準5：既存の間取り図より新しい方が小さいなら、上書きは劣化になる。
+        #   実測で既存5物件（西長堀_505 / 難波大国町Tres_907 / エスリード_0201・0505 /
+        #   フレンシアノイエ_308）の madori は 1099×1100 で、客付版・元付版どちらのPDFからも
+        #   出ない寸法だった（＝手動DLか別経路で用意されたもの）。CLIで上書きすると300×300に落ちる。
+        #   黙って下げないよう、上書き前に見つけて知らせる（--overwrite を指定した人の判断に返す）。
+        _warn_madori_downgrade(dest, tmp, log)
         shutil.rmtree(dest)
     tmp.rename(dest)
     log(f"    → {dest.name}/ に{len(files)}枚（＋_manifest.csv）")
