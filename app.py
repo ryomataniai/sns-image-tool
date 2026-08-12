@@ -1034,59 +1034,27 @@ def _pl_apply_roomlink(i):
             return
 
 
+# ★batchsuumo-v1：この4関数の本体は core.py へ移設した（CLI＝batch_suumo.py と共有するため）。
+#   ここは呼び出し箇所を1行も変えないための薄い委譲。判定ロジックは core 側の1箇所だけを直せば
+#   UIとCLIの両方に効く（＝「UIでは間取り図として外れる画像がCLIでは生成対象に入る」乖離を作らない）。
 def _pl_img_stats(img_bytes):
-    """画像の (白地率, 黒線率, 平均彩度) をローカル計算。160pxに縮小。失敗時 (0,0,0)。"""
-    try:
-        import numpy as _np
-        from io import BytesIO as _BytesIO
-        from PIL import Image as _Image
-        im = _Image.open(_BytesIO(img_bytes)).convert("RGB")
-        im.thumbnail((160, 160))
-        a = _np.asarray(im, dtype="float32")
-    except Exception:  # noqa: BLE001
-        return (0.0, 0.0, 0.0)
-    if a.size == 0:
-        return (0.0, 0.0, 0.0)
-    r, g, b = a[..., 0], a[..., 1], a[..., 2]
-    lum = 0.299 * r + 0.587 * g + 0.114 * b
-    white_ratio = float((lum > 235).mean())
-    black_ratio = float((lum < 60).mean())
-    mx = a.max(axis=2)
-    mn = a.min(axis=2)
-    sat_mean = float(_np.where(mx > 0, (mx - mn) / _np.maximum(mx, 1e-6), 0.0).mean())
-    return (white_ratio, black_ratio, sat_mean)
+    """画像の (白地率, 黒線率, 平均彩度)。→ core.img_stats"""
+    return core.img_stats(img_bytes)
 
 
 def _pl_score_floorplan(img_bytes):
-    """間取り図らしさをローカル画像判定。→ (gate:bool, score:float)。
-    間取り図＝白地が多い＋黒い線がある＋ほぼ無彩色。写真/地図/外観/白紙枠と物理的に区別。"""
-    white_ratio, black_ratio, sat_mean = _pl_img_stats(img_bytes)
-    gate = (white_ratio > 0.6 and 0.02 < black_ratio < 0.20 and sat_mean < 0.15)
-    return (gate, white_ratio * (1.0 - sat_mean))
+    """間取り図らしさ (gate, score)。→ core.score_floorplan"""
+    return core.score_floorplan(img_bytes)
 
 
 def _pl_is_blank_frame(img_bytes):
-    """マイソクの白い枠・白紙（中身ゼロ）＝白地率>0.9 かつ 黒線率<0.01。抽出から除外する。
-    （間取り図は黒線率0.04〜、写真は白地率が低いので誤除外しない）"""
-    white_ratio, black_ratio, _ = _pl_img_stats(img_bytes)
-    return white_ratio > 0.9 and black_ratio < 0.01
+    """中身ゼロの白い枠か。→ core.is_blank_frame"""
+    return core.is_blank_frame(img_bytes)
 
 
 def _pl_choose_floorplan(pdf_imgs, codes):
-    """PDF抽出画像から間取り図を1枚選ぶ。ローカル判定（決定的）→ LLMフォールバック→ None。"""
-    best_b, best_score = None, -1.0
-    for b in pdf_imgs:
-        gate, score = _pl_score_floorplan(b)
-        if gate and score > best_score:
-            best_b, best_score = b, score
-    if best_b is not None:
-        return best_b
-    # フォールバック：classify_maisoku_images が FLOORPLAN とタグした最初の画像
-    # （codes[i] はマルチラベル＝コードのリスト）
-    for i, b in enumerate(pdf_imgs):
-        if i < len(codes) and "FLOORPLAN" in (codes[i] or []):
-            return b
-    return None
+    """PDF抽出画像から間取り図を1枚選ぶ。→ core.choose_floorplan"""
+    return core.choose_floorplan(pdf_imgs, codes)
 
 
 def _pl_pick_floorplan():
@@ -1129,17 +1097,14 @@ def _pl_render_floorplan_sidebar():
 
 
 # classify_maisoku_images のコード → 部屋種別（PL_ROOMS）
-_PL_CODE_TO_ROOM = {
-    "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
-    "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
-    "BALCONY": "バルコニー", "EXTERIOR": "外観", "HALLWAY": "その他", "OTHER": "その他",
-}
+# ★batchsuumo-v1：定義は core 側へ移設（CLIと共有）。ここは既存の参照名を保つためのエイリアス。
+_PL_CODE_TO_ROOM = core.MAISOKU_CODE_TO_ROOM
 # 部屋種別ではなく「設備痕跡フラグ」＝主種別・coverage の判定から除外し _raw_codes にのみ残す。
 # （WASHER_PAN を部屋にすると キッチン+洗面の写真で主種別が洗面へ流れ、処理が水回り演出→
 #   高解像度化に落ちる回帰が起きるため。防水パン検出は _raw_codes で拾う）
-_PL_FEATURE_CODES = ("WASHER_PAN",)
+_PL_FEATURE_CODES = core.MAISOKU_FEATURE_CODES
 # 生成対象から除外するコード（間取り図・地図・白紙）。外観はツアーの掴みに使うため除外しない
-_PL_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
+_PL_EXCLUDE_CODES = core.MAISOKU_EXCLUDE_CODES
 
 
 def _pl_parse_maisoku(pdf_bytes):
@@ -2387,22 +2352,14 @@ def _pl_stage_review():
                         "実際の物件を撮影した写真ではないため、ポータル掲載に使用できません"
                         "（SNS用の「画像だけ保存（ZIP）」には従来どおり含まれます）。")
         with s2:
+            # ★batchsuumo-v1：ファイル群の組み立ては core.suumo_files に移設（CLIと同一経路）。
+            #   ここは zipfile に詰めるだけ＝UIとCLIの差はコンテナ（ZIP／フォルダ）のみ。
+            #   除外は core 側でも冪等に再適用されるため、_s_adopt を渡しても結果は不変。
             _sbuf = io.BytesIO()
             with zipfile.ZipFile(_sbuf, "w", zipfile.ZIP_DEFLATED) as _zf:
-                _used = set()
-                for _k, _it in enumerate(_s_adopt, 1):   # ★除外後のリストで組む
-                    _sb = _it["gen_bytes"]
-                    _sd = core.suumo_disclaimer(_it.get("disc"))   # 空＝AI生成物でない＝焼かない
-                    if _sd:
-                        try:
-                            _sb = core.add_disclaimer(_sb, _sd)
-                        except Exception:  # noqa: BLE001  注記が焼けなくても他の画像は出す
-                            pass
-                    _zf.writestr(core.suumo_filename(_k, _it.get("room", ""), _used),
-                                 core.to_suumo_jpeg(_sb))
-                if _sfp_on:   # 間取り図＝実物（生成AI非通過）なので注記なし。変換とファイル名だけ揃える
-                    _zf.writestr(core.suumo_filename(len(_s_adopt) + 1, "間取り図", _used),
-                                 core.to_suumo_jpeg(_sfp))
+                for _sname, _sdata in core.suumo_files(
+                        _s_adopt, _sfp if _sfp_on else None):
+                    _zf.writestr(_sname, _sdata)
             st.download_button("SUUMO入稿用ZIP", _sbuf.getvalue(), "suumo_upload.zip",
                                "application/zip", key="pl_zip_suumo", use_container_width=True)
             st.caption("JPEG・半角英数ファイル名・SUUMO用注記入り")

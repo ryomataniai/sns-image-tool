@@ -3883,3 +3883,103 @@ def suumo_filename(idx: int, room: str, used: set = None) -> str:
             k += 1
         used.add(name)
     return name + ".jpg"
+
+
+# ── batchsuumo-v1：SUUMO入稿ファイル群の組み立て（UI・CLI共通の1経路）──────────
+def suumo_files(items, floorplan=None):
+    """items（採用済みアイテム）→ SUUMO入稿用の [(ファイル名, JPEGバイト), ...]。
+
+    app.py の「SUUMO入稿用ZIP」ボタンと batch_suumo.py が **同じこの関数** を通る
+    （UIだけ・CLIだけに手が入って出力が黙って乖離する経路を作らない）。
+    UIはこれを zipfile に詰め、CLIはフォルダへ書き出すだけ＝差分はコンテナのみ。
+
+    items の要求キー: gen_bytes（必須）/ room / disc / treatment。
+    ★除外（補完生成・3Dパース）は入口で再適用する＝冪等。UI側は既に除外済みリストを
+      渡すため結果は不変で、CLI側は未除外リストを渡しても同じ結果になる。
+    ★floorplan は実物（生成AI非通過）なので注記を焼かず、変換と命名だけ揃えて末尾に付す。
+    """
+    src = [it for it in items if not suumo_excluded(it.get("treatment"))]
+    out, used = [], set()
+    for k, it in enumerate(src, 1):
+        b = it["gen_bytes"]
+        d = suumo_disclaimer(it.get("disc"))   # 空＝AI生成物でない＝焼かない
+        if d:
+            try:
+                b = add_disclaimer(b, d)
+            except Exception:  # noqa: BLE001  注記が焼けなくても他の画像は出す
+                pass
+        out.append((suumo_filename(k, it.get("room", ""), used), to_suumo_jpeg(b)))
+    if floorplan is not None:
+        out.append((suumo_filename(len(src) + 1, "間取り図", used),
+                    to_suumo_jpeg(floorplan)))
+    return out
+
+
+# ── batchsuumo-v1：マイソク画像のローカル判定（app.py から移設・本体は逐語）──────
+# ★移設の理由：間取り図の選定と白紙除外が app.py にあると、CLI が同じ判定を持てず
+#   「UIでは間取り図として外れる画像がCLIでは生成対象に入る」形で黙って乖離する。
+#   app.py 側は同名の薄い委譲を残してあるので、既存の呼び出し箇所は1行も変わらない。
+def img_stats(img_bytes):
+    """画像の (白地率, 黒線率, 平均彩度) をローカル計算。160pxに縮小。失敗時 (0,0,0)。"""
+    try:
+        import numpy as _np
+        im = Image.open(BytesIO(img_bytes)).convert("RGB")
+        im.thumbnail((160, 160))
+        a = _np.asarray(im, dtype="float32")
+    except Exception:  # noqa: BLE001
+        return (0.0, 0.0, 0.0)
+    if a.size == 0:
+        return (0.0, 0.0, 0.0)
+    r, g, b = a[..., 0], a[..., 1], a[..., 2]
+    lum = 0.299 * r + 0.587 * g + 0.114 * b
+    white_ratio = float((lum > 235).mean())
+    black_ratio = float((lum < 60).mean())
+    mx = a.max(axis=2)
+    mn = a.min(axis=2)
+    sat_mean = float(_np.where(mx > 0, (mx - mn) / _np.maximum(mx, 1e-6), 0.0).mean())
+    return (white_ratio, black_ratio, sat_mean)
+
+
+def score_floorplan(img_bytes):
+    """間取り図らしさをローカル画像判定。→ (gate:bool, score:float)。
+    間取り図＝白地が多い＋黒い線がある＋ほぼ無彩色。写真/地図/外観/白紙枠と物理的に区別。"""
+    white_ratio, black_ratio, sat_mean = img_stats(img_bytes)
+    gate = (white_ratio > 0.6 and 0.02 < black_ratio < 0.20 and sat_mean < 0.15)
+    return (gate, white_ratio * (1.0 - sat_mean))
+
+
+def is_blank_frame(img_bytes):
+    """マイソクの白い枠・白紙（中身ゼロ）＝白地率>0.9 かつ 黒線率<0.01。抽出から除外する。
+    （間取り図は黒線率0.04〜、写真は白地率が低いので誤除外しない）"""
+    white_ratio, black_ratio, _ = img_stats(img_bytes)
+    return white_ratio > 0.9 and black_ratio < 0.01
+
+
+def choose_floorplan(pdf_imgs, codes):
+    """PDF抽出画像から間取り図を1枚選ぶ。ローカル判定（決定的）→ LLMフォールバック→ None。"""
+    best_b, best_score = None, -1.0
+    for b in pdf_imgs:
+        gate, score = score_floorplan(b)
+        if gate and score > best_score:
+            best_b, best_score = b, score
+    if best_b is not None:
+        return best_b
+    # フォールバック：classify_maisoku_images が FLOORPLAN とタグした最初の画像
+    # （codes[i] はマルチラベル＝コードのリスト）
+    for i, b in enumerate(pdf_imgs):
+        if i < len(codes) and "FLOORPLAN" in (codes[i] or []):
+            return b
+    return None
+
+
+# classify_maisoku_images のコード → 部屋種別（app.PL_ROOMS）。app.py から移設（値は不変）。
+# ★UIとCLIで部屋名がずれるとファイル名＝SUUMOの画像カテゴリまでずれるため、単一の情報源にする。
+MAISOKU_CODE_TO_ROOM = {
+    "LIVING": "LDK", "BEDROOM": "洋室", "KITCHEN": "キッチン", "BATH": "浴室",
+    "WASH": "洗面", "TOILET": "トイレ", "ENTRANCE": "玄関", "STORAGE": "クローゼット",
+    "BALCONY": "バルコニー", "EXTERIOR": "外観", "HALLWAY": "その他", "OTHER": "その他",
+}
+# 部屋種別ではなく「設備痕跡フラグ」＝主種別・coverage の判定から除外する
+MAISOKU_FEATURE_CODES = ("WASHER_PAN",)
+# 生成対象から除外するコード（間取り図・地図・白紙）。外観は掴みに使うため除外しない
+MAISOKU_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
