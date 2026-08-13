@@ -59,6 +59,22 @@ def _mk_images(n, tmp: Path):
     return out
 
 
+def test_parse_score():
+    """名寄せスコアの抽出（実機の本文表記で一致すること）。
+    ★\\s と書いてリテラルの \\s を探していたため実機で『読めない』になった。ここで固定する。"""
+    import suumo_register as R
+    real = ("新規物件登録完了 棟情報 |お金・駐車場等 |契約条件 |間取り 名寄せスコア 28 点 "
+            "登録完了しました。 物件コード:100521698696 1 棟情報 物件名 S-RESIDENCE")
+    _check("実機の完了画面テキストから28点を取れる", R.parse_score(real) == 28,
+           str(R.parse_score(real)))
+    _check("改行・全角スペース混在でも取れる",
+           R.parse_score("名寄せスコア\n\u3000 34 \n点") == 34)
+    _check("未算出（―）のときは None", R.parse_score("名寄せスコア ― 点") is None)
+    _check("空文字でも落ちない", R.parse_score("") is None)
+    _check("物件コードも同様に取れる",
+           R.extract_bukken_code("物件コード:100521698696") == "100521698696")
+
+
 def run(headless=True):
     from playwright.sync_api import sync_playwright
     import suumo_register as R
@@ -177,6 +193,8 @@ def _raises(fn, needle):
 
 if __name__ == "__main__":
     sys.path.insert(0, str(REPO))
+    print("\n▶ test_parse_score: 名寄せスコア／物件コードの抽出")
+    test_parse_score()
     run(headless="--show" not in sys.argv)
     print("\n" + ("✅ 全PASS" if not _fails else f"❌ FAIL {len(_fails)}件: {_fails}"))
     sys.exit(1 if _fails else 0)

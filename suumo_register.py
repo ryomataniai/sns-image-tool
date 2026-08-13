@@ -62,6 +62,18 @@ CAT_SELECT = {
 }
 
 
+def parse_score(text: str):
+    """画面テキストから名寄せスコアを取り出す。→ int または None。
+
+    ★正規表現が永久に一致しないバグを一度出した（\\s と書いてしまいリテラルの \\s を探していた）。
+      この種の壊れ方は実行するまで分からず、実機で初めて『スコアを読めない』として出る。
+      関数に切り出して単体テストで固定する。
+    """
+    import re as _re
+    m = _re.search(r"名寄せスコア\s*(\d+)\s*点", _re.sub(r"\s+", " ", text or ""))
+    return int(m.group(1)) if m else None
+
+
 def extract_bukken_code(html: str):
     """登録完了画面のHTMLから物件コード（12桁）を取り出す。無ければ None。
     ★表記は8/12の実測 `物件コード:(\d{12})`。タグや空白が挟まっても拾えるように緩めに当てる。"""
@@ -456,10 +468,13 @@ class Reg:
         #   up_del_（登録予定）は更新画面では0枚になる。ここを間違えると常に0枚と判定する。
         out["_images"] = self.visible_db_delete_buttons()
         out["_images_pending"] = self.visible_delete_buttons()
-        txt = self.main.evaluate("() => document.body.innerText.replace(/\\s+/g,' ')")
-        import re as _re
-        m = _re.search(r"名寄せスコア\\s*(\\d+)\\s*点", txt)
-        out["_score"] = int(m.group(1)) if m else None
+        # ★ここは二重エスケープで一度壊した。JS側の /\s+/g と Python側の \s / \d は
+        #   バックスラッシュ1本。ヒアドキュメント経由でコードを書くと \\s になりやすく、
+        #   その場合「literalな \s を探す」ので永久に一致しない（実機で『スコアを読めない』になった）。
+        txt = self.main.evaluate("() => document.body.innerText")
+        out["_score"] = parse_score(txt)
+        if out["_score"] is None:      # 読めなかったときだけ原文を残す（原因追跡用）
+            out["_score_src"] = " ".join((txt or "").split())[:140]
         return out
 
     def score(self):
@@ -576,7 +591,8 @@ def verify_room(reg: Reg, rec: dict, code: str, log):
     if got["_images"] != n_img:
         ng.append(f"画像枚数: 登録={got['_images']} 期待={n_img}")
     if got["_score"] is None:
-        ng.append("名寄せスコアを読めない（更新画面のヘッダ表記を確認）")
+        ng.append("名寄せスコアを読めない（更新画面のヘッダ表記を確認）: "
+                  + str(got.get("_score_src", ""))[:120])
     elif got["_score"] < 22:
         ng.append(f"名寄せスコアが{got['_score']}点（22点未満）")
     # 特徴項目：サイト連動で増える分（2701 即入居可）を許容する
