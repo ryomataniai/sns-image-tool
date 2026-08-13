@@ -1,0 +1,7 @@
+# ローカル専用の依存。★requirements.txt には入れない。
+# Streamlit Cloud のビルドに乗せるとブラウザのDLで無駄にビルド時間とサイズを食う上、
+# クラウド側では使わない（suumo_register.py はローカルからSUUMOを操作するCLI）。
+#
+#   pip3 install --user -r requirements-dev.txt
+#   python3 -m playwright install chromium
+playwright>=1.40.0

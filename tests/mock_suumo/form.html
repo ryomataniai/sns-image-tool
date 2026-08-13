@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>新規物件登録</title>
+<style>body{font:13px sans-serif} .box{border:1px solid #ccc;margin:6px;padding:6px}
+ .hid{display:none} label{margin-right:8px}</style>
+</head>
+<body>
+<!-- suumoreg-v1 U3のオフラインテスト用モック（mainフレーム）。
+  ★2026-08-13に実フォームから読み取った仕様だけを写している：
+    ・name は ${bukkenInputForm.X} 形式（素の名前は実機に存在しない）
+    ・郵便番号だけ素の yubinNo1/yubinNo2、住所selectは ${todofukenCd} 等
+    ・追加画像のカテゴリのみ波括弧なし bukkenInputForm.tsuikaGazoInputForm[n].categoryCd
+    ・各画像枠に up_del_<slot> が常設され、画像がある枠だけ可視になる
+    ・サムネイル（=削除ボタンの可視化）は遅延する → 待たずに送信すると画像が入らない
+  ★モックの目的は「埋める側のロジックの検証」。SUUMOの見た目は再現しない。
+-->
+<form name="form1" method="post" enctype="multipart/form-data" action="confirm.html">
+<div class="box"><b>棟情報</b><br>
+ 物件名 <input name="${bukkenInputForm.bukkenNm}" maxlength="40">
+ 階建 地上<input name="${bukkenInputForm.kaidate}" maxlength="2" size="2">階
+ <input name="${bukkenInputForm.kai}" maxlength="5" size="2">階部分
+ <input name="${bukkenInputForm.heyaNo}" maxlength="8" size="4">号室<br>
+ 物件種別 <select name="${bukkenInputForm.bukkenShuCd}">
+  <option value="">選択して下さい</option><option value="01">マンション</option>
+  <option value="02">アパート</option><option value="11">一戸建て</option></select>
+ 構造 <select name="${bukkenInputForm.kozoShuCd}">
+  <option value="">選択して下さい</option><option value="01">鉄筋コン</option>
+  <option value="02">鉄骨鉄筋</option><option value="03">プレコン</option>
+  <option value="04">鉄骨プレ</option><option value="05">木造</option>
+  <option value="06">鉄骨</option><option value="07">軽量鉄骨</option></select>
+ 築年<input name="${bukkenInputForm.chikuNen}" maxlength="4" size="4">年
+ <input name="${bukkenInputForm.chikuGetsu}" maxlength="2" size="2">月
+ 総戸数<input name="${bukkenInputForm.sokosu}" maxlength="3" size="3">戸
+</div>
+
+<div class="box"><b>所在地</b><br>
+ 〒<input name="yubinNo1" maxlength="3" size="3">-<input name="yubinNo2" maxlength="4" size="4">
+ <input type="button" id="btnYubin" value="郵便番号から住所を入力" onclick="fillAddr()"><br>
+ <select name="${todofukenCd}"><option value="">選択</option><option value="27">大阪府</option></select>
+ <select name="${shigunkuCd}"><option value="">選択</option><option value="100">大阪市</option></select>
+ <select name="${chosonCd}"><option value="">選択</option><option value="120">西区</option></select>
+ <select name="${azaCd}"><option value="">選択</option>
+   <option value="002">２丁目</option><option value="005">５丁目</option></select>
+ 番地<input name="${bukkenInputForm.banchiNm}" maxlength="30">
+</div>
+
+<div class="box"><b>交通</b>
+ <input type="button" id="rakurakuKotsu" value="らくらく交通入力" onclick="doTransit()">
+ <span id="transitState">未入力</span>
+ <input type="hidden" name="${bukkenInputForm.pkgEnsenCd1}">
+</div>
+
+<div class="box"><b>お金</b><br>
+ 月額賃料 <input name="${bukkenInputForm.chinryo1}" maxlength="4" size="4">．<input name="${bukkenInputForm.chinryo2}" maxlength="3" size="3">万円
+ 管理費 <input type="checkbox" name="${bukkenInputForm.kanrihiFlg}" value="1" checked>あり
+  <input name="${bukkenInputForm.kanrihi1}" maxlength="2" size="2">．<input name="${bukkenInputForm.kanrihi2}" maxlength="4" size="4">万円／月<br>
+ 敷金 <input type="checkbox" name="${bukkenInputForm.shikikinFlg}" value="1" checked>あり
+  <input name="${bukkenInputForm.shikikin1}" maxlength="5" size="4">．<input name="${bukkenInputForm.shikikin2}" maxlength="3" size="3">
+  <label><input type="radio" name="${bukkenInputForm.shikikinKbnCd}" value="1" checked>ヶ月</label>
+  <label><input type="radio" name="${bukkenInputForm.shikikinKbnCd}" value="2">万円</label><br>
+ 礼金 <input type="checkbox" name="${bukkenInputForm.reikinFlg}" value="1" checked>あり
+  <input name="${bukkenInputForm.reikin1}" maxlength="4" size="4">．<input name="${bukkenInputForm.reikin2}" maxlength="3" size="3">
+  <label><input type="radio" name="${bukkenInputForm.reikinKbnCd}" value="1" checked>ヶ月</label>
+  <label><input type="radio" name="${bukkenInputForm.reikinKbnCd}" value="2">万円</label>
+</div>
+
+<div class="box"><b>間取り・面積</b><br>
+ 間取り <input name="${bukkenInputForm.heyaCnt}" maxlength="2" size="2">
+ <select name="${bukkenInputForm.madoriTypeKbnCd}"><option value="">タイプ選択</option>
+  <option value="01">ワンルーム</option><option value="02">K</option><option value="03">DK</option>
+  <option value="04">SDK</option><option value="05">LDK</option><option value="06">SLDK</option>
+  <option value="07">LK</option><option value="08">SK</option><option value="09">SLK</option></select>
+ 洋室<input name="${bukkenInputForm.madoriYoshitsu1}" maxlength="4" size="4">帖
+ 面積<input name="${bukkenInputForm.menseki1}" maxlength="3" size="3">．<input name="${bukkenInputForm.menseki2}" maxlength="2" size="2">㎡<br>
+ 開口部方位
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="1">北</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="2">北東</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="3">東</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="4">南東</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="5">南</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="6">南西</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="7">西</label>
+ <label><input type="radio" name="${bukkenInputForm.kaikomukiKbnCd}" value="8">北西</label>
+</div>
+
+<div class="box"><b>入居・取引態様</b><br>
+ 入居予定
+ <label><input type="radio" name="${bukkenInputForm.nyukyoKbnCd}" value="1">即</label>
+ <label><input type="radio" name="${bukkenInputForm.nyukyoKbnCd}" value="2">相談</label>
+ <label><input type="radio" name="${bukkenInputForm.nyukyoKbnCd}" value="3">指定有り</label>
+ <input name="${bukkenInputForm.nyukyoNen}" maxlength="4" size="4">年
+ <input name="${bukkenInputForm.nyukyoTsuki}" maxlength="2" size="2">月
+ <select name="${bukkenInputForm.nyukyoShunKbnCd}"><option value="">選択して下さい</option>
+  <option value="0">初旬（1～5日）</option><option value="1">上旬（1～10日）</option>
+  <option value="2">中旬（11～20日）</option><option value="3">下旬（21～末日）</option>
+  <option value="4">末（月末の3日間）</option></select><br>
+ 取引態様 <select name="${bukkenInputForm.torihikiTaiyoKbnCd}"><option value="">選択して下さい</option>
+  <option value="1">貸主</option><option value="2">代理</option>
+  <option value="3">仲介元付</option><option value="4">仲介先物</option></select>
+ 契約
+ <label><input type="radio" name="${bukkenInputForm.teikiShakuyaFlg}" value="0" checked>普通借家</label>
+ <label><input type="radio" name="${bukkenInputForm.teikiShakuyaFlg}" value="1">定期借家</label><br>
+ キャッチ <input name="${bukkenInputForm.bukkenCatch}" maxlength="40"><br>
+ 元付業者 <input name="${bukkenInputForm.mototsukeGyoshaNm}" maxlength="40">
+ 担当 <input name="${bukkenInputForm.mototsukeTantoNm}" maxlength="20">
+ TEL <input name="${bukkenInputForm.mototsukeTelNo}" maxlength="15">
+ 確認日 <input name="${bukkenInputForm.mototsukeKakuninDate}" maxlength="10">
+</div>
+
+<div class="box"><b>特徴項目</b> <span id="tokuchoCount">0</span>件選択中<br>
+ <span id="tokuchoBox"></span>
+</div>
+
+<div class="box"><b>画像・動画・CM・パノラマ</b>
+ <span>名寄せスコア <span id="scoreVal">―</span> 点</span>
+ <div style="color:#c00">画像登録は、サムネイル表示を確認してから「確認画面へ」ボタンを押してください。</div>
+ <div id="slots"></div>
+</div>
+
+<div class="box">
+ <input type="button" id="chudan" value="作業中断" onclick="alert('中断')">
+ <input type="button" id="kakunin" value="確認画面へ" onclick="goConfirm()">
+</div>
+</form>
+
+<script>
+// ── 特徴項目（実機は491件。モックは検証に使うコードだけ用意する）──
+var TOKUCHO = ['1603','2129','2414','1414','1401','1707','1701','1501','1507','2801','2207',
+  '0816','0817','0527','1801','1201','1211','0501','0517','2402','2404','2410','2406','1436',
+  '1007','2001','2101','1001','2701','2705','2712','2724','0101','0102'];
+var box = document.getElementById('tokuchoBox');
+TOKUCHO.forEach(function(c){
+  var l = document.createElement('label');
+  l.innerHTML = '<input type="checkbox" name="${bukkenInputForm.categoryTokuchoCd}" id="' + c + '" value="' + c + '">' + c;
+  box.appendChild(l);
+});
+document.addEventListener('change', function(e){
+  if (e.target && e.target.name === '${bukkenInputForm.categoryTokuchoCd}') {
+    document.getElementById('tokuchoCount').textContent =
+      document.querySelectorAll('input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').length;
+  }
+});
+
+// ── 画像枠。実機の枠名・カテゴリselect名をそのまま使う ──
+var SLOTS = [
+  {slot:'clientMadori', label:'間取り',        cat:null},
+  {slot:'gaikan',       label:'外観写真',      cat:null},
+  {slot:'perth',        label:'外観パース',    cat:null},
+  {slot:'shitsunai',    label:'内観写真',      cat:'${bukkenInputForm.shitsunaiCategory}'},
+  {slot:'shashin1',     label:'ネット基本1',   cat:'${bukkenInputForm.shashin1Category}'},
+  {slot:'shashin2',     label:'ネット基本2',   cat:'${bukkenInputForm.shashin2Category}'},
+  {slot:'shashin3',     label:'ネット基本3',   cat:'${bukkenInputForm.shashin3Category}'}
+];
+for (var i = 0; i < 8; i++) {
+  SLOTS.push({slot:'tsuikaGazo' + (i+1), label:'ネット追加' + (i+1),
+              cat:'bukkenInputForm.tsuikaGazoInputForm[' + i + '].categoryCd'});
+}
+var CATS = ['020101','030101','030102','030103','030199','040101','040102','040103','040104',
+            '040105','040106','040107','040108','040109','040110','040111','040199','050101',
+            '070101','999999'];
+var host = document.getElementById('slots');
+SLOTS.forEach(function(s){
+  var d = document.createElement('div');
+  var catHtml = '';
+  if (s.cat) {
+    catHtml = 'カテゴリ<select name="' + s.cat + '" id="' + s.slot + 'Category"><option value="">選択して下さい</option>' +
+      CATS.map(function(c){ return '<option value="' + c + '">' + c + '</option>'; }).join('') + '</select> ';
+  }
+  d.innerHTML = '●' + s.label + ' ' + catHtml +
+    '<input type="file" id="file_up_' + s.slot + '" name="' + s.slot + 'File">' +
+    '<input type="button" class="hid" id="up_del_' + s.slot + '" value="削除" ' +
+      'onclick="deleteUploadGazo(\'' + s.slot + '\',\'' + s.label + '\',\'1\')">' +
+    '<img class="hid" id="thumb_' + s.slot + '" width="40" height="40">';
+  host.appendChild(d);
+});
+
+// ★サムネイル表示の遅延を再現する。実機は「サムネイル表示完了前に確認画面へ進むと画像が
+//   登録されない場合があります」と明記されている。待たずに送信するコードを通さないための仕掛け。
+var THUMB_DELAY_MS = 700;
+document.addEventListener('change', function(e){
+  if (e.target && e.target.type === 'file' && e.target.files.length) {
+    var slot = e.target.id.replace('file_up_', '');
+    setTimeout(function(){
+      document.getElementById('up_del_' + slot).classList.remove('hid');
+      document.getElementById('thumb_' + slot).classList.remove('hid');
+      recalcScore();
+    }, THUMB_DELAY_MS);
+  }
+});
+
+// 実機と同じ入口名。中でIMG1R4901へ投げている（確認ダイアログの有無は実機では未確認）。
+function deleteUploadGazo(slot, label, flg) { deleteGazo('IMG1R4901', slot, label, flg); }
+function deleteGazo(action, slot, label, flg) {
+  // ★実機の deleteGazo はソースが読めなかった。confirm() が出る可能性を潰さないため
+  //   モックでは既定で出す（=待受を実装していない自動化はここで止まる）。
+  if (window.__MOCK_CONFIRM_ON_DELETE !== false) {
+    if (!confirm(label + 'を削除します。よろしいですか？')) return;
+  }
+  var f = document.getElementById('file_up_' + slot);
+  f.value = '';
+  document.getElementById('up_del_' + slot).classList.add('hid');
+  document.getElementById('thumb_' + slot).classList.add('hid');
+  var sel = document.getElementById(slot + 'Category');
+  if (sel) sel.value = '';
+  recalcScore();
+}
+
+// 名寄せスコア（実機の式：間取り／建物外観／居室・リビング／キッチン／バス=5点、他=1点）
+function recalcScore() {
+  var five = {'madori':1,'020101':1,'040101':1,'040103':1,'040104':1}, cats = {};
+  SLOTS.forEach(function(s){
+    var del = document.getElementById('up_del_' + s.slot);
+    if (del.classList.contains('hid')) return;
+    var key;
+    if (s.slot === 'clientMadori') key = 'madori';
+    else if (s.slot === 'gaikan') key = '020101';
+    else {
+      var sel = document.getElementById(s.slot + 'Category');
+      key = sel && sel.value ? sel.value : '999999';
+    }
+    cats[key] = 1;
+  });
+  var n = 0;
+  for (var k in cats) n += five[k] ? 5 : 1;
+  document.getElementById('scoreVal').textContent = n ? n : '―';
+}
+document.addEventListener('change', function(e){
+  if (e.target && e.target.tagName === 'SELECT') recalcScore();
+});
+
+function fillAddr() {
+  var a = document.getElementsByName('yubinNo1')[0].value;
+  if (!a) { alert('郵便番号を入力してください'); return; }
+  document.getElementsByName('${todofukenCd}')[0].value = '27';
+  document.getElementsByName('${shigunkuCd}')[0].value = '100';
+  document.getElementsByName('${chosonCd}')[0].value = '120';
+}
+function doTransit() { document.getElementById('transitState').textContent = '入力済(モック)'; }
+
+function goConfirm() {
+  // 実機の確認画面相当。★サムネイル未表示のまま来た画像は「登録されなかった」ものとして落とす。
+  var regd = [], dropped = [];
+  SLOTS.forEach(function(s){
+    var f = document.getElementById('file_up_' + s.slot);
+    if (!f.files.length) return;
+    var visible = !document.getElementById('up_del_' + s.slot).classList.contains('hid');
+    (visible ? regd : dropped).push(s.slot);
+  });
+  sessionStorage.setItem('mock_result', JSON.stringify({
+    bukkenNm: document.getElementsByName('${bukkenInputForm.bukkenNm}')[0].value,
+    registered: regd, dropped: dropped,
+    tokucho: Array.prototype.map.call(
+      document.querySelectorAll('input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked'),
+      function(e){ return e.value; }),
+    score: document.getElementById('scoreVal').textContent,
+    transit: document.getElementById('transitState').textContent
+  }));
+  location.href = 'confirm.html';
+}
+
+// ?fresh=1 で来たときは空フォーム（実機のメニュー経路相当）
+if (location.search.indexOf('fresh=1') >= 0) {
+  document.getElementsByName('${bukkenInputForm.bukkenNm}')[0].value = '';
+}
+</script>
+</body>
+</html>

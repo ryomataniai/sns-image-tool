@@ -356,28 +356,10 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
     return [n for n, _ in files]
 
 
-# 出力ファイル名のASCII部位名 → SUUMOの画像カテゴリコード。
-# ★8/11〜8/12に手作業で11室を登録して特定した実測値。Phase2（自動登録）がそのまま使う対応表。
-#   未知の部位名（room01 等・SUUMO_ROOM_ASCII に無い部屋名の落ち先）は 999999 その他。
-_ASCII_TO_CATEGORY = {
-    "madori": "madori",          # 間取り枠（カテゴリ選択なし・枠自体がカテゴリ）
-    "gaikan": "020101",          # 建物外観
-    "entrance": "030101", "kyoyo": "030101",       # エントランス
-    "genkan": "040110",          # 玄関
-    "roka": "040102",            # その他部屋・スペース
-    "living": "040101", "youshitsu": "040101",     # 居室・リビング
-    "bedroom": "040101", "washitsu": "040101",
-    "kitchen": "040103",         # キッチン
-    "bath": "040104",            # バス・シャワールーム
-    "senmen": "040106",          # 洗面設備
-    "toilet": "040105",          # トイレ
-    "balcony": "040108",         # バルコニー
-    "storage": "040107",         # 収納
-    "view": "050101",            # 眺望
-    "shuhen": "999999",          # 周辺（該当カテゴリなし）
-}
-# 1カテゴリ5点のもの（SUUMOの画面に明記されている式）。それ以外は1カテゴリ1点。
-_CATEGORY_5PT = ("madori", "020101", "040101", "040103", "040104")
+# ★suumoreg-v1：定義は core へ移設（suumo_fields.py と共有する単一情報源）。
+#   ここは既存の参照名を保つためのエイリアス。
+_ASCII_TO_CATEGORY = core.SUUMO_ASCII_TO_CATEGORY
+_CATEGORY_5PT = core.SUUMO_CATEGORY_5PT
 
 
 def score_hint(names):

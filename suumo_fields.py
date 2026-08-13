@@ -463,7 +463,16 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
             if not p.is_file():
                 # ★文字が主題の9枚は _除外/ へ退避済み＝manifestに残るが実体が無い（依頼文§1-1）
                 continue
+            # ★manifestの suumo_category は画像生成時点の値。storage-key-v1 より前に
+            #   生成したフォルダは クローゼット が 999999 のままなので、部屋名から現行の
+            #   対応表で引き直す（画像を作り直さずにカテゴリだけ正す）。差が出たら記録する。
             cat = r["suumo_category"]
+            if cat != "madori":
+                fixed = core.suumo_category_of_room(r.get("room", ""), cat)
+                if fixed != cat:
+                    warn(f"{r['file']}: カテゴリを manifest の {cat} から "
+                         f"{fixed} に補正（部屋名『{r.get('room')}』）")
+                    cat = fixed
             if cat == "madori":
                 slot, category = "madori", None
             elif cat == "020101":
@@ -471,7 +480,7 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
                 slot, category = ("gaikan", None) if gaikan_n == 1 else ("tsuika", "020101")
             else:
                 slot, category = "tsuika", cat
-            out["images"].append({"file": r["file"], "path": str(p), "slot": slot,
+            out["images"].append({"file": r["file"], "path": str(p.resolve()), "slot": slot,
                                   "category": category, "room": r["room"],
                                   "text_subject": r.get("text_subject", "")})
         if not out["images"]:

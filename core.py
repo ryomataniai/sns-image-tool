@@ -4145,3 +4145,35 @@ def detect_text_subject(client, images, model="gemini-2.5-flash"):
     return out
 # 生成対象から除外するコード（間取り図・地図・白紙）。外観は掴みに使うため除外しない
 MAISOKU_EXCLUDE_CODES = ("FLOORPLAN", "MAP", "BLANK")
+
+# ── suumoreg-v1：出力ファイル名のASCII部位名 → SUUMOの画像カテゴリコード ──────────
+# ★8/11〜8/12に手作業で11室を登録して特定した実測値。batch_suumo（点数見込み）と
+#   suumo_fields（登録データ）の両方が使うため core に置く（片方だけ直して乖離させない）。
+#   未知の部位名（room01 等）は 999999 その他。
+SUUMO_ASCII_TO_CATEGORY = {
+    "madori": "madori",          # 間取り枠（カテゴリselectなし・枠自体がカテゴリ）
+    "gaikan": "020101",          # 建物外観
+    "entrance": "030101", "kyoyo": "030101",       # エントランス
+    "genkan": "040110",          # 玄関
+    "roka": "040102",            # その他部屋・スペース
+    "living": "040101", "youshitsu": "040101",     # 居室・リビング
+    "bedroom": "040101", "washitsu": "040101",
+    "kitchen": "040103",         # キッチン
+    "bath": "040104",            # バス・シャワールーム
+    "senmen": "040106",          # 洗面設備
+    "toilet": "040105",          # トイレ
+    "balcony": "040108",         # バルコニー
+    "storage": "040107",         # 収納
+    "view": "050101",            # 眺望
+    "shuhen": "999999",          # 周辺（該当カテゴリなし）
+}
+# 1カテゴリ5点のもの（SUUMOの画面に明記されている式）。それ以外は1カテゴリ1点。
+SUUMO_CATEGORY_5PT = ("madori", "020101", "040101", "040103", "040104")
+
+
+def suumo_category_of_room(room: str, default: str = "999999") -> str:
+    """部屋名（クローゼット等）→ SUUMOの画像カテゴリコード。対応が無ければ default。
+    ★部屋名→ASCII→カテゴリの2段を1関数にまとめる。呼び出し側で2つの表を引かせない。"""
+    a = SUUMO_ROOM_ASCII.get(str(room or "").strip())
+    return SUUMO_ASCII_TO_CATEGORY.get(a, default) if a else default
+

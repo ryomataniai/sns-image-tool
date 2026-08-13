@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<!-- suumoreg-v1 U3のオフラインテスト用モック（親フレーム）。
+     ★SUUMOはframesetで、フォームは window.frames['main'] にある。フレーム指定の誤りを
+       実機で踏まないよう、モックも同じ構造にする（navi と main の2フレーム）。 -->
+<html lang="ja">
+<head><meta charset="utf-8"><title>SUUMO入稿・分析システム(賃貸) [MOCK]</title></head>
+<frameset rows="60,*">
+  <frame name="navi" src="navi.html">
+  <frame name="main" src="form.html">
+</frameset>
+</html>
