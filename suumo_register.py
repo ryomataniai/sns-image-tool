@@ -366,16 +366,264 @@ class Reg:
 
 
 # ── フロー ────────────────────────────────────────────────────
-def open_new_form(reg: Reg, url: str, log):
-    """メニューの「新規物件登録」から入る。★直リンクは使わない（罠2＝復元入口になる）。"""
-    reg.page.goto(url, wait_until="load")
+# naviフレームのメニュータブ。★実測（2026-08-13）：
+#   <a class="menu_btn" id="menu_2" title="新規物件登録" href="MNU1R0001_f.action?id=...">
+#   **テキストは空**（CSSスプライト背景）なので get_by_text は永久に一致しない。
+#   このアプリはボタンもタブも title 属性だけが手掛かり。
+#   ★画面のタブ表記は「更新・掲載指示」だが title は「掲載指示」。表記で書くと外れる。
+MENU_TITLE = {
+    "トップ": "menu_1", "新規物件登録": "menu_2", "掲載指示": "menu_3",
+    "物件一括操作": "menu_4", "効果分析": "menu_6", "管理": "menu_7",
+    "オーナー": "menu_9", "お役立ち": "menu_8",
+}
+
+
+def click_menu(reg: Reg, title: str, log, wait_ms: int = 2500):
+    """naviフレームのメニュータブを title で押す。"""
     navi = reg.page.frame(name="navi")
     if navi is None:
-        raise RuntimeError("naviフレームが無い（ログイン画面のままの可能性）")
-    link = navi.get_by_text("新規物件登録").first
-    link.click()
-    reg.page.wait_for_timeout(2500)
+        raise RuntimeError("naviフレームが無い（ログイン切れ）")
+    for sel in (f'a.menu_btn[title="{title}"]', f'a[title="{title}"]',
+                f'#{MENU_TITLE.get(title, "")}' if MENU_TITLE.get(title) else None):
+        if not sel:
+            continue
+        loc = navi.locator(sel)
+        if loc.count():
+            loc.first.click()
+            reg.page.wait_for_timeout(wait_ms)
+            return
+    have = navi.evaluate("""() => Array.from(document.querySelectorAll('a'))
+        .map(a => a.title || a.id || '').filter(Boolean)""")
+    raise RuntimeError(f"メニュー『{title}』が見つからない。naviのa: {have}")
+
+
+def open_new_form(reg: Reg, url: str, log, login_wait: int = 0, navigate: bool = True):
+    """メニューの「新規物件登録」から入る。★直リンクは使わない（罠2＝復元入口になる）。"""
+    if navigate:
+        reg.page.goto(url, wait_until="load")
+    navi = reg.page.frame(name="navi")
+    if navi is None and login_wait:
+        # ★ログインとフォーム操作を同一ブラウザセッションで完結させる。
+        #   --login で一旦閉じる設計にすると、セッションCookieがプロファイルに残るか
+        #   （＝再開できるか）が環境依存になる。人がここでパスワードを入れる。
+        log(f"  ログイン画面です。この窓でログインしてください（最大{login_wait}秒待ちます）")
+        log("  ★タブは増やさないこと（罠3＝2タブでセッションが壊れる）")
+        t0 = time.time()
+        while time.time() - t0 < login_wait:
+            navi = reg.page.frame(name="navi")
+            if navi is not None:
+                log(f"  ログインを確認しました（{time.time()-t0:.0f}秒）")
+                break
+            reg.page.wait_for_timeout(2000)
+    if navi is None:
+        raise RuntimeError("naviフレームが無い（ログインされていない／画面遷移の失敗）")
+    click_menu(reg, "新規物件登録", log)
     log(f"  main frame: {reg.main.url[-60:]}")
+
+
+    # ── 照合（登録後の検証）────────────────────────────────────────
+    #  ★8/12に実機で動かして成功した手順をそのまま実装している（谷合さん提供）。
+    #    ・検索: ${keisaiSearchForm.bukkenCd} に12桁 → input[value=検索] の [0] を押す
+    #    ・結果行: hidden input の value が物件コードと一致する行（tr）
+    #    ・詳細: その行の a で innerText=='詳細'
+    #    ・名寄せスコア: 更新画面ヘッダの「名寄せスコア N 点」（一覧の数値は列の意味が紛らわしい）
+    def search_bukken(self, code: str):
+        """物件コードで検索して更新画面（詳細）を開く。開けたら True。"""
+        # ★画面表記は「更新・掲載指示」だが title は「掲載指示」（実測）。表記で探すと外れる。
+        click_menu(self, "掲載指示", self.log)
+        fld = self.main.locator('[name="${keisaiSearchForm.bukkenCd}"]')
+        if fld.count() == 0:
+            raise RuntimeError(
+                "${keisaiSearchForm.bukkenCd} が無い（実測値だがフォーム名が変わった可能性）。"
+                "--dump-buttons と併せて画面を読み直すこと")
+        fld.first.fill(code)
+        btns = self.main.locator('input[value="検索"]')
+        if btns.count() == 0:
+            raise RuntimeError("input[value=検索] が無い")
+        btns.nth(0).click()          # ★2つあるが [0] で通る（8/12実測）
+        self.page.wait_for_timeout(3000)
+        # 結果行＝hidden input の value が物件コードと一致する行
+        ok = self.main.evaluate("""(code) => {
+            const h = Array.from(document.querySelectorAll('input[type=hidden]'))
+                .find(i => i.value === code);
+            if (!h) return false;
+            const tr = h.closest('tr');
+            if (!tr) return false;
+            const a = Array.from(tr.querySelectorAll('a'))
+                .find(x => (x.innerText||'').trim() === '詳細');
+            if (!a) return false;
+            a.click();
+            return true;
+        }""", code)
+        if not ok:
+            return False
+        self.page.wait_for_timeout(3500)
+        return True
+
+    def read_registered(self):
+        """更新画面から登録内容を読む。→ dict（フォーム値＋画像枚数＋名寄せスコア＋特徴項目数）。"""
+        out = {}
+        for key in ("bukkenNm", "heyaNo", "kai", "kaidate", "chinryo1", "chinryo2",
+                    "kanrihi1", "kanrihi2", "menseki1", "menseki2", "heyaCnt",
+                    "madoriTypeKbnCd", "kozoShuCd"):
+            els = self.main.locator(f'[name="{sel_name(key)}"]')
+            out[key] = els.first.input_value() if els.count() else None
+        out["_tokucho_n"] = self.main.locator(
+            'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').count()
+        out["_images"] = self.visible_delete_buttons()
+        txt = self.main.evaluate("() => document.body.innerText.replace(/\\s+/g,' ')")
+        import re as _re
+        m = _re.search(r"名寄せスコア\\s*(\\d+)\\s*点", txt)
+        out["_score"] = int(m.group(1)) if m else None
+        return out
+
+
+def verify_room(reg: Reg, rec: dict, code: str, log):
+    """登録後の照合。受入基準4-1：物件名・号室・賃料・管理費・面積・間取り・階／画像枚数／
+    名寄せスコア22点以上／特徴項目数。1件でもFAILなら次に進まない（呼び出し側で止める）。"""
+    if not reg.search_bukken(code):
+        return [f"物件コード {code} の行または『詳細』リンクが見つからない"]
+    got = reg.read_registered()
+    f = rec["form"]
+    ng = []
+    for key, want in (("bukkenNm", f["bukkenNm"]), ("heyaNo", f["heyaNo"]),
+                      ("kai", f["kai"]), ("kaidate", f["kaidate"]),
+                      ("chinryo1", f["chinryo1"]), ("chinryo2", f["chinryo2"]),
+                      ("kanrihi1", f["kanrihi1"]), ("kanrihi2", f["kanrihi2"]),
+                      ("menseki1", f["menseki1"]), ("menseki2", f["menseki2"]),
+                      ("heyaCnt", f["heyaCnt"]), ("madoriTypeKbnCd", f["madoriTypeKbnCd"]),
+                      ("kozoShuCd", f["kozoShuCd"])):
+        if want in (None, ""):
+            continue
+        if str(got.get(key)) != str(want):
+            ng.append(f"{key}: 登録値={got.get(key)!r} 期待={want!r}")
+    n_img = len([i for i in rec["images"]])
+    if got["_images"] != n_img:
+        ng.append(f"画像枚数: 登録={got['_images']} 期待={n_img}")
+    if got["_score"] is None:
+        ng.append("名寄せスコアを読めない（更新画面のヘッダ表記を確認）")
+    elif got["_score"] < 22:
+        ng.append(f"名寄せスコアが{got['_score']}点（22点未満）")
+    if got["_tokucho_n"] != len(rec["tokucho"]):
+        ng.append(f"特徴項目数: 登録={got['_tokucho_n']} 期待={len(rec['tokucho'])}")
+    log(f"  登録値: 名={got['bukkenNm']!r} {got['heyaNo']}号室 {got['kai']}階/{got['kaidate']}階建 "
+        f"賃料{got['chinryo1']}.{got['chinryo2']}万 面積{got['menseki1']}.{got['menseki2']}㎡")
+    log(f"  画像{got['_images']}枚 / 名寄せスコア{got['_score']}点 / 特徴項目{got['_tokucho_n']}件")
+    return ng
+
+
+def serve(reg: Reg, a, log):
+    """常駐モード：ブラウザを開いたまま、コマンドファイル経由で1室ずつ処理する。
+
+    ★なぜ常駐にするか：1コマンド1室の設計だとPythonプロセスの終了でブラウザが閉じ、
+      **セッションCookieがプロファイルに残らないため毎回ログインが必要になる**（実測で消えた）。
+      14棟ぶん座ってもらう前提では、ログインは1回で済ませないと現実的でない。
+    ★プロトコル（テキストファイル1行）：
+        fill:<JSONパス>        … その室を埋める（送信はしない）
+        verify:<コード>:<JSONパス> … 登録後の照合
+        quit                  … 終了
+      実行するとコマンドファイルは消し、結果は結果ファイルに追記する。
+    """
+    cmd = Path(a.cmd_file)
+    res = Path(a.result_file)
+    res.parent.mkdir(parents=True, exist_ok=True)
+
+    def emit(text):
+        log(text)
+        with res.open("a", encoding="utf-8") as f:
+            f.write(text + "\n")
+
+    # ログイン待ち（この1回だけ）
+    reg.page.goto(a.url, wait_until="load")
+    if reg.page.frame(name="navi") is None:
+        emit(f"[待機] ログイン画面です。この窓でログインしてください（最大{a.login_wait}秒）")
+        emit("[待機] ★タブは増やさないこと（罠3＝2タブでセッションが壊れる）")
+        t0 = time.time()
+        while reg.page.frame(name="navi") is None and time.time() - t0 < a.login_wait:
+            reg.page.wait_for_timeout(2000)
+    if reg.page.frame(name="navi") is None:
+        emit("[NG] ログインを確認できませんでした")
+        return 2
+    emit("[OK] ログイン確認。コマンド待機に入ります（ブラウザは開いたままにします）")
+
+    t_idle = time.time()
+    while time.time() - t_idle < a.serve_timeout:
+        if not cmd.exists():
+            reg.page.wait_for_timeout(1500)
+            continue
+        line = cmd.read_text(encoding="utf-8").strip()
+        cmd.unlink()
+        t_idle = time.time()
+        if line == "quit":
+            emit("[OK] 終了します")
+            break
+        try:
+            if line.startswith("fill:"):
+                jp = Path(line[5:].strip())
+                rec = json.loads(jp.read_text(encoding="utf-8"))
+                emit(f"[開始] fill {rec['key']}")
+                if not rec["gate"]["ok"]:
+                    emit(f"[NG] ゲートで停止: {' / '.join(rec['gate']['block'])}")
+                    continue
+                ng = fill_one(reg, rec, jp, log)
+                if ng:
+                    emit(f"[NG] 未解決 {len(ng)}件（送信しないこと）")
+                    for x in ng:
+                        emit(f"      - {x}")
+                else:
+                    emit(f"[OK] {rec['key']} 埋め込みと照合すべて通過")
+                emit(f"[情報] 画像{reg.visible_delete_buttons()}枚 / {reg.score()}")
+                emit("[人] 交通入力・元付担当・確認日・キャッチ → 目視 → 『確認画面へ』")
+            elif line.startswith("verify:"):
+                _, code, jp = line.split(":", 2)
+                rec = json.loads(Path(jp.strip()).read_text(encoding="utf-8"))
+                emit(f"[開始] verify {rec['key']} コード={code}")
+                ng = verify_room(reg, rec, code.strip(), log)
+                if ng:
+                    emit(f"[NG] 照合FAIL {len(ng)}件（次の室に進まないこと）")
+                    for x in ng:
+                        emit(f"      - {x}")
+                else:
+                    emit(f"[OK] {rec['key']} 照合PASS（全項目一致）")
+            elif line.startswith("buttons"):
+                emit("[情報] 画面のボタン一覧")
+                for b in reg.dump_buttons():
+                    emit(f"      {b['tag']:<6} id={b['id']:<16} title={b['title']:<14} "
+                         f"text={b['text'][:16]}")
+            else:
+                emit(f"[NG] 不明なコマンド: {line[:40]}")
+        except Exception as e:  # noqa: BLE001  ★1コマンドの失敗で常駐を落とさない
+            emit(f"[NG] {type(e).__name__}: {str(e)[:200]}")
+            try:
+                shot = res.parent / f"error_{int(time.time())}.png"
+                reg.page.screenshot(path=str(shot))
+                emit(f"[情報] スクリーンショット {shot}")
+            except Exception:  # noqa: BLE001
+                pass
+    else:
+        emit("[NG] 待機時間切れ")
+    return 0
+
+
+def fill_one(reg: Reg, rec: dict, json_path: Path, log):
+    """1室を埋める（送信はしない）。未解決の一覧を返す。"""
+    for w in rec["gate"]["warn"]:
+        log(f"  ⚠ {w}")
+    log("① 新規物件登録フォームを開く")
+    open_new_form(reg, None, log, navigate=False)
+    reg.assert_fresh_form()
+    log("② フィールドを埋める")
+    ng = reg.fill_form(rec["form"])
+    log("③ 住所")
+    ng += reg.fill_address(rec["form"])
+    ng += reg.fill_aza(rec["form"].get("_chome"))
+    log("④ 特徴項目")
+    ng += reg.check_tokucho(rec["tokucho"])
+    log(f"⑤ 画像 {len(rec['images'])}枚")
+    ng += reg.upload_images(rec["images"], json_path.resolve().parent)
+    log("⑥ 読み戻し照合")
+    ng += reg.readback(rec["form"])
+    return ng
 
 
 def main(argv=None):
@@ -392,6 +640,15 @@ def main(argv=None):
     ap.add_argument("--login-wait", type=int, default=600, help="--login でのログイン待ち上限秒")
     ap.add_argument("--keep-open", type=int, default=0,
                     help="処理後にブラウザを開いたまま保つ秒数（人が交通入力・確認をする時間）")
+    ap.add_argument("--serve", action="store_true",
+                    help="常駐モード：ログイン1回でブラウザを開いたまま、コマンドファイルで1室ずつ処理する")
+    ap.add_argument("--cmd-file", default="/tmp/suumo_cmd", help="常駐モードのコマンドファイル")
+    ap.add_argument("--result-file", default="/tmp/suumo_result.log",
+                    help="常駐モードの結果ファイル")
+    ap.add_argument("--serve-timeout", type=int, default=14400,
+                    help="常駐モードで無操作のまま待つ上限秒（既定4時間）")
+    ap.add_argument("--verify", metavar="CODE",
+                    help="登録後の照合：12桁の物件コードで再検索して突き合わせる（--fillのJSONが必要）")
     ap.add_argument("--dump-buttons", action="store_true",
                     help="画面のボタン一覧を出す（未知の画面でどれを押すか人が決めるため）")
     ap.add_argument("--to-confirm", action="store_true",
@@ -399,8 +656,10 @@ def main(argv=None):
     ap.add_argument("--skip-fresh-check", action="store_true",
                     help="フォームが空であることの検証を飛ばす（既定はしない＝罠1の防止）")
     a = ap.parse_args(argv)
-    if not a.login and not a.fill:
-        ap.error("--login か --fill のどちらかを指定してください")
+    if not a.login and not a.fill and not a.serve:
+        ap.error("--login / --fill / --serve のいずれかを指定してください")
+    if a.verify and not a.fill:
+        ap.error("--verify には照合の基準になる --fill のJSONも必要です")
 
     def log(m):
         print(m, flush=True)
@@ -420,6 +679,8 @@ def main(argv=None):
         reg = Reg(page, log)
         rc = 0
         try:
+            if a.serve:
+                return serve(reg, a, log)
             if a.login:
                 page.goto(a.url, wait_until="load")
                 log(f"ブラウザを開きました。ログインしてください（最大{a.login_wait}秒待ちます）")
@@ -441,6 +702,22 @@ def main(argv=None):
             rec = json.loads(Path(a.fill).read_text(encoding="utf-8"))
             key = rec["key"]
             log(f"■ {key}")
+            if a.verify:
+                log(f"照合のみ（物件コード {a.verify}）")
+                page.goto(a.url, wait_until="load")
+                if page.frame(name="navi") is None:
+                    log(f"  ログイン画面です。ログインしてください（最大{a.login_wait}秒）")
+                    t0 = time.time()
+                    while page.frame(name="navi") is None and time.time() - t0 < a.login_wait:
+                        page.wait_for_timeout(2000)
+                ng = verify_room(reg, rec, a.verify, log)
+                if ng:
+                    log(f"\n✗ 照合FAIL {len(ng)}件（次の室に進まないこと）:")
+                    for x in ng:
+                        log(f"   - {x}")
+                    return 1
+                log("\n✅ 照合PASS（全項目一致）")
+                return 0
             if not rec["gate"]["ok"]:
                 log(f"✗ この室はゲートで止まっています: {' / '.join(rec['gate']['block'])}")
                 return 2
@@ -448,7 +725,7 @@ def main(argv=None):
                 log(f"  ⚠ {w}")
 
             log("① 新規物件登録フォームを開く")
-            open_new_form(reg, a.url, log)
+            open_new_form(reg, a.url, log, login_wait=a.login_wait)
             if not a.skip_fresh_check:
                 reg.assert_fresh_form()
 

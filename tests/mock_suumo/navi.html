@@ -1,5 +1,13 @@
-<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"></head><body style="margin:0">
-<!-- メニュー。実機と同じく「新規物件登録」から入る（直リンクは使わない） -->
-<a href="form.html?fresh=1" target="main" id="menu_new">新規物件登録</a> |
-<a href="search.html" target="main" id="menu_update">更新・掲載指示</a>
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8">
+<style>a.menu_btn{display:inline-block;width:110px;height:26px;border:1px solid #999;
+ background:#e8e8e8;text-indent:-9999px;overflow:hidden;text-decoration:none}</style>
+</head><body style="margin:0">
+<!-- ★実機のメニュータブを写している（2026-08-13実測）：
+     <a class="menu_btn" id="menu_2" title="新規物件登録" href="MNU1R0001_f.action">
+     **テキストは空**（CSSスプライト背景）。だから get_by_text では永久に一致しない。
+     モックがテキスト付きリンクだと、この最重要な差をオフラインで捕まえられない。 -->
+<a class="menu_btn" id="menu_1" title="トップ" href="form.html?fresh=1" target="main"></a>
+<a class="menu_btn" id="menu_2" title="新規物件登録" href="form.html?fresh=1" target="main"></a>
+<a class="menu_btn" id="menu_3" title="掲載指示" href="search.html" target="main"></a>
+<a class="menu_btn" id="menu_4" title="物件一括操作" href="form.html?fresh=1" target="main"></a>
 </body></html>
