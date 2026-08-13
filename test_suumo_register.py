@@ -140,6 +140,36 @@ def run(headless=True):
             code = R.extract_bukken_code(reg.main.content())
             _check("完了画面から物件コード(12桁)を取れる", bool(code) and len(code) == 12, str(code))
 
+        # ── A2. 交通の複製と submit（確認画面へ→登録→物件コード）──────────
+        print("\n▶ A2. 交通の複製と submit（登録まで通す）")
+        R.open_new_form(reg, MOCK, lambda m: None)
+        reg.fill_form(rec["form"])
+        reg.check_tokucho(rec["tokucho"])
+        reg.upload_images(rec["images"], path.parent)
+        # 人が「らくらく交通入力」を押した状態を作り、読み取って別の室へ複製する
+        reg.main.locator("#rakurakuKotsu").click()
+        page.wait_for_timeout(300)
+        saved = reg.read_transit()
+        _check("交通を3路線読める", len(saved) == 3, str(len(saved)))
+        _check("表示名とコードの両方が入っている",
+               all(r.get("pkgEkiCd") and r.get("pkgEkiNmDisp") for r in saved))
+        R.open_new_form(reg, MOCK, lambda m: None)          # 別の室として開き直す
+        reg.fill_form(rec["form"])
+        reg.check_tokucho(rec["tokucho"])
+        reg.upload_images(rec["images"], path.parent)
+        ng_t = reg.apply_transit(saved)
+        _check("複製で未解決なし", not ng_t, str(ng_t[:2]))
+        again = reg.read_transit()
+        _check("複製後の値が元と一致",
+               [{k: r[k] for k in R.TRANSIT_KEYS} for r in again]
+               == [{k: r[k] for k in R.TRANSIT_KEYS} for r in saved])
+        for k, v in (("mototsukeTantoNm", "担当者"),
+                     ("mototsukeKakuninDate", rec["form"].get("mototsukeKakuninDate", ""))):
+            reg.set_field(k, v)
+        code, sng = R.submit_room(reg, lambda m: None, expect_images=len(rec["images"]))
+        _check("submitが未解決なしで通る", not sng, str(sng[:2]))
+        _check("物件コード12桁を取れる", bool(code) and len(code) == 12, str(code))
+
         # ── B. 前室の画像が残っていたら投入しない ──────────────────
         print("\n▶ B. 前室の画像が残っていたら投入せず止まること")
         R.open_new_form(reg, MOCK, lambda m: None)
@@ -178,6 +208,14 @@ def run(headless=True):
         # 正しい方は一致する
         _check("正しいフィールドは読み戻しで一致",
                not any("bukkenNm:" in x for x in back), str([x for x in back if 'bukkenNm:' in x]))
+
+        # ── E. 元付の必須が空なら submit しない ─────────────────────
+        print("\n▶ E. 元付の必須が空なら登録しない（先物の必須4項目）")
+        R.open_new_form(reg, MOCK, lambda m: None)
+        reg.fill_form(rec["form"])
+        code2, sng2 = R.submit_room(reg, lambda m: None)
+        _check("担当者・確認日が空だと押さずに止まる",
+               code2 is None and any("元付の必須項目が空" in x for x in sng2), str(sng2[:1]))
 
         ctx.close()
     shutil.rmtree(tmp, ignore_errors=True)

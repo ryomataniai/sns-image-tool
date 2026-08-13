@@ -429,8 +429,15 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
         F["mototsukeGyoshaNm"] = nm
         if not nm:
             block("元付業者名が取れない（先物では必須＝未入力でエラーになる）")
-        F["mototsukeTantoNm"] = ""      # マイソクに担当者名は無い。人が入れる
-        F["mototsukeKakuninDate"] = ""  # 元付確認日は人が入れる（別タスク）
+        F["mototsukeTantoNm"] = ""      # マイソクに担当者名は無い。登録時に固定値を入れる
+        # 元付確認日＝客付版マイソクのDL日（ファイル名末尾のタイムスタンプ）。
+        # ★実測で書式 YYYY/MM/DD が受理された。先物では必須（未入力だと
+        #   『取引態様が「先物」なのに元付業者の記入がありません』で確認画面に進めない）。
+        dm = re.search(r"_(\d{4})(\d{2})(\d{2})\d{6}$", kyakuzuke_pdf.stem)
+        F["mototsukeKakuninDate"] = (f"{dm.group(1)}/{dm.group(2)}/{dm.group(3)}"
+                                     if dm else "")
+        if not dm:
+            warn("客付版PDFのファイル名からDL日が取れない（元付確認日を人が入れる）")
 
     # ── 特徴項目 ──────────────────────────────────────────────────
     eq = str(facts.get("equipment", ""))
@@ -490,6 +497,16 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
             block(f"画像が{len(out['images'])}枚で枠14を超える（どれを落とすか人が決める必要がある）")
         if not any(i["slot"] == "madori" for i in out["images"]):
             warn("間取り図がない（madori＝5点カテゴリ）")
+
+    # ★先物（torihikiTaiyoKbnCd=4）では元付4項目すべて必須（実機のエラーで判明）。
+    #   会社名だけ見ていると担当者・確認日の空で確認画面に進めない。
+    #   担当者は登録時に固定値を入れるのでここでは空を許容し、他3つを検査する。
+    if F.get("torihikiTaiyoKbnCd") == "4":
+        for k, label in (("mototsukeGyoshaNm", "元付会社名"),
+                         ("mototsukeTelNo", "元付電話番号"),
+                         ("mototsukeKakuninDate", "元付確認日")):
+            if not F.get(k):
+                block(f"{label}が空（取引態様=先物では必須）")
 
     # 名寄せ見込み（batch_suumo と同じ式・Phase2の照合基準22点以上の事前確認）
     out["score_hint"] = _score(out["images"])

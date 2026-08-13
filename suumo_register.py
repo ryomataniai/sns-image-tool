@@ -82,6 +82,15 @@ def extract_bukken_code(html: str):
     return m.group(1) if m else None
 
 
+# 交通の1路線ぶんのフィールド（実測：らくらく交通入力が埋める7項目）。
+# ★表示名とコードの両方が必要。コードだけだと入力エラーになる（8/11の失敗）。
+#   逆に7項目とも入れれば、地図位置を触らなくても確認画面を通る（8/13に実証）。
+TRANSIT_KEYS = ("pkgEnsenNmDisp", "pkgEnsenNm", "pkgEnsenCd",
+                "pkgEkiNmDisp", "pkgEkiNm", "pkgEkiCd", "shoyoTime")
+TRANSIT_LINES = ("", "2", "3")          # 交通1〜3
+TRANSIT_FLAG = "etcEnsenekiFlg"
+
+
 class Reg:
     def __init__(self, page, log):
         self.page = page
@@ -182,9 +191,20 @@ class Reg:
             if want != first.is_checked():
                 first.set_checked(want)
             return (first.is_checked() == want), first.is_checked(), ""
-        first.fill(str(value))
+        # ★hidden / readonly / 非表示は Playwright の fill() が書けない（可視で編集可能に
+        #   なるまで待って時間切れになる）。実機の交通は etcEnsenekiFlg が hidden、
+        #   沿線・駅コードも hidden のことがあるので、その場合はJS代入＋イベント発火で入れる。
+        #   （手動evalでは通っていたのに set_field では通らない、という差の正体）
+        editable = (typ != "hidden" and first.is_visible()
+                    and not first.get_attribute("readonly"))
+        if editable:
+            first.fill(str(value))
+        else:
+            first.evaluate("""(e, v) => { e.value = v;
+                e.dispatchEvent(new Event('input', {bubbles: true}));
+                e.dispatchEvent(new Event('change', {bubbles: true})); }""", str(value))
         got = first.input_value()
-        return (got == str(value)), got, ""
+        return (got == str(value)), got, ("" if editable else "hidden/readonlyへJS代入")
 
     def fill_form(self, form: dict):
         """JSONのformを全部埋める。_で始まるキー（原文の控え）は飛ばす。"""
@@ -357,8 +377,14 @@ class Reg:
     #      <div id="regButton2" class="spbtn btn_a_b_kakunin" title="確認画面へ">確認画面へ</div>
     #    そのため a/input/button をテキストで探すと永久に見つからない（8/12は座標で押していた）。
     #    唯一安定した手掛かりは **title属性**。id も併用する（regButton2 等）。
+    #  ★このアプリの「押せるもの」は実測で3系統あり、どれもテキストでは探せない：
+    #      a.menu_btn[title=…]        メニュータブ（テキスト空）
+    #      div.spbtn[title=…]         画面内ボタン（確認画面へ・削除など）
+    #      img.imageButton[alt=…]     確認画面の実行系（登録=#jikko / 訂正=#teisei）
+    #    title と alt の両方を見ないと「登録」に到達できない（8/12は座標クリックしていた）。
     BTN_SELECTORS = (
-        'div.spbtn[title="{t}"]', 'div[title="{t}"]', '[title="{t}"]',
+        'div.spbtn[title="{t}"]', 'img.imageButton[alt="{t}"]',
+        'div[title="{t}"]', 'img[alt="{t}"]', '[title="{t}"]', '[alt="{t}"]',
         'input[value="{t}"]', 'button:has-text("{t}")',
     )
 
@@ -477,6 +503,42 @@ class Reg:
             out["_score_src"] = " ".join((txt or "").split())[:140]
         return out
 
+    # ── 交通 ────────────────────────────────────────────────────
+    def read_transit(self):
+        """今のフォームから交通1〜3を読む。→ [{key: value}, ...]（空の行は入れない）。
+        ★同一棟なら交通は同一なので、棟の1室目で人が『らくらく交通入力』した結果を
+          保存して2室目以降に複製する。住所から計算するのではなく、人が検証した値の再利用。"""
+        out = []
+        for n in TRANSIT_LINES:
+            row = {}
+            for k in TRANSIT_KEYS:
+                e = self.main.locator(f'[name="{sel_name(k + n)}"]')
+                row[k] = e.first.input_value() if e.count() else ""
+            if row.get("pkgEkiCd") or row.get("pkgEkiNmDisp"):
+                row["_line"] = n
+                out.append(row)
+        return out
+
+    def apply_transit(self, lines):
+        """保存した交通を今のフォームへ複製する。→ 未解決の一覧。"""
+        ng = []
+        for row in lines:
+            n = row.get("_line", "")
+            for k in TRANSIT_KEYS:
+                v = row.get(k, "")
+                if v == "":
+                    continue
+                ok, got, msg = self.set_field(k + n, v)
+                if not ok:
+                    ng.append(f"交通{n or '1'} {k}: 期待={v!r} 実際={got!r} {msg}")
+        ok, got, msg = self.set_field(TRANSIT_FLAG, "1")
+        if not ok:
+            ng.append(f"{TRANSIT_FLAG}: {msg}")
+        shown = " / ".join(f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
+                           f"徒歩{r.get('shoyoTime','')}分" for r in lines)
+        self.log(f"  交通を複製: {shown}")
+        return ng
+
     def score(self):
         """画面の名寄せスコア表示を読む（実フォームの左上にある）。"""
         try:
@@ -560,6 +622,59 @@ def _dec_eq(a1, a2, e1, e2):
 #   2701=即入居可 は入居予定=即（nyukyoKbnCd=1）に連動してSUUMO側が付ける。
 #   こちらから要求していないので「余り」に出るが、内容として正しいので許容する。
 TOKUCHO_SITE_DERIVED = {"2701": "即入居可（入居予定=即に連動してサイトが付ける）"}
+
+
+def submit_room(reg: Reg, log, expect_images=None):
+    """『確認画面へ』→ 内容確認 →『登録』。→ (物件コード|None, 未解決の一覧)。
+
+    ★押す前に必ず実DOMを見る：必須の元付4項目・画像枚数・確認画面かどうか・エラー表示の有無。
+      推測でクリックしない（依頼文§3-10 罠4「クリック前に実レスポンスで確認する」）。
+    ★『登録』は <img id="jikko" class="imageButton" alt="登録"> で、title/value/テキストは空。
+      文字で探しても見つからない（8/12は座標クリックしていた）。alt が唯一の手掛かり。
+    """
+    ng = []
+    need = ("mototsukeGyoshaNm", "mototsukeTantoNm", "mototsukeTelNo", "mototsukeKakuninDate")
+    empty = [k for k in need
+             if not (reg.loc(k).count() and reg.loc(k).first.input_value().strip())]
+    if empty:
+        # 取引態様=先物では4項目すべて必須（実機のエラー『取引態様が「先物」なのに
+        # 元付業者の記入がありません』は担当者・確認日が空でも出る）
+        return None, [f"元付の必須項目が空: {empty}"]
+    n_img = reg.visible_delete_buttons()
+    if expect_images is not None and n_img != expect_images:
+        return None, [f"画像枚数が期待と違う（期待{expect_images}／実際{n_img}）"]
+    btn = reg.find_button("確認画面へ")
+    if btn is None:
+        return None, ["『確認画面へ』が見つからない"]
+    log(f"  『確認画面へ』を押す（画像{n_img}枚）")
+    btn.click()
+    reg.page.wait_for_timeout(4500)
+    title = reg.main.title()
+    if "確認" not in title:
+        errs = reg.main.evaluate("""() => Array.from(document.querySelectorAll('*'))
+            .filter(e => !e.children.length && /ありません|エラー|必須|入力して/.test(e.textContent||''))
+            .map(e => (e.textContent||'').trim().slice(0,80)).slice(0,8)""")
+        return None, [f"確認画面に進めなかった（画面={title}）"] + errs
+    errs = reg.main.evaluate("""() => Array.from(document.querySelectorAll('*'))
+        .filter(e => !e.children.length && /ありません|エラー\s*一覧/.test(e.textContent||''))
+        .map(e => (e.textContent||'').trim().slice(0,80)).slice(0,8)""")
+    if errs:
+        return None, ["確認画面にエラー表示がある"] + errs
+    score = parse_score(reg.main.evaluate("() => document.body.innerText"))
+    jikko = reg.main.locator('img#jikko')
+    if jikko.count() == 0 or jikko.first.get_attribute("alt") != "登録":
+        alts = reg.main.evaluate("""() => Array.from(document.querySelectorAll('img.imageButton'))
+            .map(e => e.id + ':' + (e.alt||''))""")
+        return None, [f"『登録』ボタン（img#jikko alt=登録）が確認できない: {alts}"]
+    log(f"  『登録』を押す（確認画面のスコア {score}点）")
+    jikko.first.click()
+    reg.page.wait_for_timeout(6000)
+    code = extract_bukken_code(reg.main.evaluate("() => document.body.innerText"))
+    if not code:
+        return None, [f"登録完了画面から物件コードが取れない（画面={reg.main.title()}）"]
+    log(f"  登録完了 物件コード={code} / 完了画面のスコア="
+        f"{parse_score(reg.main.evaluate('() => document.body.innerText'))}点")
+    return code, ng
 
 
 def verify_room(reg: Reg, rec: dict, code: str, log):
@@ -676,7 +791,7 @@ def serve(reg: Reg, a, log):
                 if not rec["gate"]["ok"]:
                     emit(f"[NG] ゲートで停止: {' / '.join(rec['gate']['block'])}")
                     continue
-                ng = fill_one(reg, rec, jp, log)
+                ng = fill_one(reg, rec, jp, log, tanto=a.tanto)
                 if ng:
                     emit(f"[NG] 未解決 {len(ng)}件（送信しないこと）")
                     for x in ng:
@@ -699,6 +814,71 @@ def serve(reg: Reg, a, log):
                         emit(f"      - {x}")
                 else:
                     emit(f"[OK] {rec['key']} 照合PASS（全項目一致）")
+            elif line.startswith("savetransit:"):
+                # 棟の1室目で人が『らくらく交通入力』した結果を、その棟の交通として保存する
+                jp = Path(line.split(":", 1)[1].strip())
+                rec = json.loads(jp.read_text(encoding="utf-8"))
+                lines = reg.read_transit()
+                if not lines:
+                    emit("[NG] 今のフォームに交通が入っていない（先に『らくらく交通入力』を）")
+                else:
+                    tp = transit_path(jp, rec["form"]["bukkenNm"])
+                    tp.parent.mkdir(parents=True, exist_ok=True)
+                    tp.write_text(json.dumps(lines, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+                    emit(f"[OK] 交通を保存 {tp.name}: " + " / ".join(
+                        f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
+                        f"徒歩{r.get('shoyoTime','')}分" for r in lines))
+            elif line.startswith("submit:"):
+                # 『確認画面へ』→『登録』まで通す。押す前に実DOMを検証する
+                jp = Path(line.split(":", 1)[1].strip())
+                rec = json.loads(jp.read_text(encoding="utf-8"))
+                code, sng = submit_room(reg, log, expect_images=len(rec["images"]))
+                if sng:
+                    emit(f"[NG] 登録しなかった（{len(sng)}件）")
+                    for x in sng:
+                        emit(f"      - {x}")
+                else:
+                    emit(f"[OK] {rec['key']} 登録完了 物件コード={code}")
+                    vng = verify_room(reg, rec, code, log)
+                    if vng:
+                        emit(f"[NG] 照合FAIL {len(vng)}件（次の室に進まないこと）")
+                        for x in vng:
+                            emit(f"      - {x}")
+                    else:
+                        emit(f"[OK] {rec['key']} 照合PASS（全項目一致） コード={code}")
+            elif line.startswith("room:"):
+                # fill → submit → verify を一気に通す（交通が保存済みの棟のみ）
+                jp = Path(line.split(":", 1)[1].strip())
+                rec = json.loads(jp.read_text(encoding="utf-8"))
+                emit(f"[開始] room {rec['key']}")
+                if not rec["gate"]["ok"]:
+                    emit(f"[NG] ゲートで停止: {' / '.join(rec['gate']['block'])}")
+                    continue
+                tp = transit_path(jp, rec["form"]["bukkenNm"])
+                if not tp.is_file():
+                    emit(f"[NG] この棟の交通が未保存（{tp.name}）。"
+                         "1室目で『らくらく交通入力』→ savetransit が必要")
+                    continue
+                fng = fill_one(reg, rec, jp, log, tanto=a.tanto)
+                if fng:
+                    emit(f"[NG] 埋め込みで未解決 {len(fng)}件（登録しない）")
+                    for x in fng:
+                        emit(f"      - {x}")
+                    continue
+                code, sng = submit_room(reg, log, expect_images=len(rec["images"]))
+                if sng:
+                    emit(f"[NG] 登録しなかった（{len(sng)}件）")
+                    for x in sng:
+                        emit(f"      - {x}")
+                    continue
+                vng = verify_room(reg, rec, code, log)
+                if vng:
+                    emit(f"[NG] 照合FAIL {len(vng)}件 コード={code}")
+                    for x in vng:
+                        emit(f"      - {x}")
+                else:
+                    emit(f"[OK] {rec['key']} 完了 コード={code} 照合PASS")
             elif line.startswith("eval:"):
                 # ★診断用。常駐を止めずに現在の画面を読めるようにする
                 #   （選択子を1つ直すたびに再起動＝再ログインになるのを避けるため）。
@@ -734,7 +914,14 @@ def serve(reg: Reg, a, log):
     return 0
 
 
-def fill_one(reg: Reg, rec: dict, json_path: Path, log):
+def transit_path(json_path: Path, bukken_nm: str) -> Path:
+    """棟ごとの交通の保存先。棟名（物件名）で1ファイル。"""
+    d = json_path.resolve().parent / "_transit"
+    safe = "".join(c for c in bukken_nm if c not in '/\\:*?"<>|')
+    return d / f"{safe}.json"
+
+
+def fill_one(reg: Reg, rec: dict, json_path: Path, log, tanto="担当者"):
     """1室を埋める（送信はしない）。未解決の一覧を返す。"""
     for w in rec["gate"]["warn"]:
         log(f"  ⚠ {w}")
@@ -746,11 +933,29 @@ def fill_one(reg: Reg, rec: dict, json_path: Path, log):
     log("③ 住所")
     ng += reg.fill_address(rec["form"])
     ng += reg.fill_aza(rec["form"].get("_chome"))
-    log("④ 特徴項目")
+    log("④ 元付の担当者・確認日")
+    #  ★先物では元付4項目すべて必須（実機のエラーで判明）。会社名とTELはJSON由来、
+    #    担当者は固定文字列、確認日は客付版PDFのDL日（U1が form に入れている）。
+    for k, v in (("mototsukeTantoNm", tanto),
+                 ("mototsukeKakuninDate", rec["form"].get("mototsukeKakuninDate", ""))):
+        if not v:
+            ng.append(f"{k} が空（先物では必須）")
+            continue
+        ok, got, msg = reg.set_field(k, v)
+        if not ok:
+            ng.append(f"{k}: 期待={v!r} 実際={got!r} {msg}")
+    log("⑤ 交通（同一棟の保存値を複製）")
+    tp = transit_path(json_path, rec["form"]["bukkenNm"])
+    if tp.is_file():
+        ng += reg.apply_transit(json.loads(tp.read_text(encoding="utf-8")))
+    else:
+        log(f"  ⚠ この棟の交通が未保存（{tp.name}）。"
+            "人が『らくらく交通入力』をしてから savetransit を実行すること")
+    log("⑥ 特徴項目")
     ng += reg.check_tokucho(rec["tokucho"])
-    log(f"⑤ 画像 {len(rec['images'])}枚")
+    log(f"⑦ 画像 {len(rec['images'])}枚")
     ng += reg.upload_images(rec["images"], json_path.resolve().parent)
-    log("⑥ 読み戻し照合")
+    log("⑧ 読み戻し照合")
     ng += reg.readback(rec["form"])
     return ng
 
@@ -769,6 +974,8 @@ def main(argv=None):
     ap.add_argument("--login-wait", type=int, default=600, help="--login でのログイン待ち上限秒")
     ap.add_argument("--keep-open", type=int, default=0,
                     help="処理後にブラウザを開いたまま保つ秒数（人が交通入力・確認をする時間）")
+    ap.add_argument("--tanto", default="担当者",
+                    help="元付担当者名に入れる文字列（既定 担当者）")
     ap.add_argument("--serve", action="store_true",
                     help="常駐モード：ログイン1回でブラウザを開いたまま、コマンドファイルで1室ずつ処理する")
     ap.add_argument("--cmd-file", default="/tmp/suumo_cmd", help="常駐モードのコマンドファイル")
