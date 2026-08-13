@@ -905,9 +905,23 @@ def submit_room(reg: Reg, log, expect_images=None):
     reg.page.wait_for_timeout(4500)
     title = reg.main.title()
     if "確認" not in title:
-        errs = reg.main.evaluate("""() => Array.from(document.querySelectorAll('*'))
-            .filter(e => !e.children.length && /ありません|エラー|必須|入力して/.test(e.textContent||''))
-            .map(e => (e.textContent||'').trim().slice(0,80)).slice(0,8)""")
+        # ★エラーは「エラー 一覧」テーブルの行に出る（状況／区分／内容）。
+        #   要素を無条件に拾うと画面の注意書きやJSの断片ばかりで原因が分からない
+        #   （実際にそれで堺筋本町Uno_810 の原因を2回取り逃した）。テーブルの行を読む。
+        errs = reg.main.evaluate("""() => {
+            const out = [];
+            document.querySelectorAll('table').forEach(tb => {
+                const head = (tb.innerText || '').replace(/\s+/g, ' ');
+                if (!/エラー|状況.*区分.*内容/.test(head)) return;
+                tb.querySelectorAll('tr').forEach(tr => {
+                    const cells = Array.from(tr.querySelectorAll('td,th'))
+                        .map(c => (c.innerText || '').replace(/\s+/g, ' ').trim())
+                        .filter(Boolean);
+                    if (cells.length >= 2) out.push(cells.join(' | ').slice(0, 150));
+                });
+            });
+            return Array.from(new Set(out)).slice(0, 12);
+        }""")
         return None, [f"確認画面に進めなかった（画面={title}）"] + errs
     errs = reg.main.evaluate("""() => Array.from(document.querySelectorAll('*'))
         .filter(e => !e.children.length && /ありません|エラー\s*一覧/.test(e.textContent||''))

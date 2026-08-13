@@ -297,19 +297,24 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
                                       ("_reikin_raw", "reikinFlg", "reikin1", "reikin2",
                                        "reikinKbnCd")):
         raw = F[raw_key].strip()
-        has = bool(re.search(r"\d", raw))
+        ms = yen_to_manen(raw) if re.search(r"\d", raw) else None
+        # ★金額0は「なし」として扱う。『数字があるから有』にすると
+        #   「敷金が『有』なのに数字が未入力です／敷金＝0なのに敷金単位区分が設定されています」で
+        #   確認画面に進めない（実測：堺筋本町Uno_810 の敷金='0円'、
+        #   プレサンス京町堀ノース2室の敷金='0円 用+鍵ローテーション費用+kサポ費用'）。
+        #   ★後者は費用の説明文が敷金欄に混ざって取れている。0円＝なしなので実害はないが、
+        #     欄の切り出しが甘い記録として残す。
+        zero = ms is not None and ms[0] == "0" and ms[1] in ("0", "")
+        has = ms is not None and not zero
         F[flg] = has
         if not has:
             F[f1] = F[f2] = ""
             F[kbn] = None
+            if zero:
+                warn(f"{raw_key}『{raw[:24]}』は0円なので『なし』として登録する")
             continue
-        ms = yen_to_manen(raw)
         F[kbn] = KINGAKU_KBN_MANEN
-        if ms:
-            F[f1], F[f2] = ms
-        else:
-            F[f1] = F[f2] = None
-            warn(f"{raw_key}『{raw}』を万円の小数に分解できない")
+        F[f1], F[f2] = ms
 
     # 専有面積（menseki1=整数部 / menseki2=小数2桁）
     ar = re.search(r"(\d+)(?:\.(\d+))?", str(facts.get("area", "")))
