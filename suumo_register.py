@@ -181,6 +181,11 @@ class Reg:
         first = els.first
         tag = first.evaluate("e => e.tagName")
         typ = (first.evaluate("e => e.type || ''") or "").lower()
+        # ★無効化されている要素は待たずに失敗を返す。SUUMOは他の項目に連動して
+        #   select/input を無効化する（例：入居予定=指定有り を選ぶまで『旬』が無効）。
+        #   ここで待つと30秒の時間切れになり、原因も分からない（実機で踏んだ）。
+        if not first.is_enabled():
+            return False, None, "無効化されている（連動元の項目を先に設定する必要がある）"
         if tag == "SELECT":
             first.select_option(str(value))
             got = first.input_value()
@@ -221,14 +226,30 @@ class Reg:
         return (got == str(value)), got, ("" if editable else "hidden/readonlyへJS代入")
 
     def fill_form(self, form: dict):
-        """JSONのformを全部埋める。_で始まるキー（原文の控え）は飛ばす。"""
+        """JSONのformを全部埋める。_で始まるキー（原文の控え）は飛ばす。
+
+        ★2パスで埋める。SUUMOは項目間に連動があり（入居予定=指定有りを選ぶまで『旬』が無効、
+          管理費ありのチェックで金額欄が有効になる等）、1パスだと辞書順の都合で
+          連動先を先に触って失敗する。1回目で失敗したものだけ2回目に再試行すれば、
+          連動元が1回目で設定済みになっているので通る。順序を決め打ちしないので、
+          今後別の連動が出ても同じ仕組みで吸収できる。
+        """
+        pending = [(k, v) for k, v in form.items() if not k.startswith("_")]
         ng = []
-        for key, value in form.items():
-            if key.startswith("_"):
-                continue
-            ok, got, msg = self.set_field(key, value)
-            if not ok:
-                ng.append(f"{key}: 期待={value!r} 実際={got!r} {msg}")
+        for attempt in (1, 2):
+            failed = []
+            for key, value in pending:
+                ok, got, msg = self.set_field(key, value)
+                if not ok:
+                    failed.append((key, value, got, msg))
+            if not failed:
+                return []
+            if attempt == 1:
+                self.log(f"  1回目で入らなかった{len(failed)}件を再試行: "
+                         f"{[k for k, _v, _g, _m in failed]}")
+                pending = [(k, v) for k, v, _g, _m in failed]
+            else:
+                ng = [f"{k}: 期待={v!r} 実際={g!r} {m}" for k, v, g, m in failed]
         return ng
 
     def fill_address(self, form: dict):
