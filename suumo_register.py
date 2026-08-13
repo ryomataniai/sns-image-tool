@@ -246,8 +246,10 @@ class Reg:
             return ["郵便番号から住所が入らなかった"]
         return []
 
-    def check_tokucho(self, codes):
-        """特徴項目のチェックを入れる。value＝SUUMOのコード。"""
+    def check_tokucho(self, codes, allowed=None):
+        """特徴項目のチェックを入れる。value＝SUUMOのコード。
+        allowed＝サイト連動で増えてよいコード→理由（derived_allowed の結果）。"""
+        allowed = allowed or {}
         ng = []
         for c in codes:
             e = self.main.locator(
@@ -262,11 +264,11 @@ class Reg:
             'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked')).map(e => e.value)""")
         self.log(f"  特徴項目: {len(checked)}/{len(codes)}件チェック")
         if sorted(checked) != sorted(codes):
-            extra = sorted(set(checked) - set(codes) - set(TOKUCHO_SITE_DERIVED))
+            extra = sorted(set(checked) - set(codes) - set(allowed))
             derived = sorted(set(checked) - set(codes) - set(extra))
             miss = sorted(set(codes) - set(checked))
             for dcode in derived:
-                self.log(f"    （サイト連動 {dcode}={TOKUCHO_SITE_DERIVED[dcode]}）")
+                self.log(f"    （サイト連動 {dcode}={allowed[dcode]}）")
             if not extra and not miss:
                 return ng
             # ★数だけ出すと原因が追えない。余った/足りないコードを列挙する
@@ -673,10 +675,25 @@ def _dec_eq(a1, a2, e1, e2):
     return f(a1, a2) is not None and f(a1, a2) == f(e1, e2)
 
 
-# ★サイトが自動でチェックする特徴項目（実測）。
-#   2701=即入居可 は入居予定=即（nyukyoKbnCd=1）に連動してSUUMO側が付ける。
+# ★サイトが他のフィールドから自動でチェックする特徴項目（実測）。
 #   こちらから要求していないので「余り」に出るが、内容として正しいので許容する。
-TOKUCHO_SITE_DERIVED = {"2701": "即入居可（入居予定=即に連動してサイトが付ける）"}
+#   ただし**条件付き**にする：連動元が違う値なら異常として止める
+#   （例：方位が西の室で「南向き」が付いたら、それは事故なので黙って通してはいけない）。
+#   実測: 2701 は 難波大国町Deux 全室（入居=即）で出た。
+#         1001 は 難波Briller_1104（方位=南）で出て、909・1208（方位=西）では出なかった。
+TOKUCHO_SITE_DERIVED = {
+    "2701": ("即入居可（入居予定=即に連動）", "nyukyoKbnCd", ("1",)),
+    "1001": ("南向き（開口部方位=南に連動）", "kaikomukiKbnCd", ("5",)),
+}
+
+
+def derived_allowed(form: dict) -> dict:
+    """このフォームの値で、サイト連動として許容できる特徴項目コード → 理由。"""
+    out = {}
+    for code, (why, key, ok_vals) in TOKUCHO_SITE_DERIVED.items():
+        if str(form.get(key, "")) in ok_vals:
+            out[code] = why
+    return out
 
 
 def submit_room(reg: Reg, log, expect_images=None):
@@ -766,11 +783,12 @@ def verify_room(reg: Reg, rec: dict, code: str, log):
     elif got["_score"] < 22:
         ng.append(f"名寄せスコアが{got['_score']}点（22点未満）")
     # 特徴項目：サイト連動で増える分（2701 即入居可）を許容する
+    allowed = derived_allowed(f)
     n_min = len(rec["tokucho"])
-    n_max = n_min + len(TOKUCHO_SITE_DERIVED)
+    n_max = n_min + len(allowed)
     if not (n_min <= got["_tokucho_n"] <= n_max):
         ng.append(f"特徴項目数: 登録={got['_tokucho_n']} 期待={n_min}〜{n_max}"
-                  f"（サイト連動分{len(TOKUCHO_SITE_DERIVED)}件を許容）")
+                  f"（この室のサイト連動分 {list(allowed)} を許容）")
     log(f"  登録値: 名={got['bukkenNm']!r} {got['heyaNo']}号室 {got['kai']}階/{got['kaidate']}階建 "
         f"賃料{got['chinryo1']}.{got['chinryo2']}万 面積{got['menseki1']}.{got['menseki2']}㎡")
     log(f"  登録済み画像{got['_images']}枚（登録予定{got.get('_images_pending')}枚） / "
@@ -1011,7 +1029,7 @@ def fill_one(reg: Reg, rec: dict, json_path: Path, log, tanto="担当者"):
         log(f"  ⚠ この棟の交通が未保存（{tp.name}）。"
             "人が『らくらく交通入力』をしてから savetransit を実行すること")
     log("⑥ 特徴項目")
-    ng += reg.check_tokucho(rec["tokucho"])
+    ng += reg.check_tokucho(rec["tokucho"], derived_allowed(rec["form"]))
     log(f"⑦ 画像 {len(rec['images'])}枚")
     ng += reg.upload_images(rec["images"], json_path.resolve().parent)
     log("⑧ 読み戻し照合")
@@ -1134,7 +1152,7 @@ def main(argv=None):
             ng += reg.fill_aza(rec["form"].get("_chome"))
 
             log("④ 特徴項目")
-            ng += reg.check_tokucho(rec["tokucho"])
+            ng += reg.check_tokucho(rec["tokucho"], derived_allowed(rec["form"]))
 
             log(f"⑤ 画像 {len(rec['images'])}枚（サムネイル表示を待ちながら投入）")
             ng += reg.upload_images(rec["images"], Path(a.fill).resolve().parent)
