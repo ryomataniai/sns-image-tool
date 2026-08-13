@@ -169,8 +169,13 @@ var TK = ['pkgEnsenNmDisp','pkgEnsenNm','pkgEnsenCd','pkgEkiNmDisp','pkgEkiNm','
 var th = document.getElementById('transitFields');
 ['','2','3'].forEach(function(n) {
   var line = document.createElement('div');
+  // ★実機の表示欄（*NmDisp）は readonly（モーダルが埋めるため）。コード類は hidden。
+  //   モックも同じにしないと「readonlyでfill()が待ち続ける」バグを捕まえられない。
   line.innerHTML = '交通' + (n || '1') + ' ' + TK.map(function(k) {
-    return k + '<input size="8" name="${bukkenInputForm.' + k + n + '}">';
+    var ro = /Disp$/.test(k) ? ' readonly' : '';
+    var ty = /Cd$/.test(k) ? 'hidden' : 'text';
+    return (ty === 'hidden' ? '' : k) +
+      '<input type="' + ty + '" size="8"' + ro + ' name="${bukkenInputForm.' + k + n + '}">';
   }).join(' ');
   th.appendChild(line);
 });

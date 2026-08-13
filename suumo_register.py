@@ -195,8 +195,12 @@ class Reg:
         #   なるまで待って時間切れになる）。実機の交通は etcEnsenekiFlg が hidden、
         #   沿線・駅コードも hidden のことがあるので、その場合はJS代入＋イベント発火で入れる。
         #   （手動evalでは通っていたのに set_field では通らない、という差の正体）
+        # ★readonly / disabled は **属性の有無**で判定する。get_attribute は bare attribute に
+        #   空文字を返すので `not ""` が True になり「編集可」と誤判定する（実機で踏んだ：
+        #   交通の pkgEnsenNmDisp は readonly で、fill() が編集可になるのを待って時間切れ）。
         editable = (typ != "hidden" and first.is_visible()
-                    and not first.get_attribute("readonly"))
+                    and first.get_attribute("readonly") is None
+                    and first.get_attribute("disabled") is None)
         if editable:
             first.fill(str(value))
         else:
@@ -561,6 +565,57 @@ MENU_TITLE = {
 }
 
 
+def try_autologin(page, log) -> bool:
+    """ブラウザのパスワード自動入力が効いている場合に限り、ログインボタンを押す。
+
+    ★パスワードの値は読まない・出力しない・入力しない。**入っているかどうか（長さ>0）だけ**を
+      見て、入っていればボタンを押す。自動入力が無ければ何もせず False を返して人に任せる。
+    ★ログイン画面はframesetだが navi/main の名前が付いていない（実測：無名フレーム3〜4個）。
+      どのフレームにフォームがあるか決め打ちできないので全フレームを走査する。
+    """
+    for fr in page.frames:
+        try:
+            pw = fr.locator('input[type=password]')
+            if pw.count() == 0:
+                continue
+            filled = pw.first.evaluate("e => (e.value || '').length > 0")
+            idf = fr.locator('input[type=text]')
+            id_filled = (idf.count() > 0
+                         and idf.first.evaluate("e => (e.value || '').length > 0"))
+            log(f"  自動入力の状態: ID={'あり' if id_filled else 'なし'} "
+                f"パスワード={'あり' if filled else 'なし'}")
+            if not (filled and id_filled):
+                return False
+            # ★実測：ログインボタンは
+            #     <input type="image" id="Image7" class="loginButton" src="btn_a_b_login.gif">
+            #   alt も value も無い。input[type=image] を候補に入れていなかったため
+            #   「見つからない」になっていた（このアプリの押せるもの4系統目）。
+            for sel in ('input.loginButton', 'input[type=image][id=Image7]',
+                        'input[type=image]', 'img[alt*="ログイン"]',
+                        'input[value*="ログイン"]', 'div[title*="ログイン"]',
+                        'input[type=submit]'):
+                b = fr.locator(sel)
+                for i in range(b.count()):
+                    if b.nth(i).is_visible():
+                        log(f"  ログインボタンを押す（{sel}）")
+                        b.nth(i).click()
+                        return True
+            # ★診断出力に value を絶対に入れない（一度ここでIDとパスワードをログに出した）。
+            #   タグ・id・class・alt・onclick だけを出す。alt は画像ボタンのラベルで
+            #   資格情報ではないので可。value と textContent は出さない。
+            found = fr.evaluate("""() => Array.from(document.querySelectorAll('img,input,div,a,button'))
+                .filter(e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+                .filter(e => (e.type || '') !== 'password' && (e.type || '') !== 'text')
+                .map(e => [e.tagName, e.type || '', e.id || '', (e.className||'').toString().slice(0,20),
+                           e.alt || '', (e.getAttribute('onclick')||'').slice(0,40)].join('|'))
+                .slice(0, 18)""")
+            log(f"  ★ログインボタンが見つからない。候補（値は出さない）: {found}")
+            return False
+        except Exception as e:  # noqa: BLE001
+            log(f"  （フレーム走査中: {type(e).__name__}）")
+    return False
+
+
 def click_menu(reg: Reg, title: str, log, wait_ms: int = 2500):
     """naviフレームのメニュータブを title で押す。"""
     navi = reg.page.frame(name="navi")
@@ -751,6 +806,10 @@ def serve(reg: Reg, a, log):
 
     # ログイン待ち（この1回だけ）
     reg.page.goto(a.url, wait_until="load")
+    if reg.page.frame(name="navi") is None and a.autologin:
+        # ★ブラウザの自動入力が効いているならボタンを押すだけで入れる（値には触らない）
+        if try_autologin(reg.page, emit):
+            reg.page.wait_for_timeout(4000)
     if reg.page.frame(name="navi") is None:
         emit(f"[待機] ログイン画面です。この窓でログインしてください（最大{a.login_wait}秒）")
         emit("[待機] ★タブは増やさないこと（罠3＝2タブでセッションが壊れる）")
@@ -974,6 +1033,9 @@ def main(argv=None):
     ap.add_argument("--login-wait", type=int, default=600, help="--login でのログイン待ち上限秒")
     ap.add_argument("--keep-open", type=int, default=0,
                     help="処理後にブラウザを開いたまま保つ秒数（人が交通入力・確認をする時間）")
+    ap.add_argument("--autologin", action="store_true",
+                    help="ブラウザの自動入力が効いている場合にログインボタンを押す"
+                         "（パスワードは読まない・入力しない）")
     ap.add_argument("--tanto", default="担当者",
                     help="元付担当者名に入れる文字列（既定 担当者）")
     ap.add_argument("--serve", action="store_true",
