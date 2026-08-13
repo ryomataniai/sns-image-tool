@@ -226,8 +226,13 @@ class Reg:
             'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked')).map(e => e.value)""")
         self.log(f"  特徴項目: {len(checked)}/{len(codes)}件チェック")
         if sorted(checked) != sorted(codes):
-            extra = sorted(set(checked) - set(codes))
+            extra = sorted(set(checked) - set(codes) - set(TOKUCHO_SITE_DERIVED))
+            derived = sorted(set(checked) - set(codes) - set(extra))
             miss = sorted(set(codes) - set(checked))
+            for dcode in derived:
+                self.log(f"    （サイト連動 {dcode}={TOKUCHO_SITE_DERIVED[dcode]}）")
+            if not extra and not miss:
+                return ng
             # ★数だけ出すと原因が追えない。余った/足りないコードを列挙する
             #   （実機で17/16になった。サイト側が関連項目を自動チェックする可能性がある）
             ng.append(f"特徴項目が一致しない（期待{len(codes)}／実際{len(checked)}"
@@ -398,6 +403,65 @@ class Reg:
         self.log(f"  丁目: {chome}丁目 → azaCd={code}" + ("" if got == code else f" ★実際={got}"))
         return [] if got == code else [f"azaCd を {code} にできなかった（実際 {got}）"]
 
+    # ── 照合（登録後の検証）────────────────────────────────────────
+    #  ★8/12に実機で動かして成功した手順をそのまま実装している（谷合さん提供）。
+    #    ・検索: ${keisaiSearchForm.bukkenCd} に12桁 → input[value=検索] の [0] を押す
+    #    ・結果行: hidden input の value が物件コードと一致する行（tr）
+    #    ・詳細: その行の a で innerText=='詳細'
+    #    ・名寄せスコア: 更新画面ヘッダの「名寄せスコア N 点」（一覧の数値は列の意味が紛らわしい）
+    def search_bukken(self, code: str):
+        """物件コードで検索して更新画面（詳細）を開く。開けたら True。"""
+        # ★画面表記は「更新・掲載指示」だが title は「掲載指示」（実測）。表記で探すと外れる。
+        click_menu(self, "掲載指示", self.log)
+        fld = self.main.locator('[name="${keisaiSearchForm.bukkenCd}"]')
+        if fld.count() == 0:
+            raise RuntimeError(
+                "${keisaiSearchForm.bukkenCd} が無い（実測値だがフォーム名が変わった可能性）。"
+                "--dump-buttons と併せて画面を読み直すこと")
+        fld.first.fill(code)
+        btns = self.main.locator('input[value="検索"]')
+        if btns.count() == 0:
+            raise RuntimeError("input[value=検索] が無い")
+        btns.nth(0).click()          # ★2つあるが [0] で通る（8/12実測）
+        self.page.wait_for_timeout(3000)
+        # 結果行＝hidden input の value が物件コードと一致する行
+        ok = self.main.evaluate("""(code) => {
+            const h = Array.from(document.querySelectorAll('input[type=hidden]'))
+                .find(i => i.value === code);
+            if (!h) return false;
+            const tr = h.closest('tr');
+            if (!tr) return false;
+            const a = Array.from(tr.querySelectorAll('a'))
+                .find(x => (x.innerText||'').trim() === '詳細');
+            if (!a) return false;
+            a.click();
+            return true;
+        }""", code)
+        if not ok:
+            return False
+        self.page.wait_for_timeout(3500)
+        return True
+
+    def read_registered(self):
+        """更新画面から登録内容を読む。→ dict（フォーム値＋画像枚数＋名寄せスコア＋特徴項目数）。"""
+        out = {}
+        for key in ("bukkenNm", "heyaNo", "kai", "kaidate", "chinryo1", "chinryo2",
+                    "kanrihi1", "kanrihi2", "menseki1", "menseki2", "heyaCnt",
+                    "madoriTypeKbnCd", "kozoShuCd"):
+            els = self.main.locator(f'[name="{sel_name(key)}"]')
+            out[key] = els.first.input_value() if els.count() else None
+        out["_tokucho_n"] = self.main.locator(
+            'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').count()
+        # ★更新画面では画像は**登録済み**なので db_del_div_ 側を数える（実測で確認）。
+        #   up_del_（登録予定）は更新画面では0枚になる。ここを間違えると常に0枚と判定する。
+        out["_images"] = self.visible_db_delete_buttons()
+        out["_images_pending"] = self.visible_delete_buttons()
+        txt = self.main.evaluate("() => document.body.innerText.replace(/\\s+/g,' ')")
+        import re as _re
+        m = _re.search(r"名寄せスコア\\s*(\\d+)\\s*点", txt)
+        out["_score"] = int(m.group(1)) if m else None
+        return out
+
     def score(self):
         """画面の名寄せスコア表示を読む（実フォームの左上にある）。"""
         try:
@@ -463,61 +527,24 @@ def open_new_form(reg: Reg, url: str, log, login_wait: int = 0, navigate: bool =
     log(f"  main frame: {reg.main.url[-60:]}")
 
 
-    # ── 照合（登録後の検証）────────────────────────────────────────
-    #  ★8/12に実機で動かして成功した手順をそのまま実装している（谷合さん提供）。
-    #    ・検索: ${keisaiSearchForm.bukkenCd} に12桁 → input[value=検索] の [0] を押す
-    #    ・結果行: hidden input の value が物件コードと一致する行（tr）
-    #    ・詳細: その行の a で innerText=='詳細'
-    #    ・名寄せスコア: 更新画面ヘッダの「名寄せスコア N 点」（一覧の数値は列の意味が紛らわしい）
-    def search_bukken(self, code: str):
-        """物件コードで検索して更新画面（詳細）を開く。開けたら True。"""
-        # ★画面表記は「更新・掲載指示」だが title は「掲載指示」（実測）。表記で探すと外れる。
-        click_menu(self, "掲載指示", self.log)
-        fld = self.main.locator('[name="${keisaiSearchForm.bukkenCd}"]')
-        if fld.count() == 0:
-            raise RuntimeError(
-                "${keisaiSearchForm.bukkenCd} が無い（実測値だがフォーム名が変わった可能性）。"
-                "--dump-buttons と併せて画面を読み直すこと")
-        fld.first.fill(code)
-        btns = self.main.locator('input[value="検索"]')
-        if btns.count() == 0:
-            raise RuntimeError("input[value=検索] が無い")
-        btns.nth(0).click()          # ★2つあるが [0] で通る（8/12実測）
-        self.page.wait_for_timeout(3000)
-        # 結果行＝hidden input の value が物件コードと一致する行
-        ok = self.main.evaluate("""(code) => {
-            const h = Array.from(document.querySelectorAll('input[type=hidden]'))
-                .find(i => i.value === code);
-            if (!h) return false;
-            const tr = h.closest('tr');
-            if (!tr) return false;
-            const a = Array.from(tr.querySelectorAll('a'))
-                .find(x => (x.innerText||'').trim() === '詳細');
-            if (!a) return false;
-            a.click();
-            return true;
-        }""", code)
-        if not ok:
-            return False
-        self.page.wait_for_timeout(3500)
-        return True
+def _dec_eq(a1, a2, e1, e2):
+    """[整数].[小数] の対を数値として比べる。
+    ★SUUMOは 1.0万 を入れても更新画面では kanrihi2 が空で返る（実測）。
+      文字列比較すると『期待 0 / 実際 空』で誤FAILになる。値として一致すればOKとする。"""
+    def f(i, d):
+        i = str(i or "0").strip() or "0"
+        d = str(d or "0").strip() or "0"
+        try:
+            return float(f"{i}.{d}")
+        except ValueError:
+            return None
+    return f(a1, a2) is not None and f(a1, a2) == f(e1, e2)
 
-    def read_registered(self):
-        """更新画面から登録内容を読む。→ dict（フォーム値＋画像枚数＋名寄せスコア＋特徴項目数）。"""
-        out = {}
-        for key in ("bukkenNm", "heyaNo", "kai", "kaidate", "chinryo1", "chinryo2",
-                    "kanrihi1", "kanrihi2", "menseki1", "menseki2", "heyaCnt",
-                    "madoriTypeKbnCd", "kozoShuCd"):
-            els = self.main.locator(f'[name="{sel_name(key)}"]')
-            out[key] = els.first.input_value() if els.count() else None
-        out["_tokucho_n"] = self.main.locator(
-            'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').count()
-        out["_images"] = self.visible_delete_buttons()
-        txt = self.main.evaluate("() => document.body.innerText.replace(/\\s+/g,' ')")
-        import re as _re
-        m = _re.search(r"名寄せスコア\\s*(\\d+)\\s*点", txt)
-        out["_score"] = int(m.group(1)) if m else None
-        return out
+
+# ★サイトが自動でチェックする特徴項目（実測）。
+#   2701=即入居可 は入居予定=即（nyukyoKbnCd=1）に連動してSUUMO側が付ける。
+#   こちらから要求していないので「余り」に出るが、内容として正しいので許容する。
+TOKUCHO_SITE_DERIVED = {"2701": "即入居可（入居予定=即に連動してサイトが付ける）"}
 
 
 def verify_room(reg: Reg, rec: dict, code: str, log):
@@ -530,15 +557,21 @@ def verify_room(reg: Reg, rec: dict, code: str, log):
     ng = []
     for key, want in (("bukkenNm", f["bukkenNm"]), ("heyaNo", f["heyaNo"]),
                       ("kai", f["kai"]), ("kaidate", f["kaidate"]),
-                      ("chinryo1", f["chinryo1"]), ("chinryo2", f["chinryo2"]),
-                      ("kanrihi1", f["kanrihi1"]), ("kanrihi2", f["kanrihi2"]),
-                      ("menseki1", f["menseki1"]), ("menseki2", f["menseki2"]),
                       ("heyaCnt", f["heyaCnt"]), ("madoriTypeKbnCd", f["madoriTypeKbnCd"]),
                       ("kozoShuCd", f["kozoShuCd"])):
         if want in (None, ""):
             continue
         if str(got.get(key)) != str(want):
             ng.append(f"{key}: 登録値={got.get(key)!r} 期待={want!r}")
+    # 賃料・管理費・面積は [整数].[小数] の対なので数値として比べる（末尾ゼロの正規化）
+    for label, k1, k2 in (("賃料", "chinryo1", "chinryo2"),
+                          ("管理費", "kanrihi1", "kanrihi2"),
+                          ("面積", "menseki1", "menseki2")):
+        if f.get(k1) in (None, ""):
+            continue
+        if not _dec_eq(got.get(k1), got.get(k2), f.get(k1), f.get(k2)):
+            ng.append(f"{label}: 登録値={got.get(k1)}.{got.get(k2)} "
+                      f"期待={f.get(k1)}.{f.get(k2)}")
     n_img = len([i for i in rec["images"]])
     if got["_images"] != n_img:
         ng.append(f"画像枚数: 登録={got['_images']} 期待={n_img}")
@@ -546,11 +579,16 @@ def verify_room(reg: Reg, rec: dict, code: str, log):
         ng.append("名寄せスコアを読めない（更新画面のヘッダ表記を確認）")
     elif got["_score"] < 22:
         ng.append(f"名寄せスコアが{got['_score']}点（22点未満）")
-    if got["_tokucho_n"] != len(rec["tokucho"]):
-        ng.append(f"特徴項目数: 登録={got['_tokucho_n']} 期待={len(rec['tokucho'])}")
+    # 特徴項目：サイト連動で増える分（2701 即入居可）を許容する
+    n_min = len(rec["tokucho"])
+    n_max = n_min + len(TOKUCHO_SITE_DERIVED)
+    if not (n_min <= got["_tokucho_n"] <= n_max):
+        ng.append(f"特徴項目数: 登録={got['_tokucho_n']} 期待={n_min}〜{n_max}"
+                  f"（サイト連動分{len(TOKUCHO_SITE_DERIVED)}件を許容）")
     log(f"  登録値: 名={got['bukkenNm']!r} {got['heyaNo']}号室 {got['kai']}階/{got['kaidate']}階建 "
         f"賃料{got['chinryo1']}.{got['chinryo2']}万 面積{got['menseki1']}.{got['menseki2']}㎡")
-    log(f"  画像{got['_images']}枚 / 名寄せスコア{got['_score']}点 / 特徴項目{got['_tokucho_n']}件")
+    log(f"  登録済み画像{got['_images']}枚（登録予定{got.get('_images_pending')}枚） / "
+        f"名寄せスコア{got['_score']}点 / 特徴項目{got['_tokucho_n']}件")
     return ng
 
 
@@ -630,7 +668,10 @@ def serve(reg: Reg, a, log):
                 else:
                     emit(f"[OK] {rec['key']} 埋め込みと照合すべて通過")
                 emit(f"[情報] 画像{reg.visible_delete_buttons()}枚 / {reg.score()}")
-                emit("[人] 交通入力・元付担当・確認日・キャッチ → 目視 → 『確認画面へ』")
+                # ★キャッチは自由入力しない：実測でSUUMOが特徴項目から組み替えていた
+                #   （入れた文字列が更新画面で『バストイレ別/エアコン/…』に置き換わっていた）。
+                emit("[人] 交通入力・元付担当者名・元付確認日 → 目視 → 『確認画面へ』→『登録』")
+                emit("[人] ★キャッチは入れない（SUUMOが特徴項目から組む・実測）")
             elif line.startswith("verify:"):
                 _, code, jp = line.split(":", 2)
                 rec = json.loads(Path(jp.strip()).read_text(encoding="utf-8"))
