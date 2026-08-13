@@ -1114,12 +1114,25 @@ def serve(reg: Reg, a, log):
                 if not rec["gate"]["ok"]:
                     emit(f"[NG] ゲートで停止: {' / '.join(rec['gate']['block'])}")
                     continue
+                # ★交通が未保存の棟（＝棟の1室目）は、埋めてからモーダルを自動操作して
+                #   交通を作り、その値を棟の交通として保存する。2室目以降は複製で足りる。
                 tp = transit_path(jp, rec["form"]["bukkenNm"])
-                if not tp.is_file():
-                    emit(f"[NG] この棟の交通が未保存（{tp.name}）。"
-                         "1室目で『らくらく交通入力』→ savetransit が必要")
-                    continue
+                first_of_building = not tp.is_file()
                 fng = fill_one(reg, rec, jp, log, tanto=a.tanto)
+                if first_of_building:
+                    emit(f"[情報] この棟の1室目。らくらく交通入力を自動操作する")
+                    lines, tng = auto_transit(reg, log)
+                    if tng:
+                        emit(f"[NG] 交通の自動入力に失敗（{len(tng)}件・登録しない）")
+                        for x in tng:
+                            emit(f"      - {x}")
+                        continue
+                    tp.parent.mkdir(parents=True, exist_ok=True)
+                    tp.write_text(json.dumps(lines, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+                    emit("[OK] 交通を自動入力して保存: " + " / ".join(
+                        f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
+                        f"徒歩{r.get('shoyoTime','')}分" for r in lines))
                 if fng:
                     emit(f"[NG] 埋め込みで未解決 {len(fng)}件（登録しない）")
                     for x in fng:
