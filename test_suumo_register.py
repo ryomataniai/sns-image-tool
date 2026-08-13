@@ -159,6 +159,12 @@ def run(headless=True):
         reg.upload_images(rec["images"], path.parent)
         ng_t = reg.apply_transit(saved)
         _check("複製で未解決なし", not ng_t, str(ng_t[:2]))
+        _check("★etcEnsenekiFlg（他交通機関）をONにしていない",
+               not reg.main.locator(
+                   'input[name="${bukkenInputForm.etcEnsenekiFlg}"]').first.is_checked())
+        _check("交通手段のラジオを複製している（checkedで読めている）",
+               all(r.get("kotsuShudanCd") == "1" for r in saved),
+               str([r.get("kotsuShudanCd") for r in saved]))
         again = reg.read_transit()
         _check("複製後の値が元と一致",
                [{k: r[k] for k in R.TRANSIT_KEYS} for r in again]

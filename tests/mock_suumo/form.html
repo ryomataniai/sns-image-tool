@@ -49,8 +49,14 @@
 <div class="box"><b>交通</b>
  <input type="button" id="rakurakuKotsu" value="らくらく交通入力" onclick="doTransit()">
  <span id="transitState">未入力</span>
- <input type="hidden" name="${bukkenInputForm.etcEnsenekiFlg}">
  <div id="transitFields"></div>
+ <!-- ★罠：交通1〜3とは無関係の「最寄り駅以外で利用できる沿線」。
+      ONにすると沿線名と所要時間が必須になり、空だと確認画面に進めない。
+      実機ではチェックボックスの value 属性("1")を状態と誤読して複製し、ここでエラーになった。 -->
+ <label><input type="checkbox" name="${bukkenInputForm.etcEnsenekiFlg}" value="1">
+  最寄り駅以外で利用できる沿線</label>
+ 沿線名<input name="${bukkenInputForm.etcEnsenekiNm}">
+ 所要時間<input name="${bukkenInputForm.etcShoyoTime}" size="3">
 </div>
 
 <div class="box"><b>お金</b><br>
@@ -177,6 +183,14 @@ var th = document.getElementById('transitFields');
     return (ty === 'hidden' ? '' : k) +
       '<input type="' + ty + '" size="8"' + ro + ' name="${bukkenInputForm.' + k + n + '}">';
   }).join(' ');
+  // ★交通手段のラジオ（1=徒歩 2=バス 3=車）。既定は徒歩。
+  //   状態は checked で読むこと（value は常に最初の選択肢の値を返す）
+  ['1','2','3'].forEach(function(v, k) {
+    var l = document.createElement('label');
+    l.innerHTML = '<input type="radio" name="${bukkenInputForm.kotsuShudanCd' + n + '}" value="' + v + '"' +
+      (v === '1' ? ' checked' : '') + '>' + ['徒歩','バス','車'][k];
+    line.appendChild(l);
+  });
   th.appendChild(line);
 });
 
@@ -285,6 +299,20 @@ function doTransit() {
 }
 
 function goConfirm() {
+  // 他交通機関チェック（実機と同じ検証）
+  var fl = document.getElementsByName('${bukkenInputForm.etcEnsenekiFlg}')[0];
+  if (fl && fl.checked) {
+    var nm = document.getElementsByName('${bukkenInputForm.etcEnsenekiNm}')[0].value;
+    var tm = document.getElementsByName('${bukkenInputForm.etcShoyoTime}')[0].value;
+    if (!nm || !tm) {
+      var box = document.createElement('div');
+      box.id = 'errList';
+      box.style.color = '#c00';
+      box.textContent = '他交通機関チェック 最寄り駅以外で利用できる沿線名を正しく入力して下さい';
+      document.body.insertBefore(box, document.body.firstChild);
+      return;
+    }
+  }
   // 実機の確認画面相当。★サムネイル未表示のまま来た画像は「登録されなかった」ものとして落とす。
   var regd = [], dropped = [];
   SLOTS.forEach(function(s){

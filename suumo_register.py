@@ -87,8 +87,18 @@ def extract_bukken_code(html: str):
 #   逆に7項目とも入れれば、地図位置を触らなくても確認画面を通る（8/13に実証）。
 TRANSIT_KEYS = ("pkgEnsenNmDisp", "pkgEnsenNm", "pkgEnsenCd",
                 "pkgEkiNmDisp", "pkgEkiNm", "pkgEkiCd", "shoyoTime")
+TRANSIT_RADIO = "kotsuShudanCd"         # 交通手段（1=徒歩 2=バス 3=車）。既定は徒歩
 TRANSIT_LINES = ("", "2", "3")          # 交通1〜3
-TRANSIT_FLAG = "etcEnsenekiFlg"
+# ★etcEnsenekiFlg は**交通1〜3とは無関係**の「最寄り駅以外で利用できる沿線」チェックボックス。
+#   ONにすると etcEnsenekiNm（沿線名）と etcShoyoTime（所要時間）が必須になり、
+#   空だと『他交通機関チェック 最寄り駅以外で利用できる沿線名を正しく入力して下さい／
+#   所要時間を入力して下さい』で確認画面に進めない。交通の複製では**触らない**。
+#
+# ★踏んだ原因の記録：チェックボックスの value 属性は checked と無関係に "1" を返す。
+#   1208のフォームを読んだとき etcEnsenekiFlg='1' と見えたのは value であって状態ではなく、
+#   それを「複製すべき値」と誤読した。手動evalでは e.value='1' としただけなので無害だったが、
+#   set_field はチェックボックスと判定して set_checked(True) するので実際にONになった。
+#   → checkbox/radio の状態は必ず checked で読む（value で判断しない）。
 
 
 class Reg:
@@ -520,6 +530,11 @@ class Reg:
             for k in TRANSIT_KEYS:
                 e = self.main.locator(f'[name="{sel_name(k + n)}"]')
                 row[k] = e.first.input_value() if e.count() else ""
+            # 交通手段はラジオ。★checked で読む（value で読むと常に最初の選択肢になる）
+            rs = self.main.locator(f'[name="{sel_name(TRANSIT_RADIO + n)}"]')
+            row[TRANSIT_RADIO] = next(
+                (rs.nth(i).get_attribute("value") for i in range(rs.count())
+                 if rs.nth(i).is_checked()), "")
             if row.get("pkgEkiCd") or row.get("pkgEkiNmDisp"):
                 row["_line"] = n
                 out.append(row)
@@ -530,16 +545,13 @@ class Reg:
         ng = []
         for row in lines:
             n = row.get("_line", "")
-            for k in TRANSIT_KEYS:
+            for k in list(TRANSIT_KEYS) + [TRANSIT_RADIO]:
                 v = row.get(k, "")
                 if v == "":
                     continue
                 ok, got, msg = self.set_field(k + n, v)
                 if not ok:
                     ng.append(f"交通{n or '1'} {k}: 期待={v!r} 実際={got!r} {msg}")
-        ok, got, msg = self.set_field(TRANSIT_FLAG, "1")
-        if not ok:
-            ng.append(f"{TRANSIT_FLAG}: {msg}")
         shown = " / ".join(f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
                            f"徒歩{r.get('shoyoTime','')}分" for r in lines)
         self.log(f"  交通を複製: {shown}")
