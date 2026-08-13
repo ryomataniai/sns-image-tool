@@ -88,6 +88,12 @@ def run(headless=True):
         n_img = reg.visible_delete_buttons()
         _check("可視な削除ボタン数＝画像枚数", n_img == len(rec["images"]),
                f"{n_img}/{len(rec['images'])}")
+        # ★実機は up_del_<slot> / up_del_div_<slot> / db_del_div_<slot> の3系統があり、
+        #   [id^=up_del_] で数えると2倍になる（実機で9枚→18枚と出た）。div_ を除外できているか。
+        raw = reg.main.locator("[id^=up_del_]:visible").count()
+        _check("★[id^=up_del_] の素の数は2倍になる（モックが実機を写している証拠）",
+               raw == 2 * len(rec["images"]), f"素={raw} / 正しい数={n_img}")
+        _check("登録済み画像(db_del_div_)は0枚のまま", reg.visible_db_delete_buttons() == 0)
         # ★実機同様に div.spbtn[title="確認画面へ"] を title で探す（a/input/buttonには無い）
         btn = reg.find_button("確認画面へ")
         _check("『確認画面へ』をtitleで見つけられる", btn is not None)

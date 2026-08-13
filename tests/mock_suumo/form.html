@@ -35,7 +35,8 @@
 
 <div class="box"><b>所在地</b><br>
  〒<input name="yubinNo1" maxlength="3" size="3">-<input name="yubinNo2" maxlength="4" size="4">
- <input type="button" id="btnYubin" value="郵便番号から住所を入力" onclick="fillAddr()"><br>
+ <!-- ★実機は <a id="yubinNoSearch" onclick="addressSearch();"> でinputではない（実機で踏んだ） -->
+ <a id="yubinNoSearch" href="javascript:void(0)" onclick="fillAddr()">郵便番号から住所を入力</a><br>
  <select name="${todofukenCd}"><option value="">選択</option><option value="27">大阪府</option></select>
  <select name="${shigunkuCd}"><option value="">選択</option><option value="100">大阪市</option></select>
  <select name="${chosonCd}"><option value="">選択</option><option value="120">西区</option></select>
@@ -171,10 +172,18 @@ SLOTS.forEach(function(s){
     catHtml = 'カテゴリ<select name="' + s.cat + '" id="' + s.slot + 'Category"><option value="">選択して下さい</option>' +
       CATS.map(function(c){ return '<option value="' + c + '">' + c + '</option>'; }).join('') + '</select> ';
   }
+  // ★実機は削除系のidが3系統ある（2026-08-13実測）。1系統だけのモックだと
+  //   [id^=up_del_] が2倍に当たるバグをオフラインで捕まえられない（実機で9枚→18枚と出た）。
+  //     up_del_<slot>      登録予定画像の削除ボタン
+  //     up_del_div_<slot>  その入れ物（同時に可視化される）
+  //     db_del_div_<slot>  登録済み画像の削除（更新画面用・新規では常に非表示）
   d.innerHTML = '●' + s.label + ' ' + catHtml +
     '<input type="file" id="file_up_' + s.slot + '" name="' + s.slot + 'File">' +
-    '<input type="button" class="hid" id="up_del_' + s.slot + '" value="削除" ' +
-      'onclick="deleteUploadGazo(\'' + s.slot + '\',\'' + s.label + '\',\'1\')">' +
+    '<span class="hid" id="up_del_div_' + s.slot + '">' +
+      '<input type="button" class="hid" id="up_del_' + s.slot + '" value="削除" ' +
+        'onclick="deleteUploadGazo(\'' + s.slot + '\',\'' + s.label + '\',\'1\')">' +
+    '</span>' +
+    '<span class="hid" id="db_del_div_' + s.slot + '"><input type="button" value="登録済み削除"></span>' +
     '<img class="hid" id="thumb_' + s.slot + '" width="40" height="40">';
   host.appendChild(d);
 });
@@ -187,6 +196,7 @@ document.addEventListener('change', function(e){
     var slot = e.target.id.replace('file_up_', '');
     setTimeout(function(){
       document.getElementById('up_del_' + slot).classList.remove('hid');
+      document.getElementById('up_del_div_' + slot).classList.remove('hid');
       document.getElementById('thumb_' + slot).classList.remove('hid');
       recalcScore();
     }, THUMB_DELAY_MS);
@@ -204,6 +214,7 @@ function deleteGazo(action, slot, label, flg) {
   var f = document.getElementById('file_up_' + slot);
   f.value = '';
   document.getElementById('up_del_' + slot).classList.add('hid');
+  document.getElementById('up_del_div_' + slot).classList.add('hid');
   document.getElementById('thumb_' + slot).classList.add('hid');
   var sel = document.getElementById(slot + 'Category');
   if (sel) sel.value = '';

@@ -88,24 +88,53 @@ class Reg:
         return self.main.locator(f'[name="{sel_name(key)}"]')
 
     # ── 検査 ────────────────────────────────────────────────────
+    # ★実測（2026-08-13・実機で踏んだ）：削除系のidは3系統ある。
+    #   up_del_<slot>      … 登録予定画像（アップしたがまだ登録していない）の削除ボタン ← これを数える
+    #   up_del_div_<slot>  … その入れ物のdiv（同時に可視化される）
+    #   db_del_div_<slot>  … **登録済み**画像の削除（更新画面で使う。U4のコピー登録で必要になる）
+    #   [id^=up_del_] だと up_del_ と up_del_div_ の両方に当たり、枚数が**2倍**になる
+    #   （9枚投入して18枚と出た）。div_ を除外して数える。
+    UPDEL = '[id^="up_del_"]:not([id^="up_del_div_"])'
+    DBDEL = '[id^="db_del_div_"]'
+
     def visible_delete_buttons(self):
-        """可視な up_del_* の数＝アップ済み画像の枚数。
-        ★実測：各枠に up_del_<slot> が常設され、画像がある枠だけ可視になる。
-          サムネイル表示の完了もこれで判定できる（サムネと同時に可視化される）。"""
-        return self.main.locator("[id^=up_del_]:visible").count()
+        """可視な登録予定画像の削除ボタン数＝アップ済み（未登録）画像の枚数。
+        サムネイル表示の完了もこれで判定できる（サムネと同時に可視化される）。"""
+        return self.main.locator(f"{self.UPDEL}:visible").count()
+
+    def visible_db_delete_buttons(self):
+        """可視な**登録済み**画像の削除ボタン数（更新画面／コピー登録で残っている画像の数）。"""
+        return self.main.locator(f"{self.DBDEL}:visible").count()
+
+    def wait_form_ready(self, timeout_ms=20000):
+        """フォームの描画完了を待つ。★click_menu の固定待ちだけでは、描画途中のDOMを読んで
+        『空だから新規フォーム』と誤判定しうる（画像18枚事故の一因）。物件名の欄が現れ、
+        削除ボタンの数が2回続けて同じになるまで待つ。"""
+        self.main.locator(f'[name="{sel_name("bukkenNm")}"]').wait_for(
+            state="attached", timeout=timeout_ms)
+        prev = -1
+        for _ in range(12):
+            cur = self.visible_delete_buttons() + self.visible_db_delete_buttons()
+            if cur == prev:
+                return
+            prev = cur
+            self.page.wait_for_timeout(500)
 
     def assert_fresh_form(self):
         """罠1：新規フォームが前物件の内容を引き継いでいないこと。
-        物件名が空・特徴項目0件・画像0枚を実DOMで確認する（画面の見た目では判断しない）。"""
+        物件名が空・特徴項目0件・画像0枚（登録予定＋登録済みの両方）を実DOMで確認する。"""
+        self.wait_form_ready()
         nm = self.loc("bukkenNm").input_value()
         tok = self.main.locator(
             'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').count()
         img = self.visible_delete_buttons()
-        self.log(f"  フォーム初期状態: 物件名={nm!r} 特徴項目={tok}件 画像={img}枚")
-        if nm or tok or img:
+        dbimg = self.visible_db_delete_buttons()
+        self.log(f"  フォーム初期状態: 物件名={nm!r} 特徴項目={tok}件 "
+                 f"登録予定画像={img}枚 登録済み画像={dbimg}枚")
+        if nm or tok or img or dbimg:
             raise RuntimeError(
-                f"新規フォームが空でない（物件名={nm!r}／特徴項目{tok}件／画像{img}枚）。"
-                "前物件の内容が残っている可能性があるので中止する")
+                f"新規フォームが空でない（物件名={nm!r}／特徴項目{tok}件／"
+                f"登録予定{img}枚／登録済み{dbimg}枚）。前物件の内容が残っている可能性があるので中止する")
 
     # ── 入力 ────────────────────────────────────────────────────
     def set_field(self, key, value):
@@ -160,10 +189,18 @@ class Reg:
         """郵便番号 →「郵便番号から住所を入力」→ 丁目を選ぶ（§3-3：郵便番号入力が確実）。"""
         if not form.get("yubinNo1"):
             return ["郵便番号が無いため住所を入れられない"]
-        btn = self.main.locator('input[type=button][value*="郵便番号"]')
-        if btn.count() == 0:
-            return ["『郵便番号から住所を入力』ボタンが見つからない"]
-        btn.first.click()
+        # ★実測（2026-08-13）：<a id="yubinNoSearch" onclick="addressSearch();">郵便番号から住所を入力</a>
+        #   input ではなく **Aタグ**。input[type=button][value*=...] では一致しない（実機で踏んだ）。
+        btn = None
+        for sel in ('#yubinNoSearch', 'a[onclick*="addressSearch"]',
+                    'a:has-text("郵便番号から住所を入力")'):
+            loc = self.main.locator(sel)
+            if loc.count() and loc.first.is_visible():
+                btn = loc.first
+                break
+        if btn is None:
+            return ["『郵便番号から住所を入力』が見つからない（#yubinNoSearch を確認）"]
+        btn.click()
         self.page.wait_for_timeout(1200)
         got = {k: self.main.locator(f'[name="${{{k}}}"]').input_value()
                for k in ("todofukenCd", "shigunkuCd", "chosonCd")
@@ -185,11 +222,16 @@ class Reg:
             e.first.check()
             if not e.first.is_checked():
                 ng.append(f"特徴項目コード {c} をチェックできなかった")
-        got = self.main.locator(
-            'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').count()
-        self.log(f"  特徴項目: {got}/{len(codes)}件チェック")
-        if got != len(codes):
-            ng.append(f"特徴項目のチェック数が合わない（期待{len(codes)}／実際{got}）")
+        checked = self.main.evaluate("""() => Array.from(document.querySelectorAll(
+            'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked')).map(e => e.value)""")
+        self.log(f"  特徴項目: {len(checked)}/{len(codes)}件チェック")
+        if sorted(checked) != sorted(codes):
+            extra = sorted(set(checked) - set(codes))
+            miss = sorted(set(codes) - set(checked))
+            # ★数だけ出すと原因が追えない。余った/足りないコードを列挙する
+            #   （実機で17/16になった。サイト側が関連項目を自動チェックする可能性がある）
+            ng.append(f"特徴項目が一致しない（期待{len(codes)}／実際{len(checked)}"
+                      f"／余り{extra}／不足{miss}）")
         return ng
 
     # ── 画像 ────────────────────────────────────────────────────
@@ -207,7 +249,7 @@ class Reg:
         self.log(f"  既存画像 {n0}枚 を削除する")
         guard = 0
         while self.visible_delete_buttons() > 0 and guard < 40:
-            self.main.locator("[id^=up_del_]:visible").first.click()
+            self.main.locator(f"{self.UPDEL}:visible").first.click()
             self.page.wait_for_timeout(400)
             guard += 1
         left = self.visible_delete_buttons()
@@ -528,10 +570,15 @@ def serve(reg: Reg, a, log):
     res = Path(a.result_file)
     res.parent.mkdir(parents=True, exist_ok=True)
 
+    t_start = time.time()
+
     def emit(text):
-        log(text)
+        # ★経過秒を必ず付ける。「即終了したのか待ってから終了したのか」がログで区別できないと
+        #   原因の切り分けができない（実際にこれで詰まった）。
+        line = f"[{time.time() - t_start:6.1f}s] {text}"
+        log(line)
         with res.open("a", encoding="utf-8") as f:
-            f.write(text + "\n")
+            f.write(line + "\n")
 
     # ログイン待ち（この1回だけ）
     reg.page.goto(a.url, wait_until="load")
@@ -539,10 +586,20 @@ def serve(reg: Reg, a, log):
         emit(f"[待機] ログイン画面です。この窓でログインしてください（最大{a.login_wait}秒）")
         emit("[待機] ★タブは増やさないこと（罠3＝2タブでセッションが壊れる）")
         t0 = time.time()
-        while reg.page.frame(name="navi") is None and time.time() - t0 < a.login_wait:
+        n = 0
+        while time.time() - t0 < a.login_wait:
+            if reg.page.is_closed():
+                emit("[NG] ブラウザの窓が閉じられました（再実行してください）")
+                return 2
+            if reg.page.frame(name="navi") is not None:
+                break
             reg.page.wait_for_timeout(2000)
+            n += 1
+            if n % 15 == 0:
+                emit(f"[待機] まだログイン画面です（{time.time()-t0:.0f}秒経過 / "
+                     f"上限{a.login_wait}秒）")
     if reg.page.frame(name="navi") is None:
-        emit("[NG] ログインを確認できませんでした")
+        emit(f"[NG] ログインを確認できませんでした（{time.time()-t_start:.0f}秒待った）")
         return 2
     emit("[OK] ログイン確認。コマンド待機に入ります（ブラウザは開いたままにします）")
 
@@ -585,6 +642,21 @@ def serve(reg: Reg, a, log):
                         emit(f"      - {x}")
                 else:
                     emit(f"[OK] {rec['key']} 照合PASS（全項目一致）")
+            elif line.startswith("eval:"):
+                # ★診断用。常駐を止めずに現在の画面を読めるようにする
+                #   （選択子を1つ直すたびに再起動＝再ログインになるのを避けるため）。
+                js = line[5:]
+                emit(f"[情報] eval → {reg.main.evaluate(js)!r}"[:1500])
+            elif line.startswith("cleanup"):
+                # 汚れたフォームを空に戻す（画像を全削除し、特徴項目のチェックを全部外す）
+                reg.delete_all_images()
+                reg.main.evaluate("""() => document.querySelectorAll(
+                    'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked')
+                    .forEach(e => e.click())""")
+                n_tok = reg.main.evaluate("""() => document.querySelectorAll(
+                    'input[name="${bukkenInputForm.categoryTokuchoCd}"]:checked').length""")
+                emit(f"[OK] cleanup 完了（登録予定画像{reg.visible_delete_buttons()}枚／"
+                     f"特徴項目{n_tok}件）")
             elif line.startswith("buttons"):
                 emit("[情報] 画面のボタン一覧")
                 for b in reg.dump_buttons():
