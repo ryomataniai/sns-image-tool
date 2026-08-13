@@ -574,13 +574,29 @@ class Reg:
         ng = []
         for row in lines:
             n = row.get("_line", "")
-            for k in list(TRANSIT_KEYS) + [TRANSIT_RADIO]:
+            for k in TRANSIT_KEYS:
                 v = row.get(k, "")
                 if v == "":
                     continue
                 ok, got, msg = self.set_field(k + n, v)
                 if not ok:
                     ng.append(f"交通{n or '1'} {k}: 期待={v!r} 実際={got!r} {msg}")
+            # 交通手段（徒歩/バス/車）。★モーダル経由でないと表示されないため、複製では
+            #   触れないことがある。既定は徒歩(1)で、既にその値なら触る必要がない。
+            #   バス(2)・車(3)を入れられない場合だけ本当の問題として報告する。
+            want = row.get(TRANSIT_RADIO, "")
+            if want:
+                cur = self.main.locator(f'[name="{sel_name(TRANSIT_RADIO + n)}"]')
+                now = next((cur.nth(i).get_attribute("value") for i in range(cur.count())
+                            if cur.nth(i).is_checked()), "")
+                if now != want:
+                    ok, got, msg = self.set_field(TRANSIT_RADIO + n, want)
+                    if not ok:
+                        if want == "1":
+                            self.log(f"    交通{n or '1'} 手段は既定の徒歩のまま（{msg}）")
+                        else:
+                            ng.append(f"交通{n or '1'} 手段: 期待={want}（徒歩以外）"
+                                      f" 実際={now or '未選択'} {msg}")
         shown = " / ".join(f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
                            f"徒歩{r.get('shoyoTime','')}分" for r in lines)
         self.log(f"  交通を複製: {shown}")
@@ -735,6 +751,131 @@ def derived_allowed(form: dict) -> dict:
         if str(form.get(key, "")) in ok_vals:
             out[code] = why
     return out
+
+
+def auto_transit(reg: Reg, log, slots=3):
+    """『らくらく交通入力』のモーダルを操作して交通を入れる。→ (入った行, 未解決の一覧)。
+
+    ■モーダルの構造（2026-08-13実測 COM1R02161.action「らくらく交通入力」）
+      ・**地図の位置から候補（沿線・駅・徒歩分数）を算出して並べる画面**。
+        候補1 沿線 地下鉄中央線 駅 阿波座 駅から 徒歩6分 … のように4件前後。
+      ・ラジオは枠×候補のグリッド： name=koutu1/koutu2/koutu3（＝交通1/2/3の枠）、
+        id=koutu_<枠>-<候補>（例 koutu_1-2 は「交通1の枠に候補2を入れる」）。
+        「※同一候補は選択できません」＝1候補は1枠にしか割り当てられない。
+      ・登録は <img id="registButton" alt="　　登　録　　">。
+    ■なぜモーダルを使うか
+      徒歩分数はSUUMOが地図から算出する。マイソクの数字を転記すると実際より近く表示され得る
+      （実測：マイソク6/6/6分に対しSUUMOの算出は9/8/11分）。転記せずモーダルに計算させる。
+    ■既定の割り当ては 候補1→交通1 / 候補2→交通2 / 候補3→交通3（候補の並び順）。
+      選んだ結果は必ずログに出し、親フォームに実際に入った値で検証する（黙って空にしない）。
+    """
+    ng = []
+    btn = reg.main.locator('#rakurakuKotsu')
+    if btn.count() == 0:
+        return [], ["#rakurakuKotsu が無い（新規登録フォームを開いてから実行する）"]
+    with reg.page.context.expect_page(timeout=25000) as pi:
+        btn.first.click()
+    pop = pi.value
+    try:
+        pop.wait_for_load_state("load")
+        for _ in range(30):
+            if pop.evaluate("() => document.querySelectorAll('input[type=radio]').length"):
+                break
+            pop.wait_for_timeout(500)
+        cands = pop.evaluate("""() => {
+            const out = [];
+            document.querySelectorAll('tr').forEach(tr => {
+                const t = (tr.innerText || '').replace(/\s+/g, ' ').trim();
+                const m = t.match(/候補(\d+)/);
+                if (m && /沿線|徒歩/.test(t)) out.push({no: m[1], text: t.slice(0, 70)});
+            });
+            return out;
+        }""")
+        log(f"  モーダルの候補 {len(cands)}件")
+        for c in cands:
+            log(f"    {c['text']}")
+        n_avail = pop.evaluate(
+            "() => document.querySelectorAll('input[name=koutu1]').length")
+        picked = []
+        for slot in range(1, slots + 1):
+            cand = slot            # 候補1→交通1, 候補2→交通2, 候補3→交通3
+            el = pop.locator(f"#koutu_{slot}-{cand}")
+            if el.count() == 0 or not el.first.is_visible():
+                log(f"    交通{slot}: 候補{cand} の選択肢が無い（この枠は空のまま）")
+                continue
+            el.first.check()
+            picked.append((slot, cand))
+        if not picked:
+            ng.append(f"モーダルで候補を1つも選べなかった（候補数={n_avail}）")
+            pop.close()
+            return [], ng
+        log(f"  割り当て: " + " / ".join(f"交通{s}←候補{c}" for s, c in picked))
+        rb = pop.locator('#registButton')
+        if rb.count() == 0:
+            ng.append("モーダルの登録ボタン（#registButton）が無い")
+            pop.close()
+            return [], ng
+        rb.first.click()
+        # ★「ポップアップが閉じるのを待つ」ではなく「**親フォームに値が入るのを待つ**」。
+        #   実測：閉じるのを15秒待って強制クローズしたら、rakurakuKotsuCacheFlg は 0→1 に
+        #   なったのに親フォームの交通は空だった＝反映のコールバックを自分で殺していた。
+        #   反映は親フォーム側で起きるので、そこを合否の条件にする。
+        filled = False
+        for _ in range(50):                       # 最大25秒
+            reg.page.wait_for_timeout(500)
+            try:
+                if reg.main.locator(
+                        f'[name="{sel_name("pkgEkiNmDisp")}"]').first.input_value():
+                    filled = True
+                    break
+            except Exception:  # noqa: BLE001  親フォームが再描画中は読めないことがある
+                pass
+        if not filled and not pop.is_closed():
+            # 反映されない＝モーダル側に何か出ている可能性。状態を記録してから閉じる
+            try:
+                log(f"  モーダルの状態: url={pop.url[-40:]} title={pop.title()!r}")
+                txt = pop.evaluate("() => (document.body.innerText||'').replace(/\s+/g,' ')")
+                log(f"  モーダル本文: {txt[:220]}")
+                # ★登録を押すと2ページ目（COM1R02161 → COM1R02162）に遷移していた。
+                #   もう一段あるので、次に押すものを実際に見る（推測でクリックしない）。
+                btns = pop.evaluate(
+                    "() => { const vis = e => { const r = e.getBoundingClientRect();"
+                    " return r.width > 0 && r.height > 0; };"
+                    " return Array.from(document.querySelectorAll("
+                    "'img,input[type=image],input[type=button],input[type=submit],"
+                    "div.spbtn,a[onclick],button')).filter(vis)"
+                    ".map(e => [e.tagName, e.id||'', e.alt||'', e.value||'',"
+                    " (e.className||'').toString().slice(0,16),"
+                    " (e.getAttribute('onclick')||'').slice(0,44)].join('|')); }")
+                log("  モーダルのボタン:")
+                for b in btns:
+                    log(f"    {b}")
+                sel = pop.evaluate(
+                    "() => Array.from(document.querySelectorAll('input[type=radio]'))"
+                    ".filter(e => e.checked).map(e => e.id || e.name)")
+                log(f"  選択済みのラジオ: {sel}")
+            except Exception as e2:  # noqa: BLE001
+                log(f"  モーダル診断で例外: {type(e2).__name__}: {str(e2)[:80]}")
+        if not pop.is_closed():
+            pop.close()
+    except Exception as e:  # noqa: BLE001
+        try:
+            pop.close()
+        except Exception:  # noqa: BLE001
+            pass
+        return [], [f"モーダル操作で失敗: {type(e).__name__}: {str(e)[:120]}"]
+    reg.page.wait_for_timeout(2500)
+    lines = reg.read_transit()
+    if not lines:
+        ng.append("モーダル操作後も親フォームの交通が空（登録が反映されていない）")
+    else:
+        log("  親フォームの交通: " + " / ".join(
+            f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
+            f"徒歩{r.get('shoyoTime','')}分" for r in lines))
+        for r in lines:
+            if not r.get("shoyoTime"):
+                ng.append(f"交通{r.get('_line') or '1'} の所要時間が空")
+    return lines, ng
 
 
 def submit_room(reg: Reg, log, expect_images=None):
@@ -997,6 +1138,76 @@ def serve(reg: Reg, a, log):
                         emit(f"      - {x}")
                 else:
                     emit(f"[OK] {rec['key']} 完了 コード={code} 照合PASS")
+            elif line.startswith("autotransit:"):
+                jp = Path(line.split(":", 1)[1].strip())
+                rec = json.loads(jp.read_text(encoding="utf-8"))
+                emit(f"[開始] autotransit {rec['key']}")
+                lines, tng = auto_transit(reg, log)
+                if tng:
+                    emit(f"[NG] 交通の自動入力に失敗（{len(tng)}件）")
+                    for x in tng:
+                        emit(f"      - {x}")
+                else:
+                    tp = transit_path(jp, rec["form"]["bukkenNm"])
+                    tp.parent.mkdir(parents=True, exist_ok=True)
+                    tp.write_text(json.dumps(lines, ensure_ascii=False, indent=2),
+                                  encoding="utf-8")
+                    emit(f"[OK] 交通を自動入力して保存 {tp.name}: " + " / ".join(
+                        f"{r.get('pkgEnsenNmDisp','')} {r.get('pkgEkiNmDisp','')} "
+                        f"徒歩{r.get('shoyoTime','')}分" for r in lines))
+            elif line.startswith("modalrecon"):
+                # 『らくらく交通入力』のポップアップを開いて構造を読む（読み取りのみ）。
+                # ★ポップアップは新しいpageとして開くので、context側で受け取る必要がある。
+                #   serveのreg.pageからは見えない＝専用のコマンドにする。
+                before = set(id(pg) for pg in reg.page.context.pages)
+                btn = reg.main.locator('#rakurakuKotsu')
+                if btn.count() == 0:
+                    emit("[NG] #rakurakuKotsu が無い（新規登録フォームを開いてから実行する）")
+                else:
+                    with reg.page.context.expect_page(timeout=20000) as pi:
+                        btn.first.click()
+                    pop = pi.value
+                    pop.wait_for_load_state("load")
+                    # ★JSで描画されるので load だけでは空。中身が出るまで待つ。
+                    for _ in range(20):
+                        n = pop.evaluate("() => document.querySelectorAll('input,select').length")
+                        if n:
+                            break
+                        pop.wait_for_timeout(500)
+                    n_el = pop.evaluate("() => document.querySelectorAll('*').length")
+                    emit(f"[情報] モーダル url={pop.url[-52:]} title={pop.title()!r} "
+                         f"要素数={n_el}")
+                    try:
+                        pop.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    info = pop.evaluate("""() => {
+                        const vis = e => { const r = e.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0; };
+                        const f = Array.from(document.querySelectorAll('input,select'))
+                          .filter(vis)
+                          .filter(e => (e.type||'') !== 'password')
+                          .map(e => ({tag:e.tagName, type:e.type||'', name:(e.name||'').slice(0,46),
+                                      id:e.id||'', opts: e.tagName==='SELECT'? e.options.length : null,
+                                      ro: e.readOnly ? 1 : 0}));
+                        const b = Array.from(document.querySelectorAll('input[type=image],input[type=button],img,div.spbtn,a[onclick]'))
+                          .filter(vis)
+                          .map(e => [e.tagName, e.id||'', e.alt||'', e.value||'',
+                                     (e.className||'').toString().slice(0,18),
+                                     (e.getAttribute('onclick')||'').slice(0,38)].join('|'));
+                        return {欄: f.slice(0,26), ボタン: b.slice(0,18),
+                                本文: (document.body.innerText||'').replace(/\s+/g,' ').slice(0,240),
+                                frames: window.frames.length};
+                    }""")
+                    for k, v in info.items():
+                        if isinstance(v, list):
+                            emit(f"[情報] {k}:")
+                            for x in v:
+                                emit(f"      {x}")
+                        else:
+                            emit(f"[情報] {k}: {v}")
+                    pop.close()
+                    emit("[OK] モーダルを閉じた（何も変更していない）")
             elif line.startswith("eval:"):
                 # ★診断用。常駐を止めずに現在の画面を読めるようにする
                 #   （選択子を1つ直すたびに再起動＝再ログインになるのを避けるため）。
