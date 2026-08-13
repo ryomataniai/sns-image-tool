@@ -1,0 +1,6 @@
+<!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>登録完了 [MOCK]</title></head><body>
+<h3>登録が完了しました</h3>
+<p id="code">物件コード:<span id="codeval"></span></p>
+<script>
+document.getElementById('codeval').textContent = sessionStorage.getItem('mock_code') || '';
+</script></body></html>

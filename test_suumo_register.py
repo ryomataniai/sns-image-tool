@@ -88,7 +88,10 @@ def run(headless=True):
         n_img = reg.visible_delete_buttons()
         _check("可視な削除ボタン数＝画像枚数", n_img == len(rec["images"]),
                f"{n_img}/{len(rec['images'])}")
-        reg.main.locator("#kakunin").click()
+        # ★実機同様に div.spbtn[title="確認画面へ"] を title で探す（a/input/buttonには無い）
+        btn = reg.find_button("確認画面へ")
+        _check("『確認画面へ』をtitleで見つけられる", btn is not None)
+        btn.click()
         page.wait_for_timeout(900)
         # ★確認画面は main フレーム内に遷移する（topのDOMには出ない）。
         #   実機も frameset なので、読み取り先を間違えると「取れない」ではなく「待ち続ける」。
@@ -105,6 +108,15 @@ def run(headless=True):
         tok = [x for x in conf.locator("#res_tokucho").inner_text().split(",") if x]
         _check("特徴項目が全部渡っている", sorted(tok) == sorted(rec["tokucho"]),
                f"{len(tok)}/{len(rec['tokucho'])}件")
+        # 確認画面の「登録」も同じ方式で見つかること＋完了画面から物件コードを取れること
+        rb = reg.find_button("登録")
+        _check("確認画面の『登録』をtitleで見つけられる", rb is not None,
+               str([b["title"] for b in reg.dump_buttons()]))
+        if rb is not None:
+            rb.click()
+            page.wait_for_timeout(700)
+            code = R.extract_bukken_code(reg.main.content())
+            _check("完了画面から物件コード(12桁)を取れる", bool(code) and len(code) == 12, str(code))
 
         # ── B. 前室の画像が残っていたら投入しない ──────────────────
         print("\n▶ B. 前室の画像が残っていたら投入せず止まること")

@@ -1,6 +1,11 @@
 <!DOCTYPE html><html lang="ja"><head><meta charset="utf-8"><title>確認画面 [MOCK]</title></head><body>
-<h3>確認画面（モック）</h3>
+<h3>入力内容確認</h3>
 <div id="out">読み込み中</div>
+<!-- ★実機の「登録」もDIV＋スプライト（8/12はテキストで見つからず座標クリックしていた） -->
+<div id="regButton3" class="spbtn btn_a_b_touroku" title="登録" onclick="doReg()"
+     style="display:inline-block;border:1px solid #999;padding:4px 10px;cursor:pointer">登録</div>
+<div id="regButton4" class="spbtn btn_a_b_modoru" title="修正する" onclick="history.back()"
+     style="display:inline-block;border:1px solid #999;padding:4px 10px;cursor:pointer">修正する</div>
 <script>
 var r = JSON.parse(sessionStorage.getItem('mock_result') || '{}');
 document.getElementById('out').innerHTML =
@@ -10,5 +15,12 @@ document.getElementById('out').innerHTML =
   '<div id="res_tokucho">' + (r.tokucho||[]).join(',') + '</div>' +
   '<div id="res_score">' + (r.score||'') + '</div>' +
   '<div id="res_transit">' + (r.transit||'') + '</div>' +
-  '<p>登録画像 ' + (r.registered||[]).length + '枚 / ★未登録(サムネ未表示) ' + (r.dropped||[]).length + '枚</p>';
+  '<p>登録画像 ' + (r.registered||[]).length + '枚 / \u2605未登録(サムネ未表示) ' + (r.dropped||[]).length + '枚</p>';
+function doReg() {
+  // 12桁の物件コードを払い出す（実機の完了画面の表記に合わせる）
+  var code = '4' + String(Math.abs(hash(r.bukkenNm||'x'))).padStart(11,'0').slice(0,11);
+  sessionStorage.setItem('mock_code', code);
+  location.href = 'done.html';
+}
+function hash(s){ var h=0; for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0;} return h; }
 </script></body></html>

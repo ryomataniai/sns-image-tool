@@ -40,7 +40,8 @@
  <select name="${shigunkuCd}"><option value="">選択</option><option value="100">大阪市</option></select>
  <select name="${chosonCd}"><option value="">選択</option><option value="120">西区</option></select>
  <select name="${azaCd}"><option value="">選択</option>
-   <option value="002">２丁目</option><option value="005">５丁目</option></select>
+   <option value="001">１丁目</option><option value="002">２丁目</option>
+   <option value="005">５丁目</option></select>
  番地<input name="${bukkenInputForm.banchiNm}" maxlength="30">
 </div>
 
@@ -118,8 +119,12 @@
 </div>
 
 <div class="box">
- <input type="button" id="chudan" value="作業中断" onclick="alert('中断')">
- <input type="button" id="kakunin" value="確認画面へ" onclick="goConfirm()">
+ <!-- ★実機のボタンは input ではなく DIV＋CSSスプライト背景で、title属性が唯一の手掛かり。
+      a/input/button をテキストで探すと見つからない（8/12は座標クリックで押していた）。 -->
+ <div id="saveDraftBtn" class="ichijiTourokuButton btn_save_draft"
+      onclick="alert('中断')" style="display:inline-block;border:1px solid #999;padding:4px 8px;cursor:pointer">作業中断</div>
+ <div id="regButton2" class="spbtn btn_a_b_kakunin" title="確認画面へ"
+      onclick="goConfirm()" style="display:inline-block;border:1px solid #999;padding:4px 8px;cursor:pointer">確認画面へ</div>
 </div>
 </form>
 

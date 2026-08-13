@@ -62,6 +62,14 @@ CAT_SELECT = {
 }
 
 
+def extract_bukken_code(html: str):
+    """登録完了画面のHTMLから物件コード（12桁）を取り出す。無ければ None。
+    ★表記は8/12の実測 `物件コード:(\d{12})`。タグや空白が挟まっても拾えるように緩めに当てる。"""
+    import re
+    m = re.search(r"物件コード\s*[:：]?\s*(?:<[^>]+>\s*)*(\d{12})", html)
+    return m.group(1) if m else None
+
+
 class Reg:
     def __init__(self, page, log):
         self.page = page
@@ -285,6 +293,69 @@ class Reg:
                     ng.append(f"{key}: 期待={value!r} 実際={got!r}")
         return ng
 
+    # ── ボタン ──────────────────────────────────────────────────
+    #  ★実機のボタンは <input>/<button> ではなく **DIV＋CSSスプライト背景**：
+    #      <div id="regButton2" class="spbtn btn_a_b_kakunin" title="確認画面へ">確認画面へ</div>
+    #    そのため a/input/button をテキストで探すと永久に見つからない（8/12は座標で押していた）。
+    #    唯一安定した手掛かりは **title属性**。id も併用する（regButton2 等）。
+    BTN_SELECTORS = (
+        'div.spbtn[title="{t}"]', 'div[title="{t}"]', '[title="{t}"]',
+        'input[value="{t}"]', 'button:has-text("{t}")',
+    )
+
+    def find_button(self, title):
+        """title（画面の文字）でボタンを探す。見つからなければ None。"""
+        for pat in self.BTN_SELECTORS:
+            loc = self.main.locator(pat.format(t=title))
+            for i in range(loc.count()):
+                if loc.nth(i).is_visible():
+                    return loc.nth(i)
+        return None
+
+    def dump_buttons(self):
+        """画面のボタン相当（div.spbtn / input[type=button] / button）を一覧で返す。
+        ★未知の画面（確認画面・完了画面）でどれを押すかを人が決めるための材料。
+          推測でクリックしないための道具なので、押す前に必ずこれを出す。"""
+        return self.main.evaluate("""() => {
+            const vis = (e) => { const r = e.getBoundingClientRect(),
+                s = getComputedStyle(e);
+              return s.display!=='none' && s.visibility!=='hidden' && r.width>0 && r.height>0; };
+            return Array.from(document.querySelectorAll(
+                'div.spbtn,[class*="btn_"],input[type=button],input[type=submit],input[type=image],button,a[onclick]'))
+              .filter(vis)
+              .map(e => ({tag:e.tagName, id:e.id||'', cls:(e.className||'').toString().slice(0,40),
+                          title:e.title||'', text:(e.textContent||'').trim().slice(0,20),
+                          value:e.value||'', onclick:(e.getAttribute('onclick')||'').slice(0,60)}));
+        }""")
+
+    def fill_aza(self, chome):
+        """丁目を ${azaCd} で選ぶ。★azaCd はゼロ埋め3桁（8/12実測：005=５丁目）。
+        全角数字・漢数字も来るので半角数字に寄せてから詰める。取れなければ選ばない（人に返す）。"""
+        if not chome:
+            return []
+        z = str(chome).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        kan = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+               "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        n = None
+        m = __import__("re").search(r"\d+", z)
+        if m:
+            n = int(m.group(0))
+        elif z.strip() in kan:
+            n = kan[z.strip()]
+        if n is None:
+            return [f"丁目『{chome}』を数字にできない（azaCdは人が選ぶ）"]
+        code = str(n).zfill(3)
+        sel = self.main.locator('[name="${azaCd}"]')
+        if sel.count() == 0:
+            return ["${azaCd} のselectが無い"]
+        opts = sel.first.evaluate("e => Array.from(e.options).map(o => o.value)")
+        if code not in opts:
+            return [f"丁目コード {code}（{chome}丁目）が選択肢に無い: {opts[:8]}"]
+        sel.first.select_option(code)
+        got = sel.first.input_value()
+        self.log(f"  丁目: {chome}丁目 → azaCd={code}" + ("" if got == code else f" ★実際={got}"))
+        return [] if got == code else [f"azaCd を {code} にできなかった（実際 {got}）"]
+
     def score(self):
         """画面の名寄せスコア表示を読む（実フォームの左上にある）。"""
         try:
@@ -321,6 +392,10 @@ def main(argv=None):
     ap.add_argument("--login-wait", type=int, default=600, help="--login でのログイン待ち上限秒")
     ap.add_argument("--keep-open", type=int, default=0,
                     help="処理後にブラウザを開いたまま保つ秒数（人が交通入力・確認をする時間）")
+    ap.add_argument("--dump-buttons", action="store_true",
+                    help="画面のボタン一覧を出す（未知の画面でどれを押すか人が決めるため）")
+    ap.add_argument("--to-confirm", action="store_true",
+                    help="埋め込みが全部通ったら『確認画面へ』まで押す（★最終の『登録』は押さない）")
     ap.add_argument("--skip-fresh-check", action="store_true",
                     help="フォームが空であることの検証を飛ばす（既定はしない＝罠1の防止）")
     a = ap.parse_args(argv)
@@ -381,8 +456,7 @@ def main(argv=None):
             ng = reg.fill_form(rec["form"])
             log("③ 住所（郵便番号から自動入力）")
             ng += reg.fill_address(rec["form"])
-            if rec["form"].get("_chome"):
-                log(f"  ⚠ 丁目は『{rec['form']['_chome']}丁目』。azaCd の対応は実機で人が選ぶ")
+            ng += reg.fill_aza(rec["form"].get("_chome"))
 
             log("④ 特徴項目")
             ng += reg.check_tokucho(rec["tokucho"])
@@ -406,6 +480,29 @@ def main(argv=None):
                 rc = 1
             else:
                 log("\n✅ 埋め込みと照合はすべて通りました")
+
+            if a.dump_buttons:
+                log("\n【画面のボタン一覧】")
+                for b in reg.dump_buttons():
+                    log(f"   {b['tag']:<6} id={b['id']:<16} title={b['title']:<14} "
+                        f"text={b['text']:<14} cls={b['cls'][:28]}")
+
+            if a.to_confirm and not ng:
+                btn = reg.find_button("確認画面へ")
+                if btn is None:
+                    log("★『確認画面へ』が見つからない（div.spbtn[title] を確認すること）")
+                    for b in reg.dump_buttons():
+                        log(f"   {b['tag']} id={b['id']} title={b['title']} text={b['text']}")
+                    rc = rc or 1
+                else:
+                    log("⑦ 『確認画面へ』を押す（★最終の『登録』は押しません）")
+                    btn.click()
+                    page.wait_for_timeout(4000)
+                    log(f"  遷移先: {reg.main.url[-46:]}")
+                    log("\n【確認画面のボタン一覧】★どれが『登録』かを人が確認してください")
+                    for b in reg.dump_buttons():
+                        log(f"   {b['tag']:<6} id={b['id']:<16} title={b['title']:<14} "
+                            f"text={b['text']:<16} onclick={b['onclick'][:34]}")
 
             log("\n─── ここから人の作業 ───────────────────────────")
             log("1) 「らくらく交通入力」を押して交通を入力（コード直指定は入力エラーになる）")
