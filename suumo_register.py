@@ -186,6 +186,14 @@ class Reg:
         #   ここで待つと30秒の時間切れになり、原因も分からない（実機で踏んだ）。
         if not first.is_enabled():
             return False, None, "無効化されている（連動元の項目を先に設定する必要がある）"
+        # ★select / radio / checkbox は**可視**でないと操作できない（Playwrightが可視を待つ）。
+        #   SUUMOは連動先を disabled ではなく **非表示** にすることがある
+        #   （入居予定=指定有りを選ぶまで『旬』のselectが非表示。is_enabled()はTrueを返すので
+        #    enabledの検査だけでは30秒の時間切れになった）。ここも待たずに失敗を返し、
+        #   2パス目で連動元が設定済みになってから入れる。
+        if tag == "SELECT" or typ in ("radio", "checkbox"):
+            if not first.is_visible():
+                return False, None, "非表示（連動元の項目を先に設定する必要がある）"
         if tag == "SELECT":
             first.select_option(str(value))
             got = first.input_value()

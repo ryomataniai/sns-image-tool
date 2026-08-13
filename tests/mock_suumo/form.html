@@ -101,7 +101,7 @@
  <input name="${bukkenInputForm.nyukyoTsuki}" maxlength="2" size="2">月
  <!-- ★実機は入居予定=指定有り(3)を選ぶまで無効。1パスで埋めると辞書順の都合で
       ここを先に触って時間切れになる（実機で踏んだ）。 -->
- <select name="${bukkenInputForm.nyukyoShunKbnCd}" disabled><option value="">選択して下さい</option>
+ <select name="${bukkenInputForm.nyukyoShunKbnCd}" style="display:none"><option value="">選択して下さい</option>
   <option value="0">初旬（1～5日）</option><option value="1">上旬（1～10日）</option>
   <option value="2">中旬（11～20日）</option><option value="3">下旬（21～末日）</option>
   <option value="4">末（月末の3日間）</option></select><br>
@@ -151,8 +151,9 @@ TOKUCHO.forEach(function(c){
 });
 document.addEventListener('change', function(e){
   if (e.target && e.target.name === '${bukkenInputForm.nyukyoKbnCd}') {
-    document.getElementsByName('${bukkenInputForm.nyukyoShunKbnCd}')[0].disabled =
-      (e.target.value !== '3');
+    // ★実機は disabled ではなく **非表示**（is_enabled()はTrueを返す）
+    document.getElementsByName('${bukkenInputForm.nyukyoShunKbnCd}')[0].style.display =
+      (e.target.value === '3') ? '' : 'none';
   }
   if (e.target && e.target.name === '${bukkenInputForm.categoryTokuchoCd}') {
     document.getElementById('tokuchoCount').textContent =
