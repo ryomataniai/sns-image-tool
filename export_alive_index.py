@@ -30,15 +30,46 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 from realpro_dl import room_key
 
 
-def build_index(harvest: dict) -> dict:
+_DATE_RX = re.compile(r"(20\d{2})[-/]?(\d{1,2})[-/]?(\d{1,2})")
+
+
+def harvest_date(meta: dict, harvest_path: Path):
+    """収穫日を決める。→ (YYYY-MM-DD, 出典) / 決められなければ (None, 理由)。
+
+    ★これが statusCheckedAt になる。**実行日ではない。**
+      「いつ操作したか」ではなく「いつ確認したか」を入れる。実行日を入れると、
+      8/14の収穫を毎日流すだけで永遠に『今日確認済み』になり、鮮度ガードが
+      一度も発火しない（= ガードを無効化する）。
+      古い収穫を流したときに鮮度が戻らないのが正しい挙動。
+    ★決められなければ None を返して索引を作らない。今日に倒さない。
+    """
+    m = _DATE_RX.search(str(meta.get("collected") or ""))
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", "meta.collected"
+    # ファイル名の規約 harvest_全件_YYYYMMDD.json。推測ではなく命名規約なので使う
+    m = _DATE_RX.search(harvest_path.stem)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", "ファイル名"
+    return None, "meta.collected にもファイル名にも日付が無い"
+
+
+def build_index(harvest: dict, harvest_path: Path) -> dict:
     meta = harvest.get("meta") or {}
     rows = harvest.get("rows") or []
+
+    hdate, hsrc = harvest_date(meta, harvest_path)
+    if hdate is None:
+        raise SystemExit(
+            f"[error] 収穫日を決められません（{hsrc}）。\n"
+            f"        収穫日は statusCheckedAt になる値なので、実行日で代用しません。"
+        )
 
     rooms: dict[str, dict] = {}
     dup = 0
@@ -77,6 +108,13 @@ def build_index(harvest: dict) -> dict:
     return {
         "meta": {
             "importSource": "import-suumo-v1",
+            # ★statusCheckedAt に入る値。収穫日の 00:00 JST に倒す。
+            #   収穫時刻は『13:0x』のように分が伏せ字で正確に取れないので、
+            #   **その日のいちばん早い時刻**にして「実際より古く見せる」側に寄せる。
+            #   鮮度の誤差は古い側に倒すのが安全（新しく見せると期限切れを見逃す）。
+            "harvestCheckedAt": f"{hdate}T00:00:00+09:00",
+            "harvestDate": hdate,
+            "harvestDateSource": hsrc,
             "harvestCollected": meta.get("collected"),
             "harvestCount": meta.get("count"),
             "indexedRooms": len(rooms),
@@ -97,7 +135,7 @@ def main(argv=None) -> int:
     hp = Path(a.harvest).expanduser()
     if not hp.is_file():
         ap.error(f"--harvest が見つかりません: {hp}")
-    idx = build_index(json.loads(hp.read_text(encoding="utf-8")))
+    idx = build_index(json.loads(hp.read_text(encoding="utf-8")), hp)
 
     op = Path(a.out).expanduser()
     op.write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -108,7 +146,9 @@ def main(argv=None) -> int:
           f"（重複 {m['duplicateRows']}行は先勝ち）→ {op}")
     print(f"  収穫条件: 賃料 {s['rentMinYen']:,}〜{s['rentMaxYen']:,}円 / "
           f"{'・'.join(s['wards'])} / {'・'.join(s['layouts'])}")
-    print(f"  収穫日時: {m['harvestCollected']}")
+    print(f"  収穫日: {m['harvestDate']}（出典: {m['harvestDateSource']}）"
+          f" → statusCheckedAt には {m['harvestCheckedAt']} が入る")
+    print(f"  収穫日時(原文): {m['harvestCollected']}")
     print("  ★この条件の外にある物件は、載っていなくても『消失』ではない。")
     return 0
 

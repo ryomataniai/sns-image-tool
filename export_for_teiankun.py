@@ -34,6 +34,7 @@ from pathlib import Path
 
 from realpro_dl import bldg_key, room_key
 from suumo_fields import KOZO_CD, TOKUCHO, manen_to_yen
+from export_alive_index import harvest_date
 
 # 投入対象から外す判定に使う列（正本＝SUUMO進行管理.csv）
 EXCLUDE_VALUE = "対象外"
@@ -131,18 +132,31 @@ def load_suumo_codes(base: Path) -> dict[str, str]:
     return out
 
 
-def load_harvest_access(base: Path) -> dict[str, str]:
-    """harvest_全件_*.json → {room_key: access文字列}。_transit が無い棟の穴埋めに使う。"""
+def load_harvest_access(base: Path):
+    """harvest_全件_*.json → ({room_key: access文字列}, 収穫日ISO, 収穫ファイル名)。
+
+    ★収穫日も一緒に返す。**これが Property.statusCheckedAt になる。**
+      投入した日ではない。「いつ操作したか」ではなく「いつ確認したか」を入れる。
+      投入日を入れると、古い収穫を元にした在庫が『今日確認済み』として
+      鮮度ガードを通り抜ける（＝ガードが無効化される）。
+    """
     hits = sorted(base.glob("07_分類結果/harvest_全件_*.json"))
     if not hits:
-        return {}
-    rows = json.loads(hits[-1].read_text(encoding="utf-8"))["rows"]
+        raise SystemExit(
+            "[error] 07_分類結果/harvest_全件_*.json がありません。\n"
+            "        収穫日が分からないと statusCheckedAt を決められないため中止します。"
+        )
+    hp = hits[-1]
+    data = json.loads(hp.read_text(encoding="utf-8"))
+    hdate, hsrc = harvest_date(data.get("meta") or {}, hp)
+    if hdate is None:
+        raise SystemExit(f"[error] 収穫日を決められません（{hsrc}）。投入日で代用しません。")
     out = {}
-    for r in rows:
+    for r in data["rows"]:
         k = room_key(r.get("name"), r.get("room"))
         if k not in out and r.get("access"):
             out[k] = r["access"]
-    return out
+    return out, f"{hdate}T00:00:00+09:00", hp.name
 
 
 def load_transit(base: Path) -> dict[str, list]:
@@ -362,7 +376,7 @@ def main(argv=None) -> int:
 
     excluded = load_excluded(base)
     transit = load_transit(base)
-    access = load_harvest_access(base)
+    access, checked_at, harvest_file = load_harvest_access(base)
     codes = load_suumo_codes(base)
 
     # マイソク本文は交通の出典の1つ。**客付版PDF（source.kyakuzuke）だけを読む。**
@@ -414,6 +428,9 @@ def main(argv=None) -> int:
             "generatedFor": str(today),
             "base": str(base),
             "count": len(rooms),
+            # ★Property.statusCheckedAt に入る値。投入日ではなく**収穫日**。
+            "checkedAt": checked_at,
+            "harvestFile": harvest_file,
             "excludedCount": len(skipped),
             "excluded": skipped,
             "transitSource": src_count,
@@ -427,6 +444,7 @@ def main(argv=None) -> int:
     op.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
 
     print(f"対象 {len(rooms)}室（対象外 {len(skipped)}室を除外）→ {op}")
+    print(f"  statusCheckedAt に入る収穫日: {checked_at}（{harvest_file}）★投入日ではない")
     print(f"  交通の出典: {src_count}")
     print(f"  SUUMO物件コードあり: {out['meta']['suumoCodeCount']}室 "
           f"/ 定期借家: {out['meta']['teikiCount']}室 "
