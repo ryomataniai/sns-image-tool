@@ -45,7 +45,33 @@ def nfc(s: str) -> str:
 # ★§3-3の実測値。ここは物件によらず固定で入れるもの。
 BUKKEN_SHU_CD = "01"          # 物件種別＝マンション
 TORIHIKI_TAIYO_CD = "4"       # 取引態様＝仲介先物（元付版が「貸主」でもmikkeは客付なので4）
-TEIKI_SHAKUYA_FLG = "0"       # 契約＝普通借家
+# ★定期借家（teiki-fix-v1・2026-08-17）
+#   以前は TEIKI_SHAKUYA_FLG = "0" の**無条件代入**で、マイソクを読む処理が無かった。
+#   その結果95室すべてが「普通借家」になり、**定期借家6室が普通借家として掲載された**
+#   （うち4室が掲載中）。表示が実態と違う広告が出ていた。
+#   ★再発防止の本体は「**分からないときに 0 に倒さない**」こと。今回の原因がそれ。
+#   ★定期借家は「物件によらず固定で入れるもの」ではないので、ここに定数を置かない。
+#     値は detect_teiki() がマイソクを読んで室ごとに決め、決められなければ block する。
+#     （定数を残すと「既定値として使ってよい」と読めてしまい、同じ事故に戻る）
+
+# 実測パターン（2026-08-17・6室とも同じ書き方）
+#   項目欄: 『契約期間 定期借家 2年間』
+#   本文  : 『【定期借家】2年※法人契約に限り、普通借家契約への変更相談可』
+#   ★本文は行折り返しで『限 り』のように空白が入ることがある。年数の取得には影響しない。
+_TEIKI_WORD_RX = re.compile(r"定期借家")
+# ★年は『年』を必須にする。`[年ヵヶか]` にしたら『6ヶ月』の『6ヶ』を年として拾った。
+#   『2ヵ年』のような書き方も通るよう、数字と年の間の ヵヶか は任意で許す。
+_TEIKI_NEN_RX = re.compile(r"定期借家\s*】?\s*(\d{1,2})\s*[ヵヶか]?年")
+_TEIKI_BODY_NEN_RX = re.compile(r"【\s*定期借家\s*】\s*(\d{1,2})\s*[ヵヶか]?年")
+# 「定期借家不可」「定期借家ではない」等。★否定表現は自動で 0 に倒さず人に返す
+# ★間に【】を挟んだら別項目なので拾わない（2026-08-17 セルフレビューで発見）。
+#   その他条件は『【定期借家】2年【ペット】不可』のように【】区切りで項目が並ぶ。
+#   [^。\n]{0,10} だと**隣のペット項目の「不可」**を定期借家の否定として拾い、
+#   定期借家の室が「判定不能」で block される（＝入稿が止まる）。
+#   block は安全側だが、正しく読める室を人手に戻すのは実害なので閉じる。
+_TEIKI_NEG_RX = re.compile(r"定期借家[^。\n【】]{0,10}(不可|ではない|では無い|無し|なし|除く)")
+# 月単位の定期借家（例『定期借家 6ヶ月』）。teikiShakuyaGetsu の意味が未確認なので人に返す
+_TEIKI_GETSU_RX = re.compile(r"定期借家\s*】?\s*(\d{1,2})\s*[ヶヵか]?月")
 
 # 建築構造の表記 → kozoShuCd。★未知の表記は None にして人に返す（推測で埋めない）
 # ★2026-08-13にSUUMOの実フォームから読んだ実測値。依頼文§3-3の記載には誤りがあった
@@ -153,6 +179,57 @@ def _to_zenkaku(s: str) -> str:
         "0123456789-", "０１２３４５６７８９－"))
 
 
+def manen_to_yen(c1, c2):
+    """('7','15') → 71500。yen_to_manen の逆。→ int or None。
+
+    ★この変換を呼び出し側で書き直さないこと。2026-08-14に一覧CSVで
+      「chinryo2 は千円の位」と読み違えて 7/15 を 85,000円 と出した（正は 71,500円）。
+      小数部が1桁のときは偶然一致するので、2桁の室が出るまで気づけない
+      （28室中2室だけが2桁だった）。**逆変換もここに1つだけ置く。**
+    """
+    if c1 in (None, ""):
+        return None
+    frac = str(c2 or 0)
+    try:
+        return round(float(f"{c1}.{frac}") * 10000)
+    except ValueError:
+        return None
+
+
+def detect_teiki(text: str):
+    """マイソク本文から定期借家を判定する。→ (flg, nen, 理由, 判定できたか)。
+
+    flg は "1"（定期借家）/ "0"（普通借家）。**判定できないときは (None, None, 理由, False)**
+    を返し、呼び出し側が block() で人に返す。
+
+    ★これが再発防止の本体：**分からないときに "0" に倒さない。**
+      以前は無条件で "0" を入れており、定期借家6室が普通借家として掲載された。
+      「記載が無い＝普通借家」は妥当な既定だが、「読めなかった」を同じ扱いにしてはいけない
+      （2026-08-17 の恒久ルール4「情報が無いを問題が無いと読まない」と同じ型）。
+    """
+    if not text:
+        return None, None, "本文が空で判定できない", False
+    t = text.replace("\n", " ")
+    if not _TEIKI_WORD_RX.search(t):
+        # 語が1度も出てこない＝普通借家。これは「記載が無い」であって「読めなかった」ではない
+        return "0", None, "『定期借家』の記載なし", True
+    neg = _TEIKI_NEG_RX.search(t)
+    if neg:
+        return (None, None,
+                f"『定期借家』の否定表現がある（{neg.group(0)!r}）＝人が読むこと", False)
+    getsu = _TEIKI_GETSU_RX.search(t)
+    if getsu and not _TEIKI_NEN_RX.search(t):
+        return None, None, (f"月単位の定期借家（{getsu.group(0)!r}）。"
+                            "teikiShakuyaGetsu の意味が未確認なので人が入れること"), False
+    m = _TEIKI_BODY_NEN_RX.search(t) or _TEIKI_NEN_RX.search(t)
+    if not m:
+        return None, None, "『定期借家』はあるが年数が読めない（既知の書式外）", False
+    nen = m.group(1).lstrip("0") or "0"
+    if nen == "0":
+        return None, None, f"定期借家の年数が0（{m.group(0)!r}）", False
+    return "1", nen, f"{m.group(0)!r} から判定", True
+
+
 def yen_to_manen(s):
     """'71,500円' → ('7','15')／'70,000円' → ('7','0')／'7,000円' → ('0','7')。
 
@@ -176,6 +253,22 @@ def yen_to_manen(s):
 
 
 # ── 1室ぶんの抽出 ──────────────────────────────────────────────────
+def motozuke_flag(motozuke_pdf, label: str):
+    """元付版マイソクの『{label}[...]』を読む。→ 中身の文字列 or None（記載なし）。
+
+    ★画像化の前に転載不可を弾くために batch_suumo からも呼ぶ。抽出規則を2箇所に
+      書くと必ず片方が腐るので、ここを唯一の実装にする。
+    """
+    if motozuke_pdf is None:
+        return None
+    try:
+        text = core.pdf_full_text(Path(motozuke_pdf).read_bytes())
+    except Exception:  # noqa: BLE001  壊れたPDFは「読めない」＝Noneではなく例外で気づきたいが、
+        return None    #   画像化の前処理を止めたくないのでNone扱いにし、呼び出し側で警告する
+    m = re.search(re.escape(label) + r"\s*\[([^\]]+)\]", text)
+    return m.group(1) if m else None
+
+
 def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
     """1室 → dict（form / images / tokucho / gate / source）。例外は投げず block に理由を積む。"""
     out = {"key": key, "form": {}, "images": [], "tokucho": [], "tokucho_hit": [],
@@ -335,7 +428,9 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
     else:
         F["heyaCnt"] = F["madoriTypeKbnCd"] = None
         block(f"間取りを解釈できない（原文『{md}』）")
-    yo = re.search(r"洋\s*[:：]?\s*([\d.]+)", md)
+    # ★表記が複数ある（実測）：『洋7』『洋:6.7畳』『洋室7.2』『洋室8』。
+    #   寸法表記『6.88x4.12』は帖数ではないので取らない（換算は推測になる）。
+    yo = re.search(r"洋室?\s*[:：]?\s*([\d.]+)", md)
     F["madoriYoshitsu1"] = yo.group(1) if yo else ""
     if not yo:
         warn(f"洋室畳数が取れない（原文『{md}』）")
@@ -372,9 +467,45 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
     F["_chome"] = ch.group(1) if ch else ""
 
     # 固定値
-    F["bukkenShuCd"] = BUKKEN_SHU_CD
+    # ★物件種別：木造は「アパート」。マンション固定にしていたら、SUUMOの入力チェックに
+    #   「構造種別チェック｜マンションなのに木造です」で弾かれた（2026-08-14 実測・
+    #   シャンティーハーバー九条_0101＝木造 地上3階 総戸数6戸）。
+    #   実機のセレクトは 01=マンション / 02=アパート / 11=一戸建て / 16=テラス・タウンハウス。
+    #   ★木造以外は変えない。マイソク146件の内訳は RC134 / 鉄骨10 / SRC3 / 木造1 で、
+    #     鉄骨造はマンションのまま登録が通っている（軽量鉄骨造は1件も無いので判断材料が無い）。
+    F["bukkenShuCd"] = "02" if F.get("kozoShuCd") == KOZO_CD["木造"] else BUKKEN_SHU_CD
     F["torihikiTaiyoKbnCd"] = TORIHIKI_TAIYO_CD
-    F["teikiShakuyaFlg"] = TEIKI_SHAKUYA_FLG
+    # ★定期借家：マイソクから判定する（無条件代入をやめた）
+    # ★本文は客付マイソクのPDF全文。extract_room には `text` という変数は無い
+    #   （最初 `text` と書いて NameError になり、ゲートに記録されて155室が block した）。
+    tflg, tnen, treason, tok = detect_teiki(core.pdf_full_text(pdf))
+    F["teikiShakuyaFlg"] = tflg
+    F["_teiki_reason"] = treason
+    # ★構造化された『契約期間』欄で裏取りする（2026-08-17 セルフレビューで追加）。
+    #   detect_teiki は**全文**を見る。欄が取れないマイソクでも判定できる利点がある反面、
+    #   定型文のどこかに「定期借家」の語が出るだけで "1" に倒れる（＝偽陽性）。
+    #   『契約期間』ラベルはマイソク188件すべてに存在した（2026-08-17 実測）ので、
+    #   欄と全文が食い違ったら**どちらが正しいか機械には決められない**＝人に返す。
+    #   ★片方に寄せて自動で決めないこと。今回の事故は「勝手に決めた」ことが原因。
+    kikan = _right_of(rows, "契約期間")
+    F["_keiyaku_kikan_raw"] = " ".join(kikan).strip() if kikan else ""
+    mismatch = False
+    if kikan is None:
+        warn("『契約期間』欄が無く全文だけで定期借家を判定した（レイアウト変更の疑い）")
+    elif tok:
+        field_says = "1" if "定期借家" in F["_keiyaku_kikan_raw"] else "0"
+        mismatch = field_says != tflg
+        if mismatch:
+            block(f"定期借家の判定が食い違う（全文={tflg} / 『契約期間』欄="
+                  f"{field_says}・原文『{F['_keiyaku_kikan_raw'][:30]}』）")
+    if not tok:
+        block(f"定期借家を判定できない（{treason}）")
+    elif mismatch:
+        # ★食い違ったら値を残さない。中途半端な値が下流に流れるほうが危ない
+        F["teikiShakuyaFlg"] = None
+    elif tflg == "1":
+        F["teikiShakuyaNen"] = tnen
+        warn(f"★定期借家 {tnen}年（{treason}）。普通借家として出さないこと")
 
     # ── 元付版PDF（取引態様・TEL・会社名・広告可否）──────────────────
     if motozuke_pdf is None:
@@ -387,42 +518,71 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
         def flag(label):
             mm = re.search(re.escape(label) + r"\s*\[([^\]]+)\]", mtext)
             return mm.group(1) if mm else None
+        # ★motozuke_flag() と同じ規則。片方だけ直すことがないよう、テストで一致を見る。
 
         ad, img, mad = flag("広告掲載"), flag("画像の転載"), flag("間取図転載")
-        out["source"].update({"広告掲載": ad, "画像の転載": img, "間取図転載": mad})
+        out["source"].update({"広告掲載": ad, "画像の転載": img or "記載なし",
+                              "間取図転載": mad or "記載なし"})
         if ad != "許可":
             block(f"広告掲載が『{ad}』（許可でない）")
-        # ★依頼文のゲートは広告掲載のみだが、実測で『画像の転載[不可]』が4室あった。
-        #   入稿画像は元付のマイソク写真が元なので、不可のままアップすると転載条件に反する。
-        if img != "可能":
-            block(f"画像の転載が『{img}』（Phase1の画像は元付写真が元なので使えない）")
-        if mad not in ("可能", None):
-            warn(f"間取図転載が『{mad}』＝間取り図(madori)を外す必要がある")
+        # ★画像の転載：**明示的に[不可]のときだけ止める**（2026-08-14 谷合さんの判断）。
+        #   元付版には2種類のテンプレートがあり、実測で31室中28室は
+        #   『広告掲載[許可]・チラシ、雑誌等掲載広告[要確認]…』で**画像の転載の項目自体が無い**。
+        #   記載なしは「不可」ではない。通す根拠は3点：
+        #     ①リアプロの検索を diversion=1（web転載可能）で絞っている
+        #     ②元付版に 広告掲載[許可] が明示されている
+        #     ③B型テンプレートには画像転載の項目が無く、その元付が管理していないと読める
+        #   ★リスクを取れるのは**登録が外部に出ない**から。枠は30/30で埋まっており
+        #     8/26まで掲載できない。その間に谷合さんが二階堂さん（宅建業者）へ確認する。
+        #     確認が取れなければ掲載しないだけで、登録は無駄にならない。
+        #   → 8/26の掲載前に、記載なしの室について確認が取れているかを必ず見ること。
+        if img == "不可":
+            block("画像の転載が『不可』（Phase1の画像は元付写真が元なので使えない）")
+        elif img is None:
+            warn("画像の転載の記載が無い（広告掲載[許可]で通す。8/26の掲載前に要確認）")
+        if mad == "不可":
+            warn(f"間取図転載が『不可』＝間取り図(madori)を外す必要がある")
         tt = re.search(r"取引態様[：:]\s*(\S+)", mtext)
         F["_motozuke_torihiki_raw"] = tt.group(1) if tt else ""
         tel = re.search(r"TEL[：:]\s*([\d\-]+)", mtext)
         F["mototsukeTelNo"] = tel.group(1) if tel else ""
         if not tel:
             block("元付TELが取れない（先物では必須）")
-        # 会社名＝**取引態様/TELと同じ高さ帯**にある法人格の語。
-        # ★『法人格の最初の出現』では取れない（実測で全室が家賃保証会社を拾った：
-        #   Quintet NAMBA→株式会社エポスカード / S-FORT桜川南→エルズサポート株式会社）。
-        #   マイソクの保証会社欄は元付欄より上にあるため、先に法人格が出現する。
-        #   元付会社名は必ずフッタの 取引態様・TEL・免許番号 と同じ帯にあるので、そこを起点にする
-        #   （実測: サムティ 会社名y=658/取引態様y=651、みなもと y=656/651、近藤 y=656/651）。
+        # 会社名の取り方は2段構え（実測でテンプレートが3種類ある）。
+        #   段1: **取引態様と同じ行の左側**の語。
+        #        例『レオパレスセンター大阪第５ | 取引態様：貸主』『株式会社 | みなもと管理 | 取引態様…』
+        #        ★法人格を含まない社名がある（レオパレスセンター大阪第５）ので、
+        #          「株式会社を含む語」を探す方式だけでは取れない。
+        #   段2: 段1が空なら、取引態様と同じ高さ帯（±15）にある法人格の語。
+        #        例：サムティは会社名と取引態様が別の行にある。
+        #   ★「法人格を含む最初の語」は使わない。保証会社（エポスカード等）を拾う。
         anchor_y = None
-        for r in mrows:
-            for w in r:
-                if "取引態様" in w[4]:
-                    anchor_y = (w[1] + w[3]) / 2
-                    break
-            if anchor_y is not None:
-                break
         nm = ""
-        if anchor_y is not None:
-            near = [w for r in mrows for w in r
-                    if abs((w[1] + w[3]) / 2 - anchor_y) <= 15]
-            near.sort(key=lambda w: w[0])
+        for r in mrows:
+            idx = next((i for i, w in enumerate(r) if "取引態様" in w[4]), None)
+            if idx is None:
+                continue
+            anchor_y = (r[idx][1] + r[idx][3]) / 2
+            # ★左側のトークンは**全部つなぐ**。実測の4パターンがこれで全部合う：
+            #   『株式会社｜TAKUTO』『三菱地所…株式会社｜関西支店』
+            #   『グローバルコミュニティ株式会社｜大阪支社｜大阪BP部』
+            #   『レオパレスセンター大阪第５』
+            #   最後の1語だけ取ると「関西支店」「大阪BP部」になる（実際にそうなった）。
+            # ★同じ「行」でも y がわずかに違う別行が混ざる（行の量子化が6px幅のため）。
+            #   実測：ONE ROOF FLAT TENJINBASHI_601 は
+            #     y=646.1 『グローバルコミュニティ株式会社｜大阪支社｜大阪BP部』
+            #     y=647.8 『ごみ置場・エレベーター・…』  ← 設備リストの行
+            #   が同じバンドに入り、連結して会社名が壊れた。
+            #   **取引態様と同じ y のトークンだけ**に絞る（構造で切る。語の内容では切らない）。
+            ay = r[idx][1]
+            same = [w for w in r[:idx] if abs(w[1] - ay) <= 1.5 and w[4].strip()]
+            if not same:                       # y が揃わないテンプレートは行全体に戻す
+                same = [w for w in r[:idx] if w[4].strip()]
+            nm = "".join(w[4].strip() for w in same)
+            break
+        if not nm and anchor_y is not None:
+            near = sorted([w for r in mrows for w in r
+                           if abs((w[1] + w[3]) / 2 - anchor_y) <= 15], key=lambda w: w[0])
             for i, w in enumerate(near):
                 if re.search(r"(株式会社|有限会社|合同会社|合資会社)", w[4]):
                     nm = w[4].strip()
@@ -564,6 +724,9 @@ def main(argv=None):
     ap.add_argument("--out", required=True, help="JSON/CSVの出力先")
     ap.add_argument("--since-ts", default="", help="DLタイムスタンプ接頭辞で絞る（例 20260812）")
     ap.add_argument("--only", action="append", default=[], help="部屋キーの部分一致で絞る")
+    ap.add_argument("--only-list", metavar="FILE",
+                    help="改行区切りの部屋キー一覧で絞る（歩留まり判定の採用リストをそのまま渡す）"
+                         "。空行と # 始まりは無視。batch_suumo と同じ形式")
     ap.add_argument("--review", action="store_true", help="一覧CSVだけ出す（JSONは書かない）")
     a = ap.parse_args(argv)
 
@@ -575,7 +738,24 @@ def main(argv=None):
     od = Path(a.out).expanduser()
     od.mkdir(parents=True, exist_ok=True)
 
-    targets = resolve(kd, md, a.since_ts, a.only)
+    only = list(a.only)
+    if a.only_list:
+        lp = Path(a.only_list).expanduser()
+        if not lp.is_file():
+            ap.error(f"--only-list が見つかりません: {lp}")
+        # ★NFC正規化は必須（macOSのNFDファイル名と一致させるため）
+        from_file = [nfc(x.strip()) for x in lp.read_text(encoding="utf-8").splitlines()
+                     if x.strip() and not x.strip().startswith("#")]
+        if not from_file:
+            ap.error(f"--only-list が空です: {lp}")
+        only += from_file
+        print(f"--only-list: {lp.name} から {len(from_file)}件を読み込み")
+    targets = resolve(kd, md, a.since_ts, only)
+    # ★指定したのに1件も当たらなかったキーを出す（黙って少ない件数で走らせない）
+    hit_keys = [k for k, _kp, _mp in targets]
+    unmatched = [o for o in only if not any(o in k for k in hit_keys)]
+    if unmatched:
+        print(f"⚠ 指定したのに一致しなかったキー {len(unmatched)}件: {unmatched}")
     print(f"対象 {len(targets)}室")
     recs = []
     for key, kp, mp in targets:

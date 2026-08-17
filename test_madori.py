@@ -36,9 +36,9 @@ _DEFAULT_IN = Path("/Users/taniairyouma/Downloads/エンクス/03_物件提案�
                    "SUUMO入稿_75枠_20260806/01_マイソク")
 # ★実測値（2026-08-12・63物件を目視確認した時点のもの）。ここが変わったら判定が変わったということ。
 _EXPECT_35 = {(300, 300): 34, (600, 600): 1}
-_EXPECT_63_DETECTED = 63
-_EXPECT_OLD_FIRED = 33      # 旧ゲートが検出できていた物件数
-_EXPECT_OLD_MISSED = 30     # 旧ゲートが取りこぼしていた物件数
+# ★件数は固定しない。マイソクは毎月増える（63→143物件になった時点で件数固定の
+#   アサーションが全部落ちた）。固定すべきなのは**不変条件**であって母数ではない。
+_MAX_NOT_IN_LIST_RATIO = 0.05   # 抽出リスト外になる物件の許容割合（薄すぎる間取り図）
 
 _fails = []
 
@@ -111,7 +111,7 @@ def test_all_pdfs_detected(in_dir):
     for _k, (p, _ts) in best.items():
         png, _m = core.find_floorplan_in_pdf(Path(p).read_bytes())
         det += png is not None
-    _check(f"全{len(best)}物件で検出", det == len(best) == _EXPECT_63_DETECTED,
+    _check(f"全{len(best)}物件で検出（母数は増えてよい）", det == len(best),
            f"{det}/{len(best)}")
 
 
@@ -134,9 +134,9 @@ def test_no_regression_vs_old(in_dir):
             diffs.append((k, Image.open(io.BytesIO(old)).size,
                           Image.open(io.BytesIO(new)).size if new else None))
     _check("旧判定が当たっていた物件で選択画像が1件も変わらない", diff == 0, str(diffs))
-    _check("旧判定が当たっていた件数が実測と一致", same == _EXPECT_OLD_FIRED, f"{same}件")
-    _check("旧判定が取りこぼしていた件数が実測と一致（新判定で救われる分）",
-           oldnone == _EXPECT_OLD_MISSED, f"{oldnone}件")
+    # 件数は参考。★固定すべき不変条件は「旧判定が当たっていた物件で別画像が出ない」ことだけ。
+    _check("旧判定が取りこぼしていた物件がある（新判定の価値が残っている）",
+           oldnone > 0, f"救済{oldnone}件 / 一致{same}件")
     print(f"    同一{same} / 旧が未検出（新で救済）{oldnone} / 別画像{diff}")
 
 
@@ -164,8 +164,12 @@ def test_identity_for_exclusion(in_dir):
         else:
             not_in_list.append(k)     # 抽出対象外（生成に回らないので問題なし）
     _check("byte一致する要素があるときは必ず同一オブジェクトを返す", not ng, str(ng))
-    _check("抽出リスト外を返す物件は既知の1件だけ（薄すぎて白紙枠判定される間取り図）",
-           not_in_list == ["メガドームウエスト_405"], str(not_in_list))
+    # 抽出リスト外＝間取り図が薄すぎて is_blank_frame に白紙枠として落とされた物件。
+    # 生成対象に入らないので実害はないが、増えていないかは見張る（割合で判定する）。
+    ratio = len(not_in_list) / max(1, len(best))
+    _check(f"抽出リスト外が全体の{_MAX_NOT_IN_LIST_RATIO:.0%}未満",
+           ratio < _MAX_NOT_IN_LIST_RATIO,
+           f"{len(not_in_list)}/{len(best)}件 = {ratio:.1%} {not_in_list[:4]}")
 
 
 def test_png_matches_extract(in_dir):

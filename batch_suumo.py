@@ -23,6 +23,7 @@ import argparse
 import collections
 import concurrent.futures as cf
 import csv
+import json
 import re
 import shutil
 import sys
@@ -32,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 import core
+import suumo_fields
 
 # ── SUUMO入稿の処理種別 ────────────────────────────────────────────
 # 既定は「高解像度化のみ」。他の種別をCLIから通さないのは機能の出し惜しみではなく、
@@ -95,6 +97,23 @@ def api_key_from_secrets(repo_dir: Path = None):
 
 
 # ── 対象PDFの決定 ──────────────────────────────────────────────────
+def read_only_list(path: Path) -> list:
+    """改行区切りの部屋キー一覧を読む。空行と # 始まりは無視。NFCへ正規化する。
+
+    ★歩留まり判定の結果（採用室の一覧）をそのまま渡すための入口。
+      --only を数十回並べるのは打ち間違い・貼り付け漏れの事故になる（31室で実際に必要になった）。
+    ★NFC正規化は必須。macOSのファイル名はNFDが混じるため、正規化しないと
+      一覧に書いたキーが1件も一致しない（batch_suumo の nfc() と同じ理由）。
+    """
+    out = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        t = ln.strip()
+        if not t or t.startswith("#"):
+            continue
+        out.append(nfc(t))
+    return out
+
+
 def resolve_targets(in_dir: Path, since_ts: str = "", only: list = None, limit: int = 0):
     """入力フォルダ → 処理対象 [(部屋キー, PDFパス)]。
 
@@ -122,10 +141,18 @@ def resolve_targets(in_dir: Path, since_ts: str = "", only: list = None, limit: 
         only_n = [nfc(o) for o in only]      # 打った文字列側もNFCへ寄せる
         targets = [(k, p) for k, p in targets if any(o in k for o in only_n)]
     dropped_old = sum(1 for _ in in_dir.glob("*.pdf")) - len(by_key) - len(skipped_no_ts)
+    # ★指定したのに1件も当たらなかったキーを返す。黙って少ない件数で走ると
+    #   「31室指定したのに29室しか処理されていない」ことに後で気づけない。
+    unmatched = []
+    if only:
+        keys_all = [k for k, _v in by_key.items()]
+        for o in [nfc(x) for x in only]:
+            if not any(o in k for k in keys_all):
+                unmatched.append(o)
     if limit:
         targets = targets[:limit]
     return targets, {"stems": len(by_key), "dropped_old": dropped_old,
-                     "no_timestamp": skipped_no_ts}
+                     "no_timestamp": skipped_no_ts, "unmatched": unmatched}
 
 
 # ── 1室ぶんの素材準備（API呼び出しは分類の1回だけ）────────────────────────
@@ -392,10 +419,23 @@ def main(argv=None):
         epilog="処理種別: " + _TREATMENT_NOTE)
     ap.add_argument("--in", dest="in_dir", required=True, help="マイソクPDFのフォルダ")
     ap.add_argument("--out", dest="out_dir", required=True, help="出力先フォルダ")
+    ap.add_argument("--classify-out", metavar="DIR",
+                    help="分類結果JSONの保存先。既定は --in の親の 07_分類結果/。"
+                         "★--out（画像の出力先）には置かない。バックテストの入力なので"
+                         "画像と一緒に消したり作り直したりしてはいけない")
+    ap.add_argument("--classify-only", action="store_true",
+                    help="画像生成をせず分類だけ実行し、各画像のコードをJSONに保存する。"
+                         "採否の機械判定を検討するための素材（1室$0.001前後）")
     ap.add_argument("--dry-run", action="store_true",
                     help="何室・何枚・概算いくらかを出して終了（API未使用・課金なし）")
     ap.add_argument("--only", action="append", default=[],
                     help="部屋キーの部分一致で絞る（複数指定可）")
+    ap.add_argument("--motozuke", metavar="DIR",
+                    help="元付版マイソクのフォルダ。画像の転載が『不可』の室を"
+                         "**画像化する前に**除外する（1室$0.35の無駄を防ぐ）")
+    ap.add_argument("--only-list", metavar="FILE",
+                    help="改行区切りの部屋キー一覧ファイルで絞る（歩留まり判定の採用リストをそのまま渡す）"
+                         "。空行と # 始まりは無視。--only と併用可")
     ap.add_argument("--since-ts", default="",
                     help="DLタイムスタンプの接頭辞で絞る（例 20260812）")
     ap.add_argument("--limit", type=int, default=0, help="先頭N室だけ処理（動作確認用）")
@@ -430,11 +470,58 @@ def main(argv=None):
         log_fh.write(msg + "\n")
         log_fh.flush()
 
-    targets, stat = resolve_targets(in_dir, a.since_ts, a.only, a.limit)
+    only = list(a.only)
+    if a.only_list:
+        lp = Path(a.only_list).expanduser()
+        if not lp.is_file():
+            ap.error(f"--only-list が見つかりません: {lp}")
+        from_file = read_only_list(lp)
+        if not from_file:
+            ap.error(f"--only-list が空です: {lp}")
+        only += from_file
+        print(f"--only-list: {lp.name} から {len(from_file)}件を読み込み", flush=True)
+    targets, stat = resolve_targets(in_dir, a.since_ts, only, a.limit)
     log(f"入力: {in_dir}")
     log(f"出力: {out_dir}")
     log(f"部屋キー {stat['stems']}件（重複の古い版 {stat['dropped_old']}件は自動で除外）"
         + (f" / --since-ts {a.since_ts} で {len(targets)}件に絞り込み" if a.since_ts else ""))
+    if stat.get("unmatched"):
+        log(f"⚠ 指定したのに1件も一致しなかったキー {len(stat['unmatched'])}件"
+            "（打ち間違い・物件名の表記ゆれの可能性）:")
+        for u in stat["unmatched"]:
+            log(f"    {u}")
+    # ── 元付版で「画像の転載[不可]」の室を、生成する前に外す ──────────────
+    # ★理由：画像化してから登録で弾かれると1室$0.35が丸損になる（2026-08-14 実測で
+    #   146件中13件が不可）。判定はU1（suumo_fields）と同じ関数を使う。
+    if a.motozuke:
+        mdir = Path(a.motozuke).expanduser()
+        if not mdir.is_dir():
+            ap.error(f"--motozuke のフォルダが無い: {mdir}")
+        mz = {}
+        for mp in sorted(mdir.glob("*.pdf")):
+            m = re.match(r"(.+)_(\d{14})\.pdf$", nfc(mp.name))
+            if m and (m.group(1) not in mz or m.group(2) > mz[m.group(1)][1]):
+                mz[m.group(1)] = (mp, m.group(2))
+        dropped, nomz = [], []
+        keep = []
+        for key, pdf in targets:
+            hit = mz.get(key)
+            if hit is None:
+                nomz.append(key)
+                keep.append((key, pdf))          # ★元付版が無い＝不可とは限らない。落とさない
+                continue
+            v = suumo_fields.motozuke_flag(hit[0], "画像の転載")
+            if v == "不可":
+                dropped.append(key)
+            else:
+                keep.append((key, pdf))
+        targets = keep
+        log(f"元付版チェック: {len(mz)}件を参照 → 画像の転載[不可] {len(dropped)}室を除外")
+        for k in dropped:
+            log(f"    除外 {k}")
+        if nomz:
+            log(f"⚠ 元付版が見つからない {len(nomz)}室（除外はしないが、登録時に"
+                "元付業者名が取れず弾かれる）: " + ", ".join(nomz[:5]))
     if stat["no_timestamp"]:
         log(f"⚠ タイムスタンプ無しで対象外にしたPDF {len(stat['no_timestamp'])}件: "
             + ", ".join(stat["no_timestamp"][:5]))
@@ -489,6 +576,46 @@ def main(argv=None):
             log(f"⚠ 間取り図らしくない疑いのある室 {len(warns)}件（採用はしている。中身を目視すること）:")
             for k, w in warns:
                 log(f"    {k}  {w}")
+        log(f"ログ: {log_path}")
+        log_fh.close()
+        return 0
+
+    # ── 分類だけ実行（画像生成なし）───────────────────────────────
+    # ★判定規則はここに書かない。**各画像のコード配列をそのまま保存する**だけにする。
+    #   規則をここに埋めると、規則を変えるたびに再課金して実験が回らない。
+    #   保存したJSONに対してオフラインで規則を当てて評価する（backtest_classify.py）。
+    if a.classify_only:
+        try:
+            client = core.get_client(core.get_api_key() or api_key_from_secrets())
+        except RuntimeError as e:
+            log(f"✗ {e}")
+            log_fh.close()
+            return 2
+        # ★保存先は画像の出力先ではなく 07_分類結果/ に固定する（2026-08-14）。
+        #   --out 配下に書いたら共有フォルダに残らず、バックテストの入力が消えて
+        #   谷合さん側で再現できなくなった。分類結果は画像より寿命が長い成果物。
+        cdir = Path(a.classify_out).expanduser() if a.classify_out else (
+            in_dir.parent / "07_分類結果")
+        cdir.mkdir(parents=True, exist_ok=True)
+        out_json = cdir / f"_classify_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        recs, t0 = [], time.time()
+        for i, (key, pdf) in enumerate(targets, 1):
+            try:
+                photos, fp, meta = extract_sources(pdf)
+            except Exception as e:  # noqa: BLE001  1室の失敗で全体を止めない
+                log(f"[{i}/{len(targets)}] {key}  ✗ 抽出に失敗: {type(e).__name__}: {e}")
+                recs.append({"key": key, "error": f"{type(e).__name__}: {e}"})
+                continue
+            codes, warn = classify_with_retry(client, photos, log)
+            recs.append({"key": key, "n_photos": len(photos),
+                         "floorplan": bool(fp), "madori_warn": meta.get("warn", ""),
+                         "codes": codes, "warn": warn})
+            flat = sorted({c for cs in codes for c in cs})
+            log(f"[{i}/{len(targets)}] {key}  {len(photos)}枚 → {' '.join(flat)}"
+                + (f"  ⚠{warn}" if warn else ""))
+            out_json.write_text(json.dumps(recs, ensure_ascii=False, indent=1),
+                                encoding="utf-8")   # ★途中で落ちても捨てない
+        log(f"\n分類 {len(recs)}室 / {time.time() - t0:.0f}秒 → {out_json}")
         log(f"ログ: {log_path}")
         log_fh.close()
         return 0
