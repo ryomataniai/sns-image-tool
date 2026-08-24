@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import sys
 
-from realpro_dl import (bldg_key, existing_keys, room_key, route_search_cmd,
-                        select_rooms, warn_dup_addr)
+from realpro_dl import (bldg_key, existing_keys, load_exclude_keys, room_key,
+                        route_search_cmd, select_rooms, warn_dup_addr)
 
 FAIL: list[str] = []
 
@@ -253,6 +253,36 @@ def test_existing_keys(tmp) -> None:
     check("タイムスタンプが無いファイルは無視", len(keys), 4)
 
 
+# ── ⑫ 除外キー（★重複DLのつなぎ）──────────────────────────────
+def test_exclude_keys(tmp) -> None:
+    """★提案くんの既存25室は冪等照合に載らないので、同じ室を投入すると重複が作られる。
+
+    実測（2026-08-24）: 23キーのうち7室が8/20の収穫に居り、
+    ★確率は**理論 14.4%**（候補915室から20室・該当7室）。
+      30 seed の実測は 7/30 = 23.3% だが、これは観測値であって確率ではない
+      （理論14.4%のとき30試行で7回以上出る確率は13%＝ばらつきの範囲内）。
+      除外ありでは 0/30。
+    ★②のバックフィルが済んだら、この仕組みは不要になる。
+    """
+    print("[除外キー]")
+    f = tmp / "excl.txt"
+    f.write_text("# コメント行\nサンプル000_101\n\n  サンプル001_202  \n# ★キー作成不能: 棟X\n",
+                 encoding="utf-8")
+    got = load_exclude_keys(f, quiet)
+    check("コメントと空行を無視して読む", got, {"サンプル000_101", "サンプル001_202"})
+    check("直接指定もできる", load_exclude_keys("サンプルA_1\nサンプルB_2", quiet),
+          {"サンプルA_1", "サンプルB_2"})
+
+    # ★have に混ぜると、その室は選ばれない／その棟は「既存棟」として後回しになる
+    todo = stock(5, 2)
+    ex = {room_key("サンプル000", "100")}
+    picked, _d = select_rooms([r for r in todo if room_key(r["name"], r["room"]) not in ex],
+                             ex, 10, 0, 0, 1, quiet)
+    got_keys = {room_key(r["name"], r["room"]) for r in picked}
+    check("★除外した室は選ばれない", ex & got_keys, set())
+    check("  残りは全部取れる", len(picked), 9)
+
+
 def main() -> int:
     import tempfile
     from pathlib import Path as _P
@@ -268,6 +298,7 @@ def main() -> int:
     test_route_search_cmd()
     with tempfile.TemporaryDirectory() as d:
         test_existing_keys(_P(d))
+        test_exclude_keys(_P(d))
     print()
     if FAIL:
         print(f"NG {len(FAIL)}件: {FAIL}")

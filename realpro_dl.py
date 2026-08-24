@@ -23,6 +23,7 @@ import argparse
 import collections
 import csv
 import json
+import os
 import re
 import unicodedata as ud
 import sys
@@ -704,6 +705,40 @@ def pager_info(page, emit, label=""):
     return info
 
 
+def load_exclude_keys(spec, emit):
+    """DLから外す room_key を読む（1行1キー・`#` はコメント）。→ set。
+
+    ★つなぎの打ち手（2026-08-24）。**②のバックフィルが済んだら不要になる。**
+
+    背景：提案くんの既存25室は `extractedRaw` が string 形式で、
+      `import-suumo.ts` の冪等照合（`typeof raw === 'object'` で見ている）に**載らない**。
+      そのため同じ室を投入すると**重複レコードが作られる**。
+      実測（2026-08-24）でそのうち **7室が8/20の収穫に居る**ので、
+      次のDLで引き当てると重複が起きる。
+      ★確率: **理論 14.4%**（候補915室から20室を引いて、7室のうち1室以上を引く確率）。
+        30 seed の実測では 7/30 = 23.3% だったが、これは**観測値であって確率ではない**
+        （理論14.4%のとき30試行で7回以上出る確率は13%＝ばらつきの範囲内）。
+        母集団1,466室で計算すると 9.2% になるが、実際の候補は状態除外・号室なし・
+        既DLを引いた後の915室なので、**14.4% が正しい**。
+      どの数でも十分高い。数回回せば起きる。
+
+    ★ここに入れるのは**実測して得た room_key だけ**。棟名や賃料からの推定は入れない
+      （推定照合は成約済みを「在り」と誤判定しうるため却下されている）。
+    ★除外したキーが収穫に1件も無かった場合も**そう言う**。
+      「守った」と「守る必要が無かった」を同じ表示にしない。
+    """
+    p = Path(str(spec)).expanduser()
+    raw = p.read_text(encoding="utf-8") if p.is_file() else str(spec)
+    keys = set()
+    for line in raw.splitlines():
+        t = line.strip()
+        if t and not t.startswith("#"):
+            keys.add(t)
+    emit(f"[OK] 除外キー {len(keys)}件を読んだ"
+         f"（{p.name if p.is_file() else '引数から直接'}）")
+    return keys
+
+
 def do_pages(page, n, emit):
     """n ページぶん収穫して行のリストを返す。★ページャは「最初 前 1..10 後 最後」（実測）。
     「後」をテキストで押す（このサイトは onclick 属性を持たずリスナ方式）。"""
@@ -834,6 +869,16 @@ def serve(page, a, emit, log):
                 kdir.mkdir(parents=True, exist_ok=True)
                 mdir.mkdir(parents=True, exist_ok=True)
                 have = existing_keys(kdir)
+                # ★提案くんに既にある室を「既に持っている」として扱う（つなぎ・§load_exclude_keys）。
+                #   have に混ぜるのが意味的に正しい：棟上限にも数えたいし、
+                #   その棟は「既存棟」として後回しにしたい（未DL棟を優先する現行方針と揃う）。
+                excl = load_exclude_keys(a.exclude_keys, emit) if a.exclude_keys else set()
+                if excl:
+                    hit = {k for k in excl if any(
+                        room_key(r["name"], r["room"]) == k for r in rows)}
+                    emit(f"[OK] 除外キーのうち今回の収穫に居るのは {len(hit)}件"
+                         + (f": {sorted(hit)}" if hit else "（今回は1件も居ない＝守る対象なし）"))
+                    have = have | excl
                 todo, skipped = [], {"既DL": 0, "除外状態": 0, "号室なし": 0}
                 noroom = []
                 for r in rows:
@@ -993,7 +1038,12 @@ def main(argv=None):
     ap.add_argument("--cmd", default="/tmp/rp_cmd")
     ap.add_argument("--result", default="/tmp/rp.log")
     ap.add_argument("--download-dir", default="/tmp/rp_dl")
-    base = "/Users/taniairyouma/Downloads/エンクス/03_物件提案くん/SUUMO入稿_75枠_20260806"
+    # ★絶対パスを書かない（このリポは Public）。ユーザ名とフォルダ構成が公開される。
+    #   スクリプトの位置から導出し、環境変数で上書きできるようにする。
+    #   （既定の配置: <リポ>/../SUUMO入稿_75枠_20260806）
+    base = os.environ.get(
+        "SUUMO_BASE_DIR",
+        str(Path(__file__).resolve().parent.parent / "SUUMO入稿_75枠_20260806"))
     ap.add_argument("--kyakuzuke-dir", default=base + "/01_マイソク")
     ap.add_argument("--motozuke-dir", default=base + "/01_マイソク_元付版")
     ap.add_argument("--profile", default=str(PROFILE_DIR))
@@ -1022,6 +1072,11 @@ def main(argv=None):
                     help="棟シャッフルの seed（既定=毎回ランダム）。再現したいときに指定する")
     # ★物件名検索の欄名。未実測なので既定は None（自動判定に任せる）。
     #   自動判定が1つに絞れなかったら候補を出して止まるので、そこで実測した名前を渡す。
+    # ★つなぎ（2026-08-24）。提案くんに既にある室をDLから外す。
+    #   ②のバックフィルで冪等照合に載るようになったら**この指定は不要になる**。
+    ap.add_argument("--exclude-keys", default=None,
+                    help="DLから外す room_key の一覧（ファイルか直接指定・1行1キー）。"
+                         "提案くん側に既にある室の重複DLを防ぐつなぎ")
     ap.add_argument("--name-field", default=None,
                     help="searchname: が使う物件名欄の name/id。"
                          "省略時は自動判定（絞れなければ候補を出して止まる）")
