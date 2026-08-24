@@ -181,7 +181,8 @@ def run(repo: pathlib.Path, staged: bool, list_path: pathlib.Path | None) -> int
         print(f"\n❌ {where}に実物件名らしき記述が {total}件。", file=sys.stderr)
         if staged:
             print("   コミットを中止した。実名を伏せてから再実行すること。\n"
-                  "   誤検出なら name_guard.py の SAFE_WORDS に足すか、"
+                  "   誤検出なら name_guard.py の SAFE_WORDS に足すか、行末に\n"
+                  "   `# name-guard: ok` を付ける（grep できる形で1本だけ用意してある）。\n"
                   "   意図的に通す場合だけ git commit --no-verify。", file=sys.stderr)
         return 1
     print("\n✅ 実物件名 0件")
