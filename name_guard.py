@@ -61,6 +61,9 @@ SAFE_LINES = (
 _STRUCT = [
     re.compile(r"[ァ-ヶーA-Za-z][ァ-ヶーA-Za-z0-9・一-鿿]{3,}_\d{3,4}(?!\d)"),
     re.compile(r"[ァ-ヶーA-Za-z][ァ-ヶーA-Za-z0-9・一-鿿]{3,}\s*\d{3,4}号室"),
+    # 実在の電話番号（元付会社の連絡先）。2026-08-24 に js/harvest.js のコメントで1件出た。
+    # ★市外局番から始まる形だけ。日付（2026-08-24）に当てないよう末尾4桁を必須にする。
+    re.compile(r"0\d{1,4}-\d{1,4}-\d{4}(?!\d)"),
 ]
 
 
@@ -213,6 +216,9 @@ def _self_test() -> int:
     check("社名の接頭辞リストは拾わない",
           scan_text('SAMTY_PREFIXES = ("S-RESIDENCE", "S-FORT")\n', [], []) == [])
     check("短い塊は STRUCT に掛けない", scan_text("ab_101\n", [], []) == [])
+    check("実在しそうな電話番号を拾う", scan_text("# TEL06-1234-5678 で確認\n", [], []) != [])  # name-guard: ok（架空の番号）
+    check("★日付は電話番号と間違えない", scan_text("# 2026-08-24 実測\n", [], []) == [])
+    check("★バージョン表記も間違えない", scan_text("# v1.0-20260824 の版\n", [], []) == [])
     check("1行1件（最長一致優先）",
           len(scan_text("ヨソノナ梅田タワー と カタカナレジデンス_903\n", ex, [])) == 1)  # name-guard: ok（架空名のフィクスチャ）
     # 異常系
