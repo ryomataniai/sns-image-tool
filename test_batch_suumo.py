@@ -110,6 +110,22 @@ def _restore(monkey):
     monkey.clear()
 
 
+def _only_key(in_dir):
+    """--only に渡す実在キーを入力フォルダから決める。→ キー文字列。
+
+    ★以前は室名を直書きしていた。リポは Public なので実物件名はソースに置かない
+      （2026-08-24）。解決は resolve_targets と同じ経路を通し、並べ替えて先頭を取るので、
+      **選ばれる室は実行のたびに同じ**（テストは再現する）。
+    ★該当0件なら静かに素通りさせず落とす。0件のまま「--only が効いた」と読める
+      PASS を出すと、テストが空で通ってしまう。
+    """
+    import batch_suumo
+    t, _stat = batch_suumo.resolve_targets(in_dir, "20260812", None, 0)
+    if not t:
+        raise SystemExit(f"--since-ts 20260812 に該当する入力が無い: {in_dir}")
+    return sorted(k for k, _v in t)[0]
+
+
 def _run(in_dir, out_dir, extra, stub):
     import batch_suumo
     monkey = []
@@ -132,7 +148,7 @@ def test_single_room(in_dir, tmp):
     """受入基準2相当：1室だけ実行し、構造・命名・896×1152・注記なしを確認（生成はスタブ）。"""
     out = tmp / "single"
     stub = _Stub()
-    rc = _run(in_dir, out, ["--only", "難波大国町Uno_903", "--since-ts", "20260812"], stub)
+    rc = _run(in_dir, out, ["--only", _only_key(in_dir), "--since-ts", "20260812"], stub)
     _check("終了コード0", rc == 0, f"rc={rc}")
     dirs = [p for p in out.iterdir() if p.is_dir()]
     _check("出力フォルダが1つできる", len(dirs) == 1, str([p.name for p in dirs]))
@@ -188,13 +204,13 @@ def test_skip_existing(in_dir, tmp):
     """既存フォルダは既定でスキップ（二重生成＝二重課金を防ぐ）。--overwrite で作り直す。"""
     out = tmp / "single"          # test_single_room の出力を再利用
     stub = _Stub()
-    rc = _run(in_dir, out, ["--only", "難波大国町Uno_903", "--since-ts", "20260812"], stub)
+    rc = _run(in_dir, out, ["--only", _only_key(in_dir), "--since-ts", "20260812"], stub)
     _check("2回目はスキップされ生成APIを呼ばない", stub.calls == 0, f"{stub.calls}回")
     _check("スキップでも終了コード0", rc == 0, f"rc={rc}")
     rows = _read_summary(out)
     _check("サマリのstatusがSKIP", [r["status"] for r in rows] == ["SKIP"], str(rows))
     stub2 = _Stub()
-    _run(in_dir, out, ["--only", "難波大国町Uno_903", "--since-ts", "20260812",
+    _run(in_dir, out, ["--only", _only_key(in_dir), "--since-ts", "20260812",
                        "--overwrite"], stub2)
     _check("--overwrite なら作り直す", stub2.calls > 0, f"{stub2.calls}回")
 
@@ -203,7 +219,7 @@ def test_partial_failure(in_dir, tmp):
     """受入基準4相当：1枚の生成失敗で1室が落ちず、statusがPARTIALになりサマリに出る。"""
     out = tmp / "partial"
     stub = _Stub(fail_on=(2, 4))
-    rc = _run(in_dir, out, ["--only", "難波大国町Uno_903", "--since-ts", "20260812"], stub)
+    rc = _run(in_dir, out, ["--only", _only_key(in_dir), "--since-ts", "20260812"], stub)
     rows = _read_summary(out)
     _check("失敗が混ざってもフォルダは作られる",
            any(p.is_dir() for p in out.iterdir()), "")
@@ -242,7 +258,11 @@ def test_nfd_only_match(in_dir, tmp):
                  if unicodedata.normalize("NFC", p.name) != p.name]
     _check("入力にNFDのファイル名が存在する（このテストが意味を持つ前提）",
            bool(nfd_names), f"{len(nfd_names)}件")
-    t, _ = batch_suumo.resolve_targets(in_dir, "", ["エスリードレジデンス"], 0)  # NFCで指定
+    # ★棟名を直書きしない（2026-08-24・リポは Public）。NFDの実ファイル名から
+    #   棟名部分を取り、NFCに正規化して --only に打つ。測っている内容は従来と同じ
+    #   （NFCで打った --only が NFD のファイル名に当たること）。
+    only = unicodedata.normalize("NFC", Path(nfd_names[0]).stem).split("_")[0]
+    t, _ = batch_suumo.resolve_targets(in_dir, "", [only], 0)  # NFCで指定
     _check("NFCで打った --only がNFDファイルに一致する", len(t) > 0, f"{len(t)}件")
     _check("キーがNFCに正規化されている",
            all(unicodedata.normalize("NFC", k) == k for k, _ in t))

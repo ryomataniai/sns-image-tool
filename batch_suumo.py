@@ -5,7 +5,7 @@
 使い方:
     export GEMINI_API_KEY=...
     python3 batch_suumo.py --in 01_マイソク --out 05_SUUMO入稿用 --dry-run
-    python3 batch_suumo.py --in 01_マイソク --out 05_SUUMO入稿用 --only 難波大国町Uno_903
+    python3 batch_suumo.py --in 01_マイソク --out 05_SUUMO入稿用 --only サンプルレジデンスA_903
     python3 batch_suumo.py --in 01_マイソク --out 05_SUUMO入稿用 --since-ts 20260812
 
 ■設計の要点
@@ -352,8 +352,8 @@ def write_room(out_dir: Path, key: str, items, floorplan, overwrite: bool, log,
             shutil.rmtree(tmp)
             raise FileExistsError(str(dest))
         # ★madori-v1 受入基準5：既存の間取り図より新しい方が小さいなら、上書きは劣化になる。
-        #   実測で既存5物件（西長堀_505 / 難波大国町Tres_907 / エスリード_0201・0505 /
-        #   フレンシアノイエ_308）の madori は 1099×1100 で、客付版・元付版どちらのPDFからも
+        #   実測で既存5物件（サンプルレジデンスA_505 / サンプルレジデンスB_907 /
+        #   サンプルレジデンスC_0201・0505 / サンプルレジデンスD_308）の madori は 1099×1100 で、客付版・元付版どちらのPDFからも
         #   出ない寸法だった（＝手動DLか別経路で用意されたもの）。CLIで上書きすると300×300に落ちる。
         #   黙って下げないよう、上書き前に見つけて知らせる（--overwrite を指定した人の判断に返す）。
         _warn_madori_downgrade(dest, tmp, log)

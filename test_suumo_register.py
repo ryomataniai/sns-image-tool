@@ -8,7 +8,7 @@
      ＝待ってから確認画面へ進めば画像が全部登録され、未登録が0件になる
      （8/12に手作業でこの待機を怠って画像が入らなかった実績がある）
   B. 前室の画像が残っている状態では画像を投入せず止まること
-     （8/11に西長堀505の入力中にJINO新町の写真12枚が残り、別物件の写真で登録しかけた）
+     （8/11にサンプルレジデンスA_505の入力中にサンプルレジデンスBの写真12枚が残り、別物件の写真で登録しかけた）
   C. 全削除が confirm ダイアログを越えて0枚にできること
      （実機の deleteGazo はソースが読めず confirm の有無が不明なので、出る前提で組んでいる）
   D. name属性が違えば読み戻し照合が捕まえること
@@ -40,11 +40,16 @@ def _check(name, cond, detail=""):
 
 
 def _sample_json():
-    """テスト用の1室JSON。実データがあればそれを使い、無ければ最小の合成データ。"""
-    real = (REPO.parent / "SUUMO入稿_75枠_20260806" / "06_登録データ"
-            / "S-RESIDENCE難波大国町Uno_903.json")
-    if real.is_file():
-        return json.loads(real.read_text(encoding="utf-8")), real
+    """テスト用の1室JSON。実データがあればそれを使い、無ければ最小の合成データ。
+
+    ★室名を直書きしない（2026-08-24）。リポは Public なので実物件名はソースに置かない。
+      フォルダを並べ替えて先頭を取るので、**選ぶ室は実行のたびに同じ**（テストは再現する）。
+      フォルダごと無い環境では合成データに落ちる＝従来と同じ挙動。
+    """
+    d = REPO.parent / "SUUMO入稿_75枠_20260806" / "06_登録データ"
+    cands = sorted(d.glob("*.json")) if d.is_dir() else []
+    if cands:
+        return json.loads(cands[0].read_text(encoding="utf-8")), cands[0]
     return None, None
 
 

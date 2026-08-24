@@ -6,7 +6,7 @@
 
 ■なぜ専用の実行器を作るか
 shellのループで待機条件を書くと**部屋キーの部分一致で誤マッチする**（実際に
-「_808」で待って S-FORT桜川南_808 の完了行に当たり、S-RESIDENCEドーム前千代崎_808 を
+「_808」で待って S-FORTサンプル北_808 の完了行に当たり、S-RESIDENCEサンプル南_808 を
 飛ばした）。部屋キーの**完全一致**で待ち、飛ばしも取りこぼしも起きないようにする。
 ■止め方は失敗の種類で分ける（2026-08-14 谷合さんの指示）。
   ・**照合FAIL＝全体を即停止**。登録は済んでいるのに内容が違う＝状態が悪い。
@@ -34,7 +34,7 @@ def wait_for(res: Path, key: str, timeout: int, start: int, poll: float = 4.0):
     """その部屋の結果行が出るまで待つ。→ ('OK'|'HALT'|'SKIP'|None, 詳細)。
 
     ★キーは完全一致で見る（部分一致は別の部屋の行に当たる。実際に「_808」で待って
-      S-FORT桜川南_808 の完了行に当たり、S-RESIDENCEドーム前千代崎_808 を飛ばした）。
+      S-FORTサンプル北_808 の完了行に当たり、S-RESIDENCEサンプル南_808 を飛ばした）。
     ★start は**コマンドを書く前**に数えた行数を渡すこと。書いてから数えると、
       その間に出た行を読み飛ばして時間切れになる。
     """
@@ -61,7 +61,7 @@ def main(argv=None):
     ap.add_argument("--result", required=True)
     ap.add_argument("--timeout", type=int, default=600, help="1室あたりの上限秒")
     ap.add_argument("--retry", type=int, default=1, help="失敗した室の再試行回数")
-    # ★部屋キーに空白が入る（「BROAD 新うめきたRESIDENCE_0801.json」）。
+    # ★部屋キーに空白が入る（「サンプル レジデンスA_0801.json」）。
     #   shellの展開に頼るとクォート事故になるので、改行区切りのファイルで渡せるようにする。
     ap.add_argument("--rooms-file", help="JSONパスを改行区切りで並べたファイル")
     ap.add_argument("rooms", nargs="*")
