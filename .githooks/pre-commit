@@ -1,0 +1,10 @@
+#!/bin/sh
+# 実物件名がコミットに混ざるのを止める。★このフックは追跡されている（core.hooksPath=.githooks）。
+#
+# 有効化（クローン直後に1回だけ）:
+#     git config core.hooksPath .githooks
+#
+# 意図的に通す場合だけ `git commit --no-verify`。
+# ★croco-bridge のように AUTO_COMMIT=1 で自動コミットする経路には --no-verify を付けないこと。
+#   付けるとこのガードは無いのと同じになる。
+python3 "$(git rev-parse --show-toplevel)/name_guard.py" --staged || exit 1
