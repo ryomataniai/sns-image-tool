@@ -597,10 +597,16 @@ def read_shijizumi(page, log, page_size=200):
         if not x["code"]:
             continue
         c = x["cells"]
+        # ★キーの追加は既存の照合に影響しない（verify は個別キーを見ている）。
+        #   PV と金額は --dump-all で使う（一覧を読むついでに取れるので取っておく）。
         out[x["code"]] = {
             "物件": c[COL["物件"]] if len(c) > COL["物件"] else "",
             "指示ネット": c[COL["指示ネット"]] if len(c) > COL["指示ネット"] else "",
             "掲載終了日": c[COL["掲載終了日"]] if len(c) > COL["掲載終了日"] else "",
+            "PV": c[COL["PV"]] if len(c) > COL["PV"] else "",
+            "金額": c[COL["金額"]] if len(c) > COL["金額"] else "",
+            "画像と名寄せ": (c[COL["画像と名寄せ"]]
+                          if len(c) > COL["画像と名寄せ"] else ""),
         }
     log(f"  現在掲載指示済: 該当{n}件 / 行{len(rows)} / コードが取れた{len(out)}件")
     # ★行はあるのにコードが取れない＝読み取りが壊れている。空と混同しない
@@ -608,6 +614,44 @@ def read_shijizumi(page, log, page_size=200):
         log("  ★行はあるのに物件コードが1件も取れない（読み取りが壊れている）")
         return None, n
     return out, n
+
+
+def dump_all(page, log, page_size=200, out_csv=None):
+    """★「現在掲載指示済」の**全件**を出す（読み取り専用）。→ 終了コード。
+
+    ★なぜ要るか（2026-08-22）：read_shijizumi は一覧を**全件読んでいる**
+      （実測「該当29件 / 行29 / コードが取れた29件」）のに、--verify は
+      `--codes` で渡した分しか表示しない。**画面に出ている29件を見る手段が無かった。**
+      掲載枠の残りを数えたり、PVを室ごとに見たいときに毎回ブラウザを開くことになる。
+    ★書き込みは一切しない。--shiji / --confirm-write とは併用しない。
+    """
+    got, n = read_shijizumi(page, log, page_size)
+    if got is None:
+        log("")
+        log("■ 判定: ★読み取り不能（一覧を読めなかった）。『0件』ではない")
+        return 3
+    log("")
+    log(f"■ 現在掲載指示済 {len(got)}件（該当{n}件）")
+    for c, v in sorted(got.items(), key=lambda x: x[1]["物件"]):
+        log(f"   {c}  {v['物件'][:30]:<32}"
+            f"指示={v['指示ネット']:<6}終了={v['掲載終了日']:<10}"
+            f"PV={v.get('PV', ''):<12}{v.get('画像と名寄せ', '')}")
+    if out_csv:
+        import csv as _csv
+        p = Path(out_csv).expanduser()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        cols = ["物件コード", "物件", "指示ネット", "掲載終了日", "PV", "金額", "画像と名寄せ"]
+        with p.open("w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.DictWriter(f, fieldnames=cols)
+            w.writeheader()
+            for c, v in sorted(got.items(), key=lambda x: x[1]["物件"]):
+                w.writerow({"物件コード": c, **{k: v.get(k, "") for k in cols[1:]}})
+        log(f"■ CSV → {p}")
+    # ★件数が0でも「合格」と言わない。読めた結果として0件だったことを明示する
+    if not got:
+        log("★0件。指示が入っていないのか読み取りが外れているのか、これだけでは決まらない")
+        return 3
+    return 0
 
 
 def verify(page, codes, dropped, expect_total, log, page_size=200):
@@ -695,6 +739,11 @@ def main(argv=None):
                     help="--verify で現在掲載指示済の総件数の期待値")
     ap.add_argument("--page-size", type=int, default=200,
                     help="--verify の表示件数（既定200）")
+    # ★読み取り専用の全件出力。--codes は不要（画面に出ている全件を見るためのもの）
+    ap.add_argument("--dump-all", action="store_true",
+                    help="『現在掲載指示済』の全件を出す（読み取り専用・--codes 不要）")
+    ap.add_argument("--dump-csv", default=None,
+                    help="--dump-all の出力をCSVにも書く")
     ap.add_argument("--dup-test", nargs=2, metavar=("物件名", "対象コード"),
                     help="★受入基準3：物件名で検索して重複レコードを両方出した状態で、"
                          "指定した側だけがチェックされることを検証する")
@@ -708,8 +757,12 @@ def main(argv=None):
     ap.add_argument("--login-wait", type=int, default=1800)
     ap.add_argument("--headless", action="store_true")
     a = ap.parse_args(argv)
-    if not (a.recon or a.login or a.shiji or a.verify or a.dry_run or a.dup_test):
-        ap.error("--recon / --login / --shiji / --verify のどれかが要る")
+    if not (a.recon or a.login or a.shiji or a.verify or a.dry_run
+            or a.dup_test or a.dump_all):
+        ap.error("--recon / --login / --shiji / --verify / --dump-all のどれかが要る")
+    # ★読み取り専用のコマンドを書き込み系と混ぜない
+    if a.dump_all and (a.shiji or a.confirm_write):
+        ap.error("--dump-all は読み取り専用。--shiji / --confirm-write と併用しない")
     log = log_factory()
 
     codes = []
@@ -728,7 +781,8 @@ def main(argv=None):
             log(f"✗ --dropped に12桁でない指定: {dbad[:5]}")
             return 2
         log(f"落とした室 {len(a.dropped_codes)}件")
-    if (a.shiji or a.verify or a.dry_run) and not codes and not a.dup_test:
+    if ((a.shiji or a.verify or a.dry_run) and not codes
+            and not a.dup_test and not a.dump_all):
         ap.error("--shiji / --verify には --codes が要る")
 
     # ★利用時間外なら**ブラウザを開く前に**止める（ログイン失敗を積まない）
@@ -860,6 +914,8 @@ def main(argv=None):
                 log(f"■ 成功 {sum(1 for _c, o, _d in results if o)}室 / 失敗 {len(ng)}室"
                     + ("" if a.confirm_write else "  ※--confirm-write が無いので保存していない"))
                 return 0 if not ng else 1
+            if a.dump_all:
+                return dump_all(page, log, page_size=a.page_size, out_csv=a.dump_csv)
             if a.verify:
                 return verify(page, codes, a.dropped_codes, a.expect_total, log,
                               page_size=a.page_size)

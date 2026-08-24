@@ -162,7 +162,45 @@ def test_real_pdfs() -> None:
     check("定期借家は6件（2026-08-17 実測）", hit, 6)
 
 
+# ── 番地パーサー（★登録失敗の直接原因だった）──────────────────────
+def test_parse_banchi() -> None:
+    """★番地が空だと交通モーダルの住所検索が0件になり、登録できない。
+
+    2026-08-22 に18室中3室が Timeout で失敗し、うち2室は28点以上だった。
+    """
+    from suumo_fields import parse_banchi
+    print("[番地パーサー]")
+    # 実データ224件の2形（218件がこのどちらか）
+    check("『N-N』形", parse_banchi("大阪府大阪市西区江之子島１丁目6-1"), "6-1")
+    check("『N番N号』形", parse_banchi("大阪府大阪市中央区松屋町住吉5番23号"), "5番23号")
+    check("『N番N』（号なし）", parse_banchi("大阪市北区サンプル13番15"), "13番15")
+    check("丁目が無い町名でも取れる", parse_banchi("大阪府大阪市中央区松屋町10-4"), "10-4")
+    check("枝番が続く", parse_banchi("大阪市西区サンプル1丁目2-3-4"), "2-3-4")
+
+    # ★今回直した1件
+    check("★末尾に『 N号』が続く（森ノ宮中央のケース）",
+          parse_banchi("大阪府大阪市中央区森ノ宮中央１丁目3-16 16号"), "3-16")
+
+    print("[番地が無い住所は作らない]")
+    # ★元データに番地が無いものは None。**推測で埋めない**
+    for addr in ("大阪府大阪市中央区十二軒町",
+                 "大阪府大阪市中央区玉造２丁目丁目",
+                 "大阪府大阪市浪速区敷津東１丁目丁目"):
+        check(f"『{addr[-8:]}』は None", parse_banchi(addr), None)
+    check("空文字", parse_banchi(""), None)
+    check("None", parse_banchi(None), None)
+
+    print("[誤検出しないこと]")
+    # ★末尾アンカーを外す案を採らなかった理由。手前の数字を拾わせない
+    check("★『6-1 2-3号室』で 2-3 を拾わない（一致せず None）",
+          parse_banchi("大阪市西区サンプル1丁目6-1 2-3号室"), None)
+    check("★ビル名の階を番地にしない",
+          parse_banchi("大阪市西区サンプルビル3階"), None)
+    check("丁目だけの数字を拾わない", parse_banchi("大阪市西区サンプル1丁目"), None)
+
+
 def main() -> int:
+    test_parse_banchi()
     test_normal()
     test_boundary()
     test_abnormal()

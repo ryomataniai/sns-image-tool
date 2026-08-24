@@ -44,7 +44,15 @@ def nfc(s: str) -> str:
 # ── SUUMOの固定値 ──────────────────────────────────────────────────
 # ★§3-3の実測値。ここは物件によらず固定で入れるもの。
 BUKKEN_SHU_CD = "01"          # 物件種別＝マンション
-TORIHIKI_TAIYO_CD = "4"       # 取引態様＝仲介先物（元付版が「貸主」でもmikkeは客付なので4）
+# ★取引態様＝仲介・先物。**mikkeが客付である前提**の固定値（2026-08-18 に前提を明文化）。
+#   取引態様は「mikkeと物件の関係」を表す。元付が貸主でも専任でも、mikkeから見れば
+#   全部「仲介・先物」なので、全室で 4 が正しい。
+#   ★mikkeが元付の物件を扱うようになったら壊れる。そのときはここを分岐させること。
+#   ★構造的に混ざらない：リアプロで「web転載可能」の**他社物件**を拾っているので、
+#     mikkeが元付の物件は仕入れ経路に入らない。
+#   ★_motozuke_torihiki_raw（元付版から読んだ態様・実測は貸主109/専任媒介34/…）は
+#     **元付会社と物件の関係**であって、この値とは別の軸。混同しないこと。
+TORIHIKI_TAIYO_CD = "4"
 # ★定期借家（teiki-fix-v1・2026-08-17）
 #   以前は TEIKI_SHAKUYA_FLG = "0" の**無条件代入**で、マイソクを読む処理が無かった。
 #   その結果95室すべてが「普通借家」になり、**定期借家6室が普通借家として掲載された**
@@ -194,6 +202,35 @@ def manen_to_yen(c1, c2):
         return round(float(f"{c1}.{frac}") * 10000)
     except ValueError:
         return None
+
+
+# 番地。『7番8号』『3-16』の2形。末尾に『 N号』が続くことがある（実測1件）。
+_BANCHI_RX = re.compile(r"([0-9０-９]+番[0-9０-９]*号?|[0-9０-９]+-[0-9０-９\-]+)"
+                        r"(?:\s*[0-9０-９]+号)?\s*$")
+
+
+def parse_banchi(addr: str):
+    """住所 → 番地（半角のまま）。取れなければ None。
+
+    ★末尾に『 N号』が続く住所がある（2026-08-22 実測・224件中1件）。
+        『大阪府大阪市中央区森ノ宮中央１丁目3-16 16号』
+      旧実装は `$` アンカーだけで、3-16 があるのに不一致になり番地が空になった。
+    ★番地が空だと交通モーダルの住所検索が0件になり、
+      `TimeoutError: Locator.click: Timeout 30000ms` で**登録できない**。
+      8/22に18室中3室が失敗し、うち2室は28点以上だった。
+      banchiNm を手で '３－１６' に補うだけでコードを変えずに通ることを確認済み。
+
+    ★末尾アンカーを外して「最後に現れた番地を採る」案も測ったが、採らなかった。
+      実データ224件では**両案とも同じ結果**（219件・差は上の1件だけ）。
+      違うのは**外れ方**で、未知の書式が来たとき
+        この案          → 一致せず warn が出る（人が気づける）
+        末尾アンカー無し → 手前の別の数字を黙って番地として採る
+      例『1丁目6-1 2-3号室』で後者は 2-3 を拾う。**誤った番地で登録されるほうが害が大きい。**
+    ★許すのは『N号』だけ。書式が増えたら実測してから広げること（推測で広げない）。
+    ★『◯丁目丁目』のように元データに番地が無いものは None のままにする（作らない）。
+    """
+    m = _BANCHI_RX.search(str(addr or ""))
+    return m.group(1) if m else None
 
 
 def detect_teiki(text: str):
@@ -458,8 +495,8 @@ def extract_room(key: str, kyakuzuke_pdf: Path, motozuke_pdf, images_dir: Path):
         block("郵便番号が取れない（住所の自動入力ができない）")
     addr = str(facts.get("address", ""))
     F["_address_raw"] = addr
-    ba = re.search(r"([0-9０-９]+番[0-9０-９]*号?|[0-9０-９]+-[0-9０-９\-]+)\s*$", addr)
-    F["banchiNm"] = _to_zenkaku(ba.group(1)) if ba else ""
+    ba = parse_banchi(addr)
+    F["banchiNm"] = _to_zenkaku(ba) if ba else ""
     if not ba:
         warn(f"番地を切り出せない（住所『{addr}』・丁目までは郵便番号入力で入る）")
     # 丁目（${azaCd} で選ぶ）。数字を渡すだけにして、コード変換は実機recon後
@@ -776,7 +813,13 @@ def main(argv=None):
             "houi", "nyukyo", "shikikin", "reikin", "chiku", "yubin", "banchiNm",
             "mototsukeGyoshaNm", "mototsukeTelNo", "images", "score", "tokucho_n",
             "block", "warn"]
-    cp = od / "_review.csv"
+    # ★実行ごとに別ファイルにする（2026-08-20 に実機で踏んだ）。
+    #   `--since-ts 20260820` → `20260821` と続けて回したら、1回目の一覧（20室）が
+    #   2回目（16室）で**上書きされて消えた**。目視で採否を決める材料なので、
+    #   消えると前の回の判断根拠がなくなる。
+    #   絞り込み条件を名前に入れて、同じ条件の再実行だけが上書きされるようにする。
+    tag = a.since_ts or ("only" if only else "all")
+    cp = od / f"_review_{tag}.csv"
     with cp.open("w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()

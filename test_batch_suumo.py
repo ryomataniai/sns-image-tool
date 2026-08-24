@@ -144,6 +144,40 @@ def _read_summary(out_dir: Path):
 
 
 # ── テスト ────────────────────────────────────────────────────────
+def _assert_room_output(jpgs, rows):
+    """出力ファイル名とmanifestの中身を検証する。**ファイルI/Oはしない**（空でも呼べる）。
+
+    ★空でも通らないよう、**先に件数を固定する**。2026-08-18 の棚卸しで、
+      `all(... for n in jpgs)` 系が **jpgs/rows が空だと全部PASS** することが分かった
+      （`all([])` は True）。テストは下流全部の安全網なので、ここが空で通ると守るものが無くなる。
+    ★直し方は既に他のテストの中にある：test_suumo_register が
+      `_check("交通を3路線読める", len(saved) == 3)` を先に置いているのと同じ形。
+      「件数を先に固定してから中身を見る」なら空は通らない。
+    """
+    # ★この2行が保護。これより下の all(...) は空なら意味を成さない
+    _check("出力JPEGが1枚以上ある（空でPASSしないための前提）", len(jpgs) > 0, f"{len(jpgs)}枚")
+    _check("manifestの行が1行以上ある（空でPASSしないための前提）", len(rows) > 0, f"{len(rows)}行")
+    _check("ファイル名が 連番2桁_部位ASCII.jpg", all(
+        len(n.split("_")[0]) == 2 and n.split("_")[0].isdigit() and n.endswith(".jpg")
+        for n in jpgs), str(jpgs))
+    _check("全ファイル名が半角英数（SUUMOの受付条件）", all(n.isascii() for n in jpgs))
+    _check("連番が1から連続している",
+           [int(n[:2]) for n in jpgs] == list(range(1, len(jpgs) + 1)),
+           str([int(n[:2]) for n in jpgs]))
+    _check("manifestに全行SUUMOカテゴリコードが入っている",
+           all(r["suumo_category"] for r in rows))
+    _check("manifestのfileが実ファイルと一致", sorted(r["file"] for r in rows) == jpgs)
+    _check("manifestにtext_subject列がある（文字主題の手がかり）",
+           all("text_subject" in r for r in rows))
+    _check("文字主題が1件だけ立っている（スタブどおり）",
+           sum(1 for r in rows if r.get("text_subject")) == 1,
+           str([r["file"] for r in rows if r.get("text_subject")]))
+    _check("クローゼットが storage に寄る（999999に落ちない）",
+           all(r["suumo_category"] != "999999" or r["room"] != "クローゼット" for r in rows),
+           str([(r["file"], r["room"], r["suumo_category"]) for r in rows
+                if r["room"] == "クローゼット"]))
+
+
 def test_single_room(in_dir, tmp):
     """受入基準2相当：1室だけ実行し、構造・命名・896×1152・注記なしを確認（生成はスタブ）。"""
     out = tmp / "single"
@@ -156,15 +190,15 @@ def test_single_room(in_dir, tmp):
         return
     d = dirs[0]
     jpgs = sorted(p.name for p in d.glob("*.jpg"))
-    _check("ファイル名が 連番2桁_部位ASCII.jpg", all(
-        len(n.split("_")[0]) == 2 and n.split("_")[0].isdigit() and n.endswith(".jpg")
-        for n in jpgs), str(jpgs))
-    _check("全ファイル名が半角英数（SUUMOの受付条件）",
-           all(n.isascii() for n in jpgs))
-    _check("連番が1から連続している", [int(n[:2]) for n in jpgs] == list(range(1, len(jpgs) + 1)),
-           str([int(n[:2]) for n in jpgs]))
     _check("_manifest.csv がある", (d / "_manifest.csv").is_file())
-    sizes = {Image.open(p).size for p in d.glob("*.jpg") if "madori" not in p.name}
+    if not (d / "_manifest.csv").is_file():
+        return
+    with (d / "_manifest.csv").open(encoding="utf-8-sig") as fh:
+        rows = list(csv.DictReader(fh))
+    _check("manifestの行数＝出力ファイル数", len(rows) == len(list(d.glob("*.jpg"))),
+           f"{len(rows)}行")
+    _assert_room_output(jpgs, rows)
+    sizes = {Image.open(q).size for q in d.glob("*.jpg") if "madori" not in q.name}
     _check("生成画像は896×1152（間取り図は実物パススルーなので対象外）",
            sizes == {(896, 1152)}, str(sizes))
     # 注記の黒帯：既定 高解像度化のみ＝disc=None なので下端が暗化しない（受入基準5）
@@ -172,32 +206,46 @@ def test_single_room(in_dir, tmp):
     stub_bot = np.asarray(Image.open(io.BytesIO(_stub_png())).convert("L"),
                           dtype="float32")[-140:, :].mean()
     worst = 0.0
-    for p in d.glob("*.jpg"):
-        if "madori" in p.name:
+    for q in d.glob("*.jpg"):
+        if "madori" in q.name:
             continue
-        bot = np.asarray(Image.open(p).convert("L"), dtype="float32")[-140:, :].mean()
+        bot = np.asarray(Image.open(q).convert("L"), dtype="float32")[-140:, :].mean()
         worst = max(worst, stub_bot - bot)
     _check("注記の黒帯が焼かれていない（下端の暗化なし）", worst < 3.0, f"最大暗化 {worst:+.1f}")
-    # manifest の中身
-    with (d / "_manifest.csv").open(encoding="utf-8-sig") as fh:
-        rows = list(csv.DictReader(fh))
-    _check("manifestの行数＝出力ファイル数", len(rows) == len(list(d.glob("*.jpg"))),
-           f"{len(rows)}行")
-    _check("manifestに全行SUUMOカテゴリコードが入っている",
-           all(r["suumo_category"] for r in rows))
-    _check("manifestのfileが実ファイルと一致",
-           sorted(r["file"] for r in rows) == jpgs)
-    _check("manifestにtext_subject列がある（文字主題の手がかり）",
-           all("text_subject" in r for r in rows))
-    _check("文字主題が1件だけ立っている（スタブどおり）",
-           sum(1 for r in rows if r.get("text_subject")) == 1,
-           str([r["file"] for r in rows if r.get("text_subject")]))
-    _check("クローゼットが storage に寄る（999999に落ちない）",
-           all(r["suumo_category"] != "999999" or r["room"] != "クローゼット" for r in rows),
-           str([(r["file"], r["room"], r["suumo_category"]) for r in rows
-                if r["room"] == "クローゼット"]))
     print("    出力:", jpgs)
     print("    カテゴリ:", [f"{r['file']}→{r['suumo_category']}" for r in rows])
+
+
+def test_empty_output_is_not_pass(in_dir, tmp):
+    """★空の出力が「合格」にならないこと（2026-08-18 の棚卸しへの対処）。
+
+    `all([])` は True なので、件数の前提を置かないと**出力ゼロで全部PASS**する。
+    実際に空を食わせてFAILが記録されることを見る（読んだ判断ではなく実測にする）。
+    ★このテストが落ちたら、保護が外れたということ。
+    """
+    global _fails
+    keep = _fails
+    _fails = []                      # このブロックだけ失敗を別に数える
+    try:
+        _assert_room_output([], [])
+        got = list(_fails)
+    finally:
+        _fails = keep
+    _check("空の出力なら『JPEGが1枚以上ある』がFAILする",
+           "出力JPEGが1枚以上ある（空でPASSしないための前提）" in got)
+    _check("空の出力なら『manifestの行が1行以上ある』がFAILする",
+           "manifestの行が1行以上ある（空でPASSしないための前提）" in got)
+    # ★件数の前提が無ければ何件PASSしていたかを示す（保護の効き目の実測）
+    unprotected = [n for n in
+                   ("ファイル名が 連番2桁_部位ASCII.jpg",
+                    "全ファイル名が半角英数（SUUMOの受付条件）",
+                    "連番が1から連続している",
+                    "manifestに全行SUUMOカテゴリコードが入っている",
+                    "manifestにtext_subject列がある（文字主題の手がかり）")
+                   if n not in got]
+    print(f"    （件数の前提が無ければ空でPASSしていた検証: {len(unprotected)}件 {unprotected}）")
+    _check("空でも素通りする検証が残っている＝前提2件で塞いでいる", len(unprotected) >= 3,
+           str(len(unprotected)))
 
 
 def test_skip_existing(in_dir, tmp):
@@ -298,7 +346,7 @@ if __name__ == "__main__":
     tmp = Path(tempfile.mkdtemp(prefix="batchsuumo_test_"))
     print(f"入力: {in_dir}\n作業: {tmp}")
     try:
-        for fn in (test_single_room, test_skip_existing, test_partial_failure,
+        for fn in (test_empty_output_is_not_pass, test_single_room, test_skip_existing, test_partial_failure,
                    test_multi_room_continues, test_nfd_only_match, test_dedup_newest,
                    test_treatment_guard):
             print(f"\n▶ {fn.__name__}: {(fn.__doc__ or '').splitlines()[0]}")
