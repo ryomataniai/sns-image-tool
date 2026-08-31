@@ -3091,7 +3091,11 @@ def data_note_date(facts: dict, gen_date_str: str = "") -> str:
     # ── ① 情報の時点として明示された日付（最優先・ここで決まれば以降は見ない）
     # ★(?:) で括ること。括らないと `|` がパターン全体に掛かり、ラベル単体で一致して group(1)=None になる
     #   （自己テストで TypeError として検出。旧実装が (?:...) だった理由がこれ）。
-    _LBL = r"(?:情報日付|情報登録日|情報公開日|情報更新日|更新日|作成日|掲載日|公開日|募集日|登録日)"
+    _LBL = r"(?:情報日付|情報登録日|情報公開日|情報更新日|更新日|作成日|掲載日|公開日|募集日|登録日|出力日)"
+    # ★「出力日」を足した（2026-08-31）。リアプロのマイソクには情報の時点を示す語がこれしか無い
+    #   （13本を横断: 情報日付/情報登録日/情報公開日 は0件・出力日は全数）。
+    #   足す前は①が空振りし、②が「現況/入居時期 退去予定 / 2026年10月28日」を拾っていた。
+    # ★「次回更新予定日」への否定先読みは**不要**。scripts/ の単体テストに理由を残してある。
     _near = _re.search(_LBL + r"[^\d]{0,6}(\d{4})[年/\-.](\d{1,2})", _ft)
     if _near:
         return f"{_near.group(1)}年{int(_near.group(2))}月"
@@ -3105,19 +3109,38 @@ def data_note_date(facts: dict, gen_date_str: str = "") -> str:
     for _bm in _re.finditer(r"(\d{4})\s*年\s*(\d{1,2})\s*月", _built):
         _built_ym.add((_bm.group(1), int(_bm.group(2))))     # ★キー由来の除外（facts の築年月そのもの）
     _gen_y = 0
+    _gen_ym = None
     _gm = _re.search(r"(\d{4})", str(gen_date_str or ""))
     if _gm:
         _gen_y = int(_gm.group(1))
+    # ★生成年月（"2026-08-31" / "2026年8月" のどちらの書式でも取る）
+    _gym = _re.search(r"(\d{4})\s*[年/\-.]\s*(\d{1,2})", str(gen_date_str or ""))
+    if _gym:
+        _gen_ym = (int(_gym.group(1)), int(_gym.group(2)))
     for _m in _re.finditer(r"(\d{4})\s*年\s*(\d{1,2})\s*月", _ft):
         if (_m.group(1), int(_m.group(2))) in _built_ym:
             continue                                          # 築年月と同じ値
-        if _re.search(r"築|建築|竣工|新築|完成", _ft[max(0, _m.start() - 8):_m.start()]):
-            continue                                          # ★文脈由来の除外（築年月◯年◯月 等）
+        # ★同じ行の先頭まで遡って文脈を見る。直前8文字だと空白の入り方で外れる（2026-08-31）
+        _ls = _ft.rfind("\n", 0, _m.start()) + 1
+        _ctx = _ft[_ls:_m.start()]
+        if _re.search(r"築|建築|竣工|新築|完成", _ctx):
+            continue                                          # 文脈由来の除外（築年月◯年◯月 等）
+        # ★入居時期・現況の日付は「情報の時点」ではない。物件ごとにバラバラなので
+        #   「たまに間違う」ように見えるが、原因は1つ（2026-08-31・0917 で 2026年10月 を拾っていた）。
+        #   ★0908 が正しく見えていたのは退去日がたまたま8月だっただけ＝偶然の正解。
+        if _re.search(r"現況|入居時期|入居可能|入居予定|退去予定|即入居", _ctx):
+            continue
         if _gen_y and int(_m.group(1)) < _gen_y - 1:
             continue                                          # 情報の時点が2年以上前ということは無い
+        # ★未来ガード: 生成年月の翌月以降は採らない（同月は通す）。年だけで見ると 2026年12月 を通す
+        if _gen_ym and (int(_m.group(1)), int(_m.group(2))) > _gen_ym:
+            continue
         return f"{_m.group(1)}年{int(_m.group(2))}月"
 
     # ── ③ 生成日（騙らない）
+    # ★生の文字列を返さない。"2026-08-31" がそのまま注記に焼かれると書式が揃わない
+    if _gen_ym:
+        return f"{_gen_ym[0]}年{_gen_ym[1]}月"
     return gen_date_str
 
 
