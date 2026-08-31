@@ -53,7 +53,15 @@ def main() -> int:
         tally[rule] += 1
         rows.append((os.path.basename(f), rule, got))
 
+    # ★件数は変動する（2026-08-31 に同日中 233 → 263）。固定の数字を前提にせず、
+    #   取得日別の内訳を毎回出す。増減は内訳を見れば分かる。
+    by_day = Counter(re.search(r"_(20\d{6})", os.path.basename(f)).group(1)
+                     if re.search(r"_(20\d{6})", os.path.basename(f)) else "不明"
+                     for f in files)
     print(f"■ 走査 {len(files)}件（生成日 {gen}）")
+    print("■ 取得日別の内訳（★件数は変動する。数字ではなく内訳を見る）")
+    for d in sorted(by_day):
+        print(f"   {d[:4]}-{d[4:6]}-{d[6:]}  {by_day[d]:>4}件")
     for k in ("①", "②か③"):
         print(f"   {k:<6} {tally[k]:>4}件")
     other = [r for r in rows if r[1] != "①"]
@@ -69,6 +77,9 @@ def main() -> int:
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as fp:
+        fp.write(f"# 走査 {len(files)}件 / 生成日 {gen}\n")
+        for d in sorted(by_day):
+            fp.write(f"# {d}\t{by_day[d]}\n")
         fp.write("file\trule\tnote_date\n")
         for r in rows:
             fp.write("\t".join(r) + "\n")
