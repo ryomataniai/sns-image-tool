@@ -525,8 +525,17 @@ def try_autologin(page, log) -> bool:
                 f"パスワード={'あり' if filled else 'なし'}")
             if not (filled and id_filled):
                 return False
+            # ★末尾の button#login_button はリアプロ（realnetpro）のログインボタン。
+            #   <button type="button" id="login_button" onclick="login_send();">ログイン</button>
+            #   で、input でも submit でもないため、既存4つのセレクタでは1つも当たらない。
+            #   2026-09-04 に https://www.realnetpro.com/index.php の DOM を実測。
+            #   これが無いと run_shiire の収穫と、週次ジョブの run_reharvest:250
+            #   （realpro_dl.py --check-alive --autologin）が、リアプロのログイン画面で
+            #   1800秒待って落ちる。
+            #   ★既存4つの順序は変えない（SUUMO側の挙動を変えないため）。
             for sel in ("input.loginButton", "input[type=image][id=Image7]",
-                        "input[type=image]", "input[type=submit]"):
+                        "input[type=image]", "input[type=submit]",
+                        "button#login_button"):
                 b = fr.locator(sel)
                 for i in range(b.count()):
                     if b.nth(i).is_visible():
