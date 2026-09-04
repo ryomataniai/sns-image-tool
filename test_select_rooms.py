@@ -134,14 +134,14 @@ tt("★緩めた理由を返す", any("同一ブランド" in m for m in relax2)
 print("\n■ カ 投稿スロット（★火・木・土。今日より後）")
 # 2026-09: 1(火) 3(木) 5(土) 8(火) 10(木) 12(土) 15(火)
 t("木曜に選ぶと 土→火→木",
-  S.slot_dates(3, date(2026, 9, 3)), [date(2026, 9, 5), date(2026, 9, 8), date(2026, 9, 10)])
+  S.slot_dates(3, date(2026, 9, 3))[0], [date(2026, 9, 5), date(2026, 9, 8), date(2026, 9, 10)])
 t("★土→火は3日空く（隔日ではない）",
-  (S.slot_dates(2, date(2026, 9, 4))[1] - S.slot_dates(2, date(2026, 9, 4))[0]).days, 3)
+  (S.slot_dates(2, date(2026, 9, 4))[0][1] - S.slot_dates(2, date(2026, 9, 4))[0][0]).days, 3)
 t("★今日が火木土でも今日は使わない（翌スロットから）",
-  S.slot_dates(1, date(2026, 9, 5)), [date(2026, 9, 8)])
-t("月曜に選ぶと 火から", S.slot_dates(1, date(2026, 9, 7)), [date(2026, 9, 8)])
+  S.slot_dates(1, date(2026, 9, 5))[0], [date(2026, 9, 8)])
+t("月曜に選ぶと 火から", S.slot_dates(1, date(2026, 9, 7))[0], [date(2026, 9, 8)])
 t("--start を渡せばそこから",
-  S.slot_dates(2, date(2026, 9, 3), start=date(2026, 9, 12)),
+  S.slot_dates(2, date(2026, 9, 3), start=date(2026, 9, 12))[0],
   [date(2026, 9, 12), date(2026, 9, 15)])
 try:
     S.slot_dates(1, date(2026, 9, 3), start=date(2026, 9, 9))   # 水曜
@@ -149,6 +149,16 @@ try:
 except ValueError as e:
     tt("★--start が火木土でなければエラー（黙って寄せない）", "水曜" in str(e), str(e))
 t("曜日は月=0 の並びで持つ", S.POST_WEEKDAYS, (1, 3, 5))
+# ★返信178 §6 の想定: 9/8(火)に選ぶと 9/10 は A/B 6本目で埋まっている → 9/12・9/15
+sl, sk = S.slot_dates(2, date(2026, 9, 8), reserved=[date(2026, 9, 10)])
+t("★埋まっているスロットを飛ばす", sl, [date(2026, 9, 12), date(2026, 9, 15)])
+t("★飛ばした日を返す（黙って飛ばさない）", sk, [date(2026, 9, 10)])
+try:
+    S.slot_dates(2, date(2026, 9, 8),
+                 reserved=[date(2026, 9, 8) + timedelta(days=i) for i in range(400)])
+    tt("★予約で埋まりきったら無限ループにせず落ちる", False)
+except ValueError as e:
+    tt("★予約で埋まりきったら無限ループにせず落ちる", "取れない" in str(e), str(e))
 
 
 # ══════════════════════════════════════════════════════════
@@ -158,13 +168,16 @@ NOW = datetime(2026, 9, 3, 10, 0, tzinfo=JST)
 TODAY = NOW.date()
 
 
-def fixture(tmp, cand_specs, posted_names, facts_by_pdf=None):
-    """cand_specs: [(建物名, 部屋, 取得日)] ／ posted_names: 投稿キューの生の物件名"""
+def fixture(tmp, cand_specs, posted_names, ab_names=None, reserved=None):
+    """cand_specs: [(建物名, 部屋, 取得日)] ／ posted_names: 投稿キューの生の物件名
+    ab_names … 自己診断(a) の A/B の室（既定は AB6）。★posted_names と独立に持つ"""
+    ab_names = AB6 if ab_names is None else ab_names
     md = os.path.join(tmp, "maisoku"); os.makedirs(md)
     rd = os.path.join(tmp, "reg"); os.makedirs(rd)
-    for i, name in enumerate(posted_names):
+    for name in list(posted_names) + list(ab_names):
         b, r = S.split_property_name(name)
-        cand_specs = cand_specs + [(b, r, date(2026, 9, 1))]
+        if (b, r) not in [(x[0], x[1]) for x in cand_specs]:
+            cand_specs = cand_specs + [(b, r, date(2026, 9, 1))]
     for b, r, d in cand_specs:
         fn = "{}_{}_{}120000.pdf".format(b, r, d.strftime("%Y%m%d"))
         open(os.path.join(md, fn), "wb").write(b"")
@@ -181,7 +194,9 @@ def fixture(tmp, cand_specs, posted_names, facts_by_pdf=None):
                          for i, n in enumerate(posted_names)]},
               open(pj, "w", encoding="utf-8"), ensure_ascii=False)
     nt = os.path.join(tmp, "notes.json")
-    json.dump({"header_lines": ["（合成データの注記）"], "watch": []},
+    json.dump({"header_lines": ["（合成データの注記）"], "watch": [],
+               "ab_rooms": list(ab_names),
+               "reserved_slots": [{"date": d, "note": "（合成）"} for d in (reserved or [])]},
               open(nt, "w", encoding="utf-8"), ensure_ascii=False)
     return argparse.Namespace(
         count=1, harvest_note="（合成データ）", max_age_days=S.DEFAULT_MAX_AGE_DAYS,
@@ -201,7 +216,8 @@ def run(a, facts):
 
 FACTS_OK = {"madori": "1K[洋室8]", "rent": "78,000円",
             "access": ["地下鉄サンプル線「サンプル」駅 徒歩5分"], "full_text": "（合成）"}
-POSTED6 = ["{} 10{}".format(b, i + 1) for i, b in enumerate(BLD)]     # 棟A〜F の6室
+AB6 = ["{} 10{}".format(b, i + 1) for i, b in enumerate(BLD)]        # ★A/B の6室（棟A〜F）
+POSTED6 = list(AB6)                                                  # 6本とも投稿済みの状態
 
 print("\n■ キ ★max-age-days は投稿予定日で判定する（選定日ではない）")
 tmp = tempfile.mkdtemp()
@@ -241,10 +257,41 @@ try:
 finally:
     shutil.rmtree(tmp)
 
-print("\n■ ケ ★自己診断が6件未満で中断する（『候補0件』と報告しない）")
+print("\n■ ケ ★自己診断（返信178 §1）: 件数を固定しない2本立て")
 tmp = tempfile.mkdtemp()
 try:
-    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6[:5])   # 5件しか無い
+    # ★9/8 の状況 = A/B 6室のうち投稿済みは2本だけ。旧仕様（しきい値6）ではここで中断していた
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6[:2])
+    lines, _, _ = run(a, FACTS_OK)
+    txt = "\n".join(lines)
+    tt("★投稿済みが2本でも通る（実験の進行に左右されない）",
+       "→ 候補 1件 → 提案 1件" in txt, txt[:2200])
+    tt("(a) は A/B の室数で出る", "(a) A/B の室が在庫で引ける … 6/6 件" in txt, txt[:2200])
+    tt("(b) は JSON の件数で出る", "(b) 投稿済みJSONの全室が照合 … 2/2 件" in txt, txt[:2200])
+    tt("★件数を固定していないと明記する", "件数は固定していない" in txt, txt[:2200])
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ケ-1b ★埋まっているスロットは出力でも空けたと分かる")
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6[:2],
+                reserved=["2026-09-05"])          # ★NOW=9/3(木) → 最初の候補 9/5(土) が予約済み
+    lines, _, _ = run(a, FACTS_OK)
+    txt = "\n".join(lines)
+    tt("★9/5 を空けて 9/8 に回す", "2026-09-08(火)" in txt and "2026-09-05(土) は空けた" in txt,
+       txt[txt.index("■ 投稿スロット"):][:400])
+    tt("空けた理由が出る", "（合成）" in txt, txt[txt.index("■ 投稿スロット"):][:400])
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ケ-2 (a) A/B の室が在庫で引けなければ中断")
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6[:2],
+                ab_names=AB6[:5] + ["サンプル棟Z 999"])   # ★在庫に無い室を1つ混ぜる
+    import os as _os
+    _os.remove(_os.path.join(a.maisoku_dir, "サンプル棟Z_999_20260901120000.pdf"))
     try:
         run(a, FACTS_OK)
         tt("中断する", False, "SystemExit が出なかった")
@@ -252,21 +299,58 @@ try:
         m = str(e)
         tt("中断する", True)
         tt("★『候補0件』ではないと明示する", "これは『候補0件』ではない" in m, m)
-        tt("必要件数と実績が出る", "5件 / 必要 6件" in m, m)
-        tt("次に見るところが出る", "ig-posted-export" in m, m)
+        tt("(a) が 5/6 と出る", "(a) A/B の室が在庫で引けるか : 5/6 件" in m, m)
+        tt("引けない室を名指しする", "サンプル棟Z 999" in m, m)
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ケ-3 (b) 投稿済みJSONに照合できない室があれば中断")
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))],
+                POSTED6[:2] + ["サンプル棟Y 888"])
+    import os as _os
+    _os.remove(_os.path.join(a.maisoku_dir, "サンプル棟Y_888_20260901120000.pdf"))
+    try:
+        run(a, FACTS_OK)
+        tt("中断する", False, "SystemExit が出なかった")
+    except SystemExit as e:
+        m = str(e)
+        tt("中断する", True)
+        tt("(b) が 2/3 と出る", "(b) 投稿済みJSONの全室が照合  : 2/3 件" in m, m)
+        tt("照合できない物件名を名指しする", "サンプル棟Y 888" in m, m)
+        tt("先に ig-posted-export と出る", "ig-posted-export" in m, m)
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ケ-4 運用メモに ab_rooms が無ければ中断")
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6[:2])
+    d = json.load(open(a.notes, encoding="utf-8")); d.pop("ab_rooms")
+    json.dump(d, open(a.notes, "w", encoding="utf-8"), ensure_ascii=False)
+    try:
+        run(a, FACTS_OK)
+        tt("中断する", False, "SystemExit が出なかった")
+    except SystemExit as e:
+        tt("中断する", "ab_rooms" in str(e), str(e))
 finally:
     shutil.rmtree(tmp)
 
 print("\n■ コ 投稿済み・同建物・転載不可")
 tmp = tempfile.mkdtemp()
 try:
-    a = fixture(tmp, [(BLD[0], "999", date(2026, 9, 1)),          # 棟A の別室＝A/Bと同じ建物
-                      (CAND[0], "101", date(2026, 9, 1))], POSTED6)
+    # 棟A=投稿済みの棟／棟F=まだ投稿していない A/B の棟。★どちらの別室も弾く
+    a = fixture(tmp, [(BLD[0], "999", date(2026, 9, 1)),
+                      (BLD[5], "998", date(2026, 9, 1)),
+                      (CAND[0], "101", date(2026, 9, 1))], POSTED6[:2])
     a.count = 2
     lines, _, _ = run(a, FACTS_OK)
     txt = "\n".join(lines)
     tt("投稿済みの室が弾かれる", "投稿済み" in txt, txt[-2000:])
-    tt("★A/B と同じ建物の別室が弾かれる", "A/B と同じ建物" in txt, txt[-2000:])
+    tt("★A/B と同じ建物の別室が弾かれる", "A/B の棟（投稿済みあり）" in txt, txt[-2500:])
+    tt("★まだ投稿していない A/B の棟も弾く（運用メモの ab_rooms 由来）",
+       "A/B の棟（運用メモの ab_rooms）" in txt, txt[-2500:])
     tt("★発火しなかった条件も0件で出す", "転載『不可』の明記 ... 0件" in txt, txt[-1200:])
     tt("★発火しなかったと明記する", "★発火しなかった" in txt, txt[-1200:])
 finally:

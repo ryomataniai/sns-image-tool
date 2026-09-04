@@ -66,10 +66,17 @@ POST_HOUR = 21
 POST_WEEKDAYS = (1, 3, 5)
 _WD_JA = ("月", "火", "水", "木", "金", "土", "日")
 
-# ★自己診断のしきい値（返信175 §5）。
-#   旧仕様は15件（A/B6＋過去9本）。過去9本は投稿キューに無く、うち2本は物件名すら
-#   特定できないため6件へ下げた。2026-09-11 の遡り投入後は13件へ引き上げる。
-SELFCHECK_MIN_MATCHED_POSTED = 6
+# ★自己診断（返信178 §1 で設計を入れ替え）。
+#   旧: SELFCHECK_MIN_MATCHED_POSTED = 6（★固定値）。
+#       「投稿済みが6件」を条件にしたが、A/B は進行中で6本目の投稿は 9/10 21:00。
+#       ★既知集合に「投稿済み」を使ったのに、その集合が実験の進行とともに増えることを
+#         勘定していなかった。しきい値6のままでは 9/11 朝まで中断し続ける。
+#   新: 2本立て。どちらかが欠けたら中断する。★件数はどこにも固定しない。
+#       (a) 運用メモの ab_rooms（A/B の室）が、在庫の建物名＋部屋番号で全件引けること
+#           ★投稿しているかどうかに依存しない＝実験の進行に左右されない
+#       (b) ig-posted.json の全室が照合できること（照合できた件数 == rooms の件数）
+#           ★2→3→4→5→6 と増えていく。増えても条件式は変わらない
+#   目的は変えていない: 「候補0件」と「照合が壊れている」を分ける、それだけ。
 
 # ★fal の単価（返信175 §8）。表示するだけ。呼ばない。
 FAL_USD_PER_CUT = 0.35
@@ -401,18 +408,25 @@ def furnished_evidence(facts: dict, rec):
     return "", ""
 
 
-def slot_dates(count: int, today: date, start: date = None):
+def slot_dates(count: int, today: date, start: date = None, reserved=None):
     """投稿予定日を返す。★火・木・土だけ（返信176）。今日より後の最初のスロットから。
-    start を渡すときは、その日が火木土でなければ ValueError（黙って寄せない）。"""
+    reserved … 既に埋まっている日（A/B が使う日）。★飛ばす。飛ばした日は第2返り値で返す。
+    start を渡すときは、その日が火木土でなければ ValueError（黙って寄せない）。
+    返り値 (slots, skipped)。★黙って飛ばさない＝呼び出し側が必ず出す。"""
     d = start if start is not None else today + timedelta(days=1)
     if start is not None and start.weekday() not in POST_WEEKDAYS:
         raise ValueError("start が火木土ではない: {}（{}曜）".format(start, _WD_JA[start.weekday()]))
-    out = []
+    res = set(reserved or ())
+    out, skipped = [], []
+    guard = 0
     while len(out) < count:
+        guard += 1
+        if guard > 400:                       # ★無限ループにしない（予約が多すぎる等）
+            raise ValueError("スロットを {}件 取れない（予約が多すぎる可能性）".format(count))
         if d.weekday() in POST_WEEKDAYS and d > today:
-            out.append(d)
+            (skipped if d in res else out).append(d)
         d += timedelta(days=1)
-    return out
+    return out, skipped
 
 
 def pick(cands, count: int):
@@ -464,26 +478,45 @@ def build_report(a, now: datetime):
         posted_keys.add((canon_building(bld), norm_key(room)))
         posted_buildings.add(canon_building(bld))
 
-    # ── ★自己診断（返信175 §5）: 候補を出す前に、照合が効いていることを確かめる
+    # ── ★自己診断（返信178 §1）: 候補を出す前に、照合が効いていることを確かめる
+    #   ★件数を固定しない。(a) は運用メモの行数、(b) は JSON の件数が「必要数」になる。
     inv_buildings = {k[0] for k in rooms}
+    ab_rooms = notes.get("ab_rooms") or []
+    if not ab_rooms:
+        raise SystemExit("✗ 運用メモに ab_rooms が無い: " + a.notes
+                         + "\n  ★A/B の室（『建物名 部屋番号』）を並べる。自己診断(a)がこれで走る")
+    ab_keys, ab_missing = set(), []
+    for nm in ab_rooms:
+        b, rm = split_property_name(nm)
+        k = (canon_building(b), norm_key(rm))
+        ab_keys.add(k)
+        if k not in rooms:
+            ab_missing.append(nm)
+
     matched = [r for r in posted_rooms
                if canon_building(split_property_name(r.get("propertyName", ""))[0]) in inv_buildings]
-    if len(matched) < SELFCHECK_MIN_MATCHED_POSTED:
-        unmatched = [r.get("propertyName", "") for r in posted_rooms
-                     if canon_building(split_property_name(r.get("propertyName", ""))[0])
-                     not in inv_buildings]
+    unmatched = [r.get("propertyName", "") for r in posted_rooms
+                 if canon_building(split_property_name(r.get("propertyName", ""))[0])
+                 not in inv_buildings]
+
+    if ab_missing or unmatched:
         raise SystemExit(
             "✗ 自己診断で中断（★これは『候補0件』ではない。照合が期待どおり効いていない）\n"
-            "  投稿済み JSON の件数 : {}件（generatedAt {}）\n"
-            "  うち建物名が在庫と一致: {}件 / 必要 {}件\n"
-            "  一致しなかった物件名  : {}\n"
-            "  マイソク在庫          : {}件 / {}棟\n"
-            "  ★見るところ: JSON が古くないか（先に ig-posted-export）／棟名の正規化が効いているか。"
-            .format(len(posted_rooms),
+            "  (a) A/B の室が在庫で引けるか : {}/{} 件{}\n"
+            "  (b) 投稿済みJSONの全室が照合  : {}/{} 件{}   （generatedAt {}）\n"
+            "  マイソク在庫                 : {}件 / {}棟\n"
+            "  ★見るところ: (a) が欠ける＝棟名の表記が変わった／在庫から消えた。\n"
+            "              (b) が欠ける＝JSON が古い（先に ig-posted-export）／正規化が効いていない。"
+            .format(len(ab_rooms) - len(ab_missing), len(ab_rooms),
+                    "  ★引けない: " + str(ab_missing) if ab_missing else "",
+                    len(matched), len(posted_rooms),
+                    "  ★照合できない: " + str(unmatched) if unmatched else "",
                     posted["_generatedAtJst"].strftime("%Y-%m-%d %H:%M"),
-                    len(matched), SELFCHECK_MIN_MATCHED_POSTED,
-                    unmatched if unmatched else "（なし）",
                     len(rooms), len(inv_buildings)))
+
+    # ★A/B の棟は「投稿済みの棟」だけでは足りない。投稿前の棟（例: 5・6本目）が抜ける。
+    #   運用メモの ab_rooms の棟を必ず含める（返信175 §3 の「A/B と同じ建物」の本来の意味）。
+    ab_buildings = posted_buildings | {k[0] for k in ab_keys}
 
     # ── スロット（★max-age は投稿予定日で判定する。選定日ではない）
     #   ★スロットは火木土で決まる。直近の投稿日はもう計算に使わない（参考表示だけ）。
@@ -491,8 +524,13 @@ def build_report(a, now: datetime):
     sched = [d for d in sched if d]
     last_post = max(sched) if sched else None
     start = datetime.strptime(a.start, "%Y-%m-%d").date() if a.start else None
+    reserved = {}
+    for x in (notes.get("reserved_slots") or []):
+        d0 = _parse_sched(x.get("date") if isinstance(x, dict) else x)
+        if d0:
+            reserved[d0] = (x.get("note", "") if isinstance(x, dict) else "")
     try:
-        slots = slot_dates(a.count, today, start)
+        slots, skipped = slot_dates(a.count, today, start, reserved.keys())
     except ValueError as e:
         raise SystemExit("✗ " + str(e) + "\n  ★投稿日は火・木・土。黙って寄せない")
     judge_date = slots[-1]       # ★最終スロットで判定する（どのスロットに入っても古くない）
@@ -519,8 +557,10 @@ def build_report(a, now: datetime):
         hits = []   # (条件キー, 根拠の文字列)
         if k in posted_keys:
             hits.append(("posted", "投稿キュー 状態=投稿済"))
-        if k[0] in posted_buildings and k not in posted_keys:
-            hits.append(("ab_building", "同じ建物で投稿済みあり"))
+        if k[0] in ab_buildings and k not in posted_keys:
+            hits.append(("ab_building",
+                         "A/B の棟（{}）".format("投稿済みあり" if k[0] in posted_buildings
+                                                else "運用メモの ab_rooms")))
         if not facts:
             hits.append(("no_facts", "parse_maisoku_facts が空を返した"))
         mad = madori_type(facts)
@@ -576,8 +616,9 @@ def build_report(a, now: datetime):
         posted.get("count"), len(posted_rooms)))
     if posted.get("notCovered"):
         say("■ 照合対象外: " + str(posted["notCovered"]))
-    say("■ 自己診断: 投稿済み {}件のうち建物名が在庫と一致 {}件（必要 {}件）… OK".format(
-        len(posted_rooms), len(matched), SELFCHECK_MIN_MATCHED_POSTED))
+    say("■ 自己診断 … OK（★件数は固定していない）")
+    say("   (a) A/B の室が在庫で引ける … {}/{} 件".format(len(ab_rooms), len(ab_rooms)))
+    say("   (b) 投稿済みJSONの全室が照合 … {}/{} 件".format(len(matched), len(posted_rooms)))
 
     prev = _read_state(a.out_dir)
     say("■ 在庫: 前回 {} → 今回 {}件（{}）".format(
@@ -604,6 +645,9 @@ def build_report(a, now: datetime):
     say("■ 走査 {}件 → 候補 {}件 → 提案 {}件".format(len(rooms), len(cands), len(picked)))
     say("■ 投稿スロット: 火・木・土 {}:00 … {}".format(
         POST_HOUR, ", ".join("{}({})".format(d, _WD_JA[d.weekday()]) for d in slots)))
+    for d0 in skipped:
+        say("   ★{}({}) は空けた … {}".format(d0, _WD_JA[d0.weekday()],
+                                             reserved.get(d0) or "運用メモの reserved_slots"))
     say("   参考: 投稿キュー上の直近の投稿日 {}（★スロットの計算には使っていない）".format(
         last_post if last_post else "（不明）"))
 
