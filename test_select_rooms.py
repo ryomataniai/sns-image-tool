@@ -93,14 +93,26 @@ t("賃料が読めなければ None（推測しない）", S.rent_yen({"rent": "
 t("賃料が無ければ None", S.rent_yen({}), None)
 
 print("\n■ エ 家具家電付き（★性質で判定。ブランド名で弾かない）")
-tt("設備の記載を拾う",
-   "家具家電付" in S.furnished_evidence({"equipment": "【設備】エアコン 家具家電付"}, None))
-tt("備考（bukkenCatch）を拾う",
-   "家電付" in S.furnished_evidence({}, {"form": {"bukkenCatch": "即入居可・家電付"}}))
-tt("特徴（tokucho）を拾う",
-   "家具・家電" in S.furnished_evidence({}, {"tokucho": ["家具・家電あり"]}))
+def _fv(facts, rec=None):
+    return S.furnished_evidence(facts, rec)
+v, ev = _fv({"equipment": "【設備】エアコン 家具家電付"})
+tt("設備の記載を拾う", v == "yes" and "家具家電付" in ev, repr((v, ev)))
+v, ev = _fv({}, {"form": {"bukkenCatch": "即入居可・家電付"}})
+tt("備考（bukkenCatch）を拾う", v == "yes" and "家電付" in ev, repr((v, ev)))
+v, ev = _fv({}, {"tokucho": ["家具・家電あり"]})
+tt("特徴（tokucho）を拾う", v == "yes" and "家具・家電" in ev, repr((v, ev)))
 t("★ブランド名だけでは弾かない",
-  S.furnished_evidence({"equipment": "【設備】エアコン", "full_text": "サンプルブランド 101号室"}, None), "")
+  _fv({"equipment": "【設備】エアコン", "full_text": "サンプルブランド 101号室"})[0], "")
+
+print("\n■ エ-2 ★語はあっても『付いていない』なら弾かない（返信176・実測5/15件）")
+v, ev = _fv({"equipment": "【その他】海外審査可 家具家電なし 駐輪場なし"})
+t("『家具家電なし』は弾かない", v, "no")
+tt("否定だと分かる根拠を返す", "否定" in ev, ev)
+v, ev = _fv({"equipment": "●家具家電 レンタルサービス提携してます!担当迄ご連絡ください"})
+t("『家具家電レンタル…提携』は弾かない（部屋には付いていない）", v, "no")
+tt("レンタル案内だと分かる根拠を返す", "レンタル" in ev, ev)
+t("★『家具家電付き』は今までどおり弾く",
+  _fv({"equipment": "備考 家具家電付き ・ベッド・ソファ"})[0], "yes")
 
 print("\n■ オ 並べ方（返信175 §4）")
 def _c(b, brand, mad, rent):
@@ -119,15 +131,24 @@ picked2, relax2 = S.pick([_c("a", "X", "1K", 90000), _c("b", "X", "1K", 89000)],
 t("同一ブランドしか無ければ出すが、黙らない", len(picked2), 2)
 tt("★緩めた理由を返す", any("同一ブランド" in m for m in relax2), str(relax2))
 
-print("\n■ カ 投稿スロット（隔日・今日より後）")
-t("直近の投稿から隔日で、今日より後の最初から",
-  S.slot_dates(date(2026, 9, 2), 3, date(2026, 9, 3)),
-  [date(2026, 9, 4), date(2026, 9, 6), date(2026, 9, 8)])
-t("★起点が古くても隔日の刻みは崩さない（8/20 起点なら 9/5。9/4 ではない）",
-  S.slot_dates(date(2026, 8, 20), 1, date(2026, 9, 3)), [date(2026, 9, 5)])
+print("\n■ カ 投稿スロット（★火・木・土。今日より後）")
+# 2026-09: 1(火) 3(木) 5(土) 8(火) 10(木) 12(土) 15(火)
+t("木曜に選ぶと 土→火→木",
+  S.slot_dates(3, date(2026, 9, 3)), [date(2026, 9, 5), date(2026, 9, 8), date(2026, 9, 10)])
+t("★土→火は3日空く（隔日ではない）",
+  (S.slot_dates(2, date(2026, 9, 4))[1] - S.slot_dates(2, date(2026, 9, 4))[0]).days, 3)
+t("★今日が火木土でも今日は使わない（翌スロットから）",
+  S.slot_dates(1, date(2026, 9, 5)), [date(2026, 9, 8)])
+t("月曜に選ぶと 火から", S.slot_dates(1, date(2026, 9, 7)), [date(2026, 9, 8)])
 t("--start を渡せばそこから",
-  S.slot_dates(date(2026, 9, 2), 2, date(2026, 9, 3), start=date(2026, 9, 10)),
-  [date(2026, 9, 10), date(2026, 9, 12)])
+  S.slot_dates(2, date(2026, 9, 3), start=date(2026, 9, 12)),
+  [date(2026, 9, 12), date(2026, 9, 15)])
+try:
+    S.slot_dates(1, date(2026, 9, 3), start=date(2026, 9, 9))   # 水曜
+    tt("★--start が火木土でなければエラー（黙って寄せない）", False)
+except ValueError as e:
+    tt("★--start が火木土でなければエラー（黙って寄せない）", "水曜" in str(e), str(e))
+t("曜日は月=0 の並びで持つ", S.POST_WEEKDAYS, (1, 3, 5))
 
 
 # ══════════════════════════════════════════════════════════
@@ -185,13 +206,15 @@ POSTED6 = ["{} 10{}".format(b, i + 1) for i, b in enumerate(BLD)]     # 棟A〜F
 print("\n■ キ ★max-age-days は投稿予定日で判定する（選定日ではない）")
 tmp = tempfile.mkdtemp()
 try:
-    # 取得日 8/20 → 選定日 9/3 では14日（通る）／投稿予定日 9/4 では15日（弾く）
+    # ★NOW=2026-09-03(木) → 最初のスロットは 9/5(土)
+    # 取得日 8/22 → 選定日 9/3 では12日（通る）／投稿予定日 9/5 では14日（通る・境界）
+    # 取得日 8/20 → 選定日 9/3 では14日（通る）／投稿予定日 9/5 では16日（★弾く）
     a = fixture(tmp, [(CAND[0], "101", date(2026, 8, 20))], POSTED6)
     lines, _, _ = run(a, FACTS_OK)
     txt = "\n".join(lines)
     tt("選定日基準なら14日で通るはずの室が弾かれる", "取得日が古い" in txt, txt[-1500:])
-    tt("★判定日が投稿予定日だと出力に書いてある", "投稿予定日(2026-09-04)" in txt, txt[:2000])
-    tt("経過日数15日と根拠が出る", "で 15日（上限 14日）" in txt, txt[-1500:])
+    tt("★判定日が投稿予定日だと出力に書いてある", "投稿予定日(2026-09-05)" in txt, txt[:2000])
+    tt("経過日数16日と根拠が出る", "で 16日（上限 14日）" in txt, txt[-1500:])
 finally:
     shutil.rmtree(tmp)
 
@@ -200,7 +223,8 @@ try:
     a = fixture(tmp, [(CAND[0], "101", date(2026, 8, 22))], POSTED6)
     lines, _, _ = run(a, FACTS_OK)
     txt = "\n".join(lines)
-    tt("取得日 8/22（投稿予定日で13日）は通る", "→ 候補 1件 → 提案 1件" in txt, txt[:2500])
+    tt("★取得日 8/22（投稿予定日でちょうど14日）は通る＝境界",
+       "→ 候補 1件 → 提案 1件" in txt, txt[:2500])
 finally:
     shutil.rmtree(tmp)
 
@@ -245,6 +269,42 @@ try:
     tt("★A/B と同じ建物の別室が弾かれる", "A/B と同じ建物" in txt, txt[-2000:])
     tt("★発火しなかった条件も0件で出す", "転載『不可』の明記 ... 0件" in txt, txt[-1200:])
     tt("★発火しなかったと明記する", "★発火しなかった" in txt, txt[-1200:])
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ゴ 条件名と見積もり（返信176 ②④）")
+t("★条件名は『転載可否を確認できない』", S.REASONS["no_reg"], "転載可否を確認できない")
+tt("★カット数は幅で持つ（1本の値に丸めない）",
+   S.FAL_CUTS_OBSERVED == (6, 9) and not hasattr(S, "DEFAULT_CUTS_PER_REEL"),
+   repr(S.FAL_CUTS_OBSERVED))
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1)),
+                      (CAND[1], "201", date(2026, 9, 1))], POSTED6)
+    a.count, a.cuts = 2, 0
+    lines, _, _ = run(a, FACTS_OK)
+    txt = "\n".join(lines)
+    tt("★既定は実測の幅で出す", "$0.35 × 6〜9カット × 2本 = $4.20〜$6.30" in txt, txt[-900:])
+    tt("★丸めない理由が出る", "1本の値に丸めない" in txt, txt[-900:])
+    a.cuts = 6
+    lines, _, _ = run(a, FACTS_OK)
+    txt = "\n".join(lines)
+    tt("--cuts で1本の値に固定できる", "$0.35 × 6カット × 2本 = $4.20" in txt, txt[-900:])
+finally:
+    shutil.rmtree(tmp)
+
+print("\n■ ゾ ★家具家電『付いていない』室は弾かず手で確認へ（返信176 ③）")
+tmp = tempfile.mkdtemp()
+try:
+    a = fixture(tmp, [(CAND[0], "101", date(2026, 9, 1))], POSTED6)
+    f = dict(FACTS_OK); f["equipment"] = "【その他】海外審査可 家具家電なし 駐輪場なし"
+    lines, _, csv_rows = run(a, f)[0], None, None
+    txt = "\n".join(lines)
+    tt("弾かれない", "→ 候補 1件 → 提案 1件" in txt, txt[:2500])
+    tt("条件は0件のまま", "家具家電付き ... 0件" in txt, txt[-1200:])
+    tt("★手で確認するものに1件出る",
+       "「付いていない」と読めた … 1件" in txt, txt[txt.index("★手で確認"):][:600])
+    tt("★根拠が出る", "家具家電なし" in txt, txt[txt.index("★手で確認"):][:600])
 finally:
     shutil.rmtree(tmp)
 
@@ -307,6 +367,18 @@ try:
         tt("★直近の21:00スロットを跨いだ書き出しは中断", "古い" in str(e), str(e))
     d = S.load_posted(p, datetime(2026, 9, 3, 20, 0, tzinfo=JST))
     tt("スロットを跨いでいなければ通る", d.get("rooms") == [])
+    # ★投稿しない曜日（金・日・月）まで「古い」と言わない
+    t("直近スロットは火木土の21:00だけを見る（金 9/4 12:00 → 木 9/3 21:00）",
+      S._last_passed_slot(datetime(2026, 9, 4, 12, 0, tzinfo=JST)),
+      datetime(2026, 9, 3, 21, 0, tzinfo=JST))
+    t("月曜 9/7 12:00 → 土 9/5 21:00（日曜21時ではない）",
+      S._last_passed_slot(datetime(2026, 9, 7, 12, 0, tzinfo=JST)),
+      datetime(2026, 9, 5, 21, 0, tzinfo=JST))
+    try:
+        S.load_posted(p, datetime(2026, 9, 4, 12, 0, tzinfo=JST))   # gen=9/3 09:00 < 9/3 21:00
+        tt("★木曜21時を跨いでいれば金曜でも中断させる", False, "中断しなかった")
+    except SystemExit as e:
+        tt("★木曜21時を跨いでいれば金曜でも中断させる", "古い" in str(e), str(e))
 finally:
     shutil.rmtree(tmp)
 

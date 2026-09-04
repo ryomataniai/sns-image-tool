@@ -59,9 +59,12 @@ DEFAULT_OUT_DIR = os.path.join(DEFAULT_STATE_DIR, "select")
 #   ★成約確率との関係は未測定。この14日は暫定値。
 DEFAULT_MAX_AGE_DAYS = 14
 
-# ★投稿は隔日 21:00（A/B の運用）。
+# ★投稿は 21:00。
 POST_HOUR = 21
-POST_STEP_DAYS = 2
+# ★投稿日は火・木・土（返信176）。旧仕様の「隔日」は曜日が毎週ずれるのでやめた。
+#   Mon=0 … Sun=6。土→火は3日空く＝厳密な隔日ではない。
+POST_WEEKDAYS = (1, 3, 5)
+_WD_JA = ("月", "火", "水", "木", "金", "土", "日")
 
 # ★自己診断のしきい値（返信175 §5）。
 #   旧仕様は15件（A/B6＋過去9本）。過去9本は投稿キューに無く、うち2本は物件名すら
@@ -70,8 +73,15 @@ SELFCHECK_MIN_MATCHED_POSTED = 6
 
 # ★fal の単価（返信175 §8）。表示するだけ。呼ばない。
 FAL_USD_PER_CUT = 0.35
-# ★1本あたりのカット数の既定。実績 $3.15/本 ÷ $0.35 = 9カット。
-DEFAULT_CUTS_PER_REEL = 9
+# ★1本あたりの fal カット数（返信176・根拠差し替え）。
+#   旧: 「実績 $3.15/本 ÷ $0.35 = 9カット」＝**割り算で出した推定**だった。
+#   新: ジョブ状態の実測。~/Library/Application Support/sns-studio/jobs/*/state.json の
+#       scenes 数と request_id の付いたシーン数を数えた（2026-09-04・14ジョブ／完了7件）。
+#         fal を通したカット数 = 6 / 8 / 9（部屋数で決まる）。直近のA/B 3本は 6。
+#         --still のジョブは 0（fal を通さない＝課金ゼロ）。
+#   ★1本の値に丸めない。**幅のまま出す。**カット数は物件の部屋数で決まり、
+#     選定の時点では確定しない（画像の分類をしていないため）。
+FAL_CUTS_OBSERVED = (6, 9)
 
 # ★対象の型。これ以外は弾く。
 TARGET_MADORI = ("1K", "1DK", "1LDK")
@@ -79,6 +89,16 @@ TARGET_MADORI = ("1K", "1DK", "1LDK")
 # ★家具家電付きの判定語（性質で判定する。ブランド名で弾かない）。
 FURNISHED_PAT = re.compile(r"家具家電|家具・家電|家具、家電|家具/家電|家具付|家電付|"
                            r"家具・家電付|ファニチャー付|furnished", re.IGNORECASE)
+
+# ★語が出ても「部屋に付いていない」と読める文脈（返信176 の否定文脈カウントで判明）。
+#   2026-09-04 実測: 語に当たった15室のうち5室（1/3）がこれ。
+#     ・「家具家電なし」          1室 … 明示的な否定
+#     ・「家具家電レンタル…提携」  4室 … 借りられる案内であって、部屋に付いてはいない
+#   ★弾かない。ただし黙って通さず『手で確認するもの』に根拠つきで出す。
+FURNISHED_NEGATED_PAT = re.compile(
+    r"家具家電\s*(な[しく]|無[しく])|家具・家電\s*(な[しく]|無[しく])|"
+    r"家具家電[^。\n]{0,8}(ありません|付いておりません|付きません)")
+FURNISHED_RENTAL_PAT = re.compile(r"レンタル")
 
 # ★同じブランドが英字表記とカナ表記の両方で在庫に入る場合だけ足す。
 #   在庫の実測（2026-09-03: 英字8件 / カナ7件）で1件だけ判明している。
@@ -100,7 +120,7 @@ REASONS = OrderedDict([
     ("age", "取得日が古い"),
     ("tensai_ng", "転載『不可』の明記"),
     ("furnished", "家具家電付き"),
-    ("no_reg", "登録データが無い（転載可否を確認できない）"),
+    ("no_reg", "転載可否を確認できない"),
 ])
 
 
@@ -275,10 +295,16 @@ def _parse_iso_utc(s: str):
 
 
 def _last_passed_slot(now: datetime) -> datetime:
-    """直近に過ぎた 21:00(JST)。"""
+    """直近に過ぎた投稿スロット（★火木土の 21:00 JST）。
+    ★毎日 21:00 で見ない。投稿しない曜日まで「古い」と言うと、要らない書き出しを強いる。
+      見たいのは『書き出したあとに投稿が起こりえたか』だけ。"""
     n = now.astimezone(JST)
     slot = n.replace(hour=POST_HOUR, minute=0, second=0, microsecond=0)
     if slot > n:
+        slot -= timedelta(days=1)
+    for _ in range(8):                       # 最大でも1週間さかのぼれば当たる
+        if slot.weekday() in POST_WEEKDAYS:
+            return slot
         slot -= timedelta(days=1)
     return slot
 
@@ -348,10 +374,12 @@ def rent_yen(facts: dict):
         return None
 
 
-def furnished_evidence(facts: dict, rec) -> str:
-    """家具家電付きの根拠文字列。無ければ ''。
-    ★設備・備考の文字列で判定する。ブランド名では弾かない。
-    ★否定文脈（『家具家電なし』等）でも拾う＝安全側。根拠を出すので人が見て戻せる。"""
+def furnished_evidence(facts: dict, rec):
+    """家具家電の判定。返り値 (判定, 根拠の文字列)。
+        判定 … "yes"（付いている＝弾く） / "no"（語はあるが付いていない＝弾かない） / ""（語なし）
+    ★設備・備考の文字列で判定する。ブランド名では弾かない（返信175 §3）。
+    ★『家具家電なし』『家具家電レンタル…提携』は**付いていない**。弾かずに手で確認へ回す。
+      元画像に家具が写っているかは機械では見えない（§6）。そこは人が見る。"""
     hay = []
     if rec:
         form = rec.get("form") or {}
@@ -361,21 +389,30 @@ def furnished_evidence(facts: dict, rec) -> str:
     hay.append(str((facts or {}).get("full_text") or ""))
     for h in hay:
         m = FURNISHED_PAT.search(h)
-        if m:
-            s, e = max(0, m.start() - 20), min(len(h), m.end() + 20)
-            return re.sub(r"\s+", " ", h[s:e]).strip()
-    return ""
+        if not m:
+            continue
+        s, e = max(0, m.start() - 20), min(len(h), m.end() + 20)
+        ev = re.sub(r"\s+", " ", h[s:e]).strip()
+        if FURNISHED_NEGATED_PAT.search(ev):
+            return "no", ev + "  ←★否定（付いていない）"
+        if FURNISHED_RENTAL_PAT.search(ev):
+            return "no", ev + "  ←★レンタルの案内（部屋に付いてはいない）"
+        return "yes", ev
+    return "", ""
 
 
-def slot_dates(anchor: date, count: int, today: date, start: date = None):
-    """投稿予定日を返す。既定は『直近の投稿日から隔日』で、今日より後の最初のスロットから。"""
-    if start is not None:
-        first = start
-    else:
-        first = anchor
-        while first <= today:
-            first += timedelta(days=POST_STEP_DAYS)
-    return [first + timedelta(days=POST_STEP_DAYS * i) for i in range(count)]
+def slot_dates(count: int, today: date, start: date = None):
+    """投稿予定日を返す。★火・木・土だけ（返信176）。今日より後の最初のスロットから。
+    start を渡すときは、その日が火木土でなければ ValueError（黙って寄せない）。"""
+    d = start if start is not None else today + timedelta(days=1)
+    if start is not None and start.weekday() not in POST_WEEKDAYS:
+        raise ValueError("start が火木土ではない: {}（{}曜）".format(start, _WD_JA[start.weekday()]))
+    out = []
+    while len(out) < count:
+        if d.weekday() in POST_WEEKDAYS and d > today:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
 
 
 def pick(cands, count: int):
@@ -449,13 +486,15 @@ def build_report(a, now: datetime):
                     len(rooms), len(inv_buildings)))
 
     # ── スロット（★max-age は投稿予定日で判定する。選定日ではない）
-    anchor = today
+    #   ★スロットは火木土で決まる。直近の投稿日はもう計算に使わない（参考表示だけ）。
     sched = [_parse_sched(r.get("scheduledAt")) for r in posted_rooms]
     sched = [d for d in sched if d]
-    if sched:
-        anchor = max(sched)
+    last_post = max(sched) if sched else None
     start = datetime.strptime(a.start, "%Y-%m-%d").date() if a.start else None
-    slots = slot_dates(anchor, a.count, today, start)
+    try:
+        slots = slot_dates(a.count, today, start)
+    except ValueError as e:
+        raise SystemExit("✗ " + str(e) + "\n  ★投稿日は火・木・土。黙って寄せない")
     judge_date = slots[-1]       # ★最終スロットで判定する（どのスロットに入っても古くない）
 
     # ── 各室を判定
@@ -463,6 +502,8 @@ def build_report(a, now: datetime):
     fired = Counter()
     facts_empty = 0
     read_errors = []
+    furnished_no = []      # ★語はあるが「付いていない」と読めた室（弾かない・手で確認へ）
+    #   ★他の条件で弾かれた室まで並べない。「弾いていない」と書く以上、残った室だけを出す。
     for k in sorted(rooms):
         r = rooms[k]
         rec = by_pdf.get(r["pdf_name"]) or by_key.get(k)   # ★索引は同じ正規化キーで引く
@@ -495,9 +536,11 @@ def build_report(a, now: datetime):
             tensai = (rec.get("source") or {}).get("画像の転載")
             if tensai == "不可":
                 hits.append(("tensai_ng", "画像の転載『不可』"))
-        ev = furnished_evidence(facts, rec)
-        if ev:
-            hits.append(("furnished", ev))
+        fver, fev = furnished_evidence(facts, rec)
+        if fver == "yes":
+            hits.append(("furnished", fev))
+        elif fver == "no":
+            furnished_no.append((k, r["building"], r["room"], fev))
 
         for key, _ in hits:
             fired[key] += 1
@@ -517,6 +560,9 @@ def build_report(a, now: datetime):
             rejects.append(row)
         else:
             cands.append(row)
+
+    cand_keys = {(canon_building(c["building"]), norm_key(c["room"])) for c in cands}
+    furnished_no = [x for x in furnished_no if x[0] in cand_keys]
 
     picked, relax = pick(cands, a.count)
 
@@ -556,8 +602,10 @@ def build_report(a, now: datetime):
         "   ★★全件が空＝在庫ではなく環境の問題（PyMuPDF/fitz が無い等）を疑う"
         if facts_empty and facts_empty == len(rooms) else ""))
     say("■ 走査 {}件 → 候補 {}件 → 提案 {}件".format(len(rooms), len(cands), len(picked)))
-    say("■ 投稿スロット: 直近の投稿 {} を起点に隔日 {}:00 … {}".format(
-        anchor, POST_HOUR, ", ".join(str(d) for d in slots)))
+    say("■ 投稿スロット: 火・木・土 {}:00 … {}".format(
+        POST_HOUR, ", ".join("{}({})".format(d, _WD_JA[d.weekday()]) for d in slots)))
+    say("   参考: 投稿キュー上の直近の投稿日 {}（★スロットの計算には使っていない）".format(
+        last_post if last_post else "（不明）"))
 
     say()
     head_end = len(L)          # ★ここまでが見出し。文字列一致で切らない
@@ -598,6 +646,9 @@ def build_report(a, now: datetime):
             same_room = bool(wr) and norm_key(r["room"]) == wrk
             say("      {} {} {}".format("★部屋まで一致" if same_room else "建物のみ一致",
                                         r["building"], room_label(r["room"])))
+    say("  家具家電の語はあるが「付いていない」と読めた … {}件（★弾いていない）".format(len(furnished_no)))
+    for _k, b, rm, ev in furnished_no:
+        say("      {} {} … {}".format(b, room_label(rm), ev))
 
     mid_end = len(L)
     say()
@@ -615,12 +666,23 @@ def build_report(a, now: datetime):
         say("  {} ... {}件{}".format(label, fired.get(key, 0),
                                      "   ★発火しなかった" if not fired.get(key) else ""))
 
-    est = FAL_USD_PER_CUT * a.cuts * len(picked)
+    lo, hi = (a.cuts, a.cuts) if a.cuts else FAL_CUTS_OBSERVED
+    est_lo = FAL_USD_PER_CUT * lo * len(picked)
+    est_hi = FAL_USD_PER_CUT * hi * len(picked)
+    est_txt = ("${:.2f} × {}カット × {}本 = ${:.2f}".format(
+        FAL_USD_PER_CUT, lo, len(picked), est_lo) if lo == hi else
+        "${:.2f} × {}〜{}カット × {}本 = ${:.2f}〜${:.2f}".format(
+            FAL_USD_PER_CUT, lo, hi, len(picked), est_lo, est_hi))
     say()
     say("# fal の見積もり（★表示するだけ。呼ばない）")
-    say("  ${:.2f} × {}カット × {}本 = ${:.2f}".format(FAL_USD_PER_CUT, a.cuts, len(picked), est))
-    say("  ★カット数の既定 {} は実績 $3.15/本 ÷ ${:.2f} から。--cuts で変えられる".format(
-        DEFAULT_CUTS_PER_REEL, FAL_USD_PER_CUT))
+    say("  " + est_txt)
+    if a.cuts:
+        say("  ★--cuts {} で1本の値に固定している".format(a.cuts))
+    else:
+        say("  ★カット数は**実測の幅**。jobs/*/state.json の request_id 付きシーン数を数えた"
+            "（2026-09-04・完了7ジョブで 6 / 8 / 9・直近のA/B 3本は6）。")
+        say("  ★1本の値に丸めない。カット数は物件の部屋数で決まり、選定の時点では確定しない。"
+            "固定するなら --cuts N")
 
     # ★CSV は標準出力と同じ中身にする（★『手で確認するもの』を落とさない）
     csv_rows = [[x] for x in L[:head_end]] + [["# 提案"]] + prop_rows \
@@ -628,8 +690,7 @@ def build_report(a, now: datetime):
         + [[""], ["# 弾いた {}件".format(len(rejects))]] + rej_rows \
         + [[""], ["# 条件別ヒット数"]] \
         + [[label, fired.get(key, 0)] for key, label in REASONS.items()] \
-        + [[""], ["# fal の見積もり（表示のみ）",
-                  "${:.2f} × {} × {} = ${:.2f}".format(FAL_USD_PER_CUT, a.cuts, len(picked), est)]]
+        + [[""], ["# fal の見積もり（表示のみ）", est_txt]]
     return L, csv_rows, len(rooms)
 
 
@@ -658,8 +719,10 @@ def main() -> int:
                     help="★必須。収穫条件をそのまま出力の先頭とログに残す")
     ap.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS,
                     help="★投稿予定日で判定する。既定14＝元データの14日更新サイクル")
-    ap.add_argument("--cuts", type=int, default=DEFAULT_CUTS_PER_REEL, help="fal 見積もり用のカット数")
-    ap.add_argument("--start", default="", help="最初の投稿予定日 YYYY-MM-DD（既定は直近投稿から隔日）")
+    ap.add_argument("--cuts", type=int, default=0,
+                    help="fal 見積もり用のカット数。★既定は実測の幅 {}〜{} で出す".format(*FAL_CUTS_OBSERVED))
+    ap.add_argument("--start", default="",
+                    help="最初の投稿予定日 YYYY-MM-DD。★火・木・土のみ（既定は今日より後の最初の火木土）")
     ap.add_argument("--maisoku-dir", default=DEFAULT_MAISOKU)
     ap.add_argument("--reg-dir", default=DEFAULT_REG)
     ap.add_argument("--posted-json", default=DEFAULT_POSTED)
@@ -670,8 +733,8 @@ def main() -> int:
     a = ap.parse_args()
     if a.count < 1:
         return _die("--count は1以上")
-    if a.cuts < 1:
-        return _die("--cuts は1以上")
+    if a.cuts < 0:
+        return _die("--cuts は1以上（省略すると実測の幅で出す）")
     if a.start:
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", a.start):
             return _die("--start は YYYY-MM-DD")
