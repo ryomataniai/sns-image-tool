@@ -165,7 +165,7 @@ def brand_conflict(a: str, b: str) -> bool:
 
 def canon_building(building: str) -> str:
     """棟名の比較キー。カナ表記のブランドを英字表記へ寄せてから正規化する
-    （★『セレニテ本町…』と『SERENiTE本町…』を同一視する）。"""
+    （★同一ブランドのカナ表記と英字表記を同一視する）。"""
     s = unicodedata.normalize("NFKC", building or "").strip()
     for kana, latin in _BRAND_ALIASES.items():
         if s.startswith(kana):
